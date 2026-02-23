@@ -37,6 +37,18 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     }
   }, [session]);
 
+  // Listen for Cmd+R rename shortcut dispatched from App
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.terminalId === terminalId) {
+        startRename();
+      }
+    };
+    window.addEventListener("rename-terminal", handler);
+    return () => window.removeEventListener("rename-terminal", handler);
+  }, [terminalId, startRename]);
+
   if (!session) return null;
 
   const commitRename = () => {
@@ -118,6 +130,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
                   <path d="M8.5 2.5L11.5 5.5M2 12L2.5 9.5L10 2C10.5 1.5 11.5 1.5 12 2C12.5 2.5 12.5 3.5 12 4L4.5 11.5L2 12Z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               ),
+              shortcut: "⌘R",
               onClick: startRename,
             },
             {

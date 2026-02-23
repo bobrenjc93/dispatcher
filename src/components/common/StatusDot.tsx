@@ -2,37 +2,49 @@ import { useEffect, useRef, useState } from "react";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 
 const GRAY = "#888888";
-const GREEN = "#00c853";
 const DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+// Persist deactivation timestamps outside React so the animation
+// survives component remounts (e.g. when projects are reordered).
+const deactivatedAt = new Map<string, number>();
+
+function lerpColor(t: number): string {
+  const r = Math.round(0x88 + (0x00 - 0x88) * t);
+  const g = Math.round(0x88 + (0xc8 - 0x88) * t);
+  const b = Math.round(0x88 + (0x53 - 0x88) * t);
+  return `rgb(${r},${g},${b})`;
+}
 
 export function StatusDot({ terminalId }: { terminalId: string }) {
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const isActive = activeTerminalId === terminalId;
-  const [color, setColor] = useState(GRAY);
+  const [color, setColor] = useState(() => {
+    if (isActive) return GRAY;
+    const ts = deactivatedAt.get(terminalId);
+    if (!ts) return GRAY;
+    const t = Math.min((performance.now() - ts) / DURATION_MS, 1);
+    return lerpColor(t);
+  });
   const rafRef = useRef<number>(0);
-  const startRef = useRef<number>(0);
 
   useEffect(() => {
     if (isActive) {
-      // Active terminal: show gray, stop any animation
       cancelAnimationFrame(rafRef.current);
+      deactivatedAt.delete(terminalId);
       setColor(GRAY);
       return;
     }
 
-    // Not active: animate gray → green over 5 minutes
-    startRef.current = performance.now();
+    // Record deactivation time if not already set
+    if (!deactivatedAt.has(terminalId)) {
+      deactivatedAt.set(terminalId, performance.now());
+    }
+    const start = deactivatedAt.get(terminalId)!;
 
     function tick() {
-      const elapsed = performance.now() - startRef.current;
+      const elapsed = performance.now() - start;
       const t = Math.min(elapsed / DURATION_MS, 1);
-
-      // Lerp each RGB channel
-      const r = Math.round(0x88 + (0x00 - 0x88) * t);
-      const g = Math.round(0x88 + (0xc8 - 0x88) * t);
-      const b = Math.round(0x88 + (0x53 - 0x88) * t);
-      setColor(`rgb(${r},${g},${b})`);
-
+      setColor(lerpColor(t));
       if (t < 1) {
         rafRef.current = requestAnimationFrame(tick);
       }
@@ -40,7 +52,7 @@ export function StatusDot({ terminalId }: { terminalId: string }) {
 
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [isActive]);
+  }, [isActive, terminalId]);
 
   return (
     <span

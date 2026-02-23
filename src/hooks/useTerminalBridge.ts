@@ -71,26 +71,82 @@ function disposeWriteBatch(terminalId: string) {
 
 // ---------------------------------------------------------------------------
 // WebGL addon — load with automatic recovery on context loss.
+//
+// High-throughput programs (e.g. Claude Code) can cause repeated WebGL context
+// losses.  After MAX_WEBGL_FAILURES consecutive failures we stop retrying and
+// stay on the canvas renderer.  A periodic probe re-attempts WebGL later so
+// transient GPU pressure doesn't permanently disable hardware acceleration.
 // ---------------------------------------------------------------------------
 
+const MAX_WEBGL_FAILURES = 3;
+const WEBGL_RETRY_MS = 1000;
+const WEBGL_PROBE_MS = 30_000;
+
+/** Per-terminal WebGL failure state. */
+const webglFailures = new Map<Terminal, number>();
+const webglProbeTimers = new Map<Terminal, ReturnType<typeof setTimeout>>();
+
 function loadWebGLAddon(xterm: Terminal) {
+  const failures = webglFailures.get(xterm) ?? 0;
+
+  if (failures >= MAX_WEBGL_FAILURES) {
+    // Stay on canvas for now; schedule a probe to retry later.
+    scheduleWebGLProbe(xterm);
+    return;
+  }
+
   try {
     const addon = new WebglAddon();
     addon.onContextLoss(() => {
       addon.dispose();
-      // Re-attempt WebGL after a short delay; falls back to canvas in the interim.
-      setTimeout(() => loadWebGLAddon(xterm), 500);
+      webglFailures.set(xterm, (webglFailures.get(xterm) ?? 0) + 1);
+      setTimeout(() => {
+        loadWebGLAddon(xterm);
+        // Repaint all rows so any corruption from the lost context is cleared.
+        xterm.refresh(0, xterm.rows - 1);
+      }, WEBGL_RETRY_MS);
     });
     xterm.loadAddon(addon);
+    // Successful load — reset failure counter and cancel any pending probe.
+    webglFailures.set(xterm, 0);
+    clearWebGLProbe(xterm);
   } catch {
-    // Canvas fallback is automatic
+    webglFailures.set(xterm, failures + 1);
+    if (failures + 1 >= MAX_WEBGL_FAILURES) {
+      scheduleWebGLProbe(xterm);
+    }
   }
+}
+
+function scheduleWebGLProbe(xterm: Terminal) {
+  if (webglProbeTimers.has(xterm)) return;
+  const timer = setTimeout(() => {
+    webglProbeTimers.delete(xterm);
+    // Reset counter so the probe gets a fresh set of attempts.
+    webglFailures.set(xterm, 0);
+    loadWebGLAddon(xterm);
+  }, WEBGL_PROBE_MS);
+  webglProbeTimers.set(xterm, timer);
+}
+
+function clearWebGLProbe(xterm: Terminal) {
+  const timer = webglProbeTimers.get(xterm);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    webglProbeTimers.delete(xterm);
+  }
+}
+
+function cleanupWebGLState(xterm: Terminal) {
+  webglFailures.delete(xterm);
+  clearWebGLProbe(xterm);
 }
 
 /** Dispose an xterm instance and its PTY tracking when a terminal is truly closed. */
 export function disposeTerminalInstance(terminalId: string) {
   const inst = instances.get(terminalId);
   if (inst) {
+    cleanupWebGLState(inst.xterm);
     inst.xterm.dispose();
     instances.delete(terminalId);
   }

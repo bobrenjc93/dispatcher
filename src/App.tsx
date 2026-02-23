@@ -469,6 +469,18 @@ export default function App() {
         handleClosePane(activeTermId);
       }
     }
+    // Rename active tab: Cmd+R / Ctrl+R
+    if (isMeta && !e.shiftKey && e.key === "r") {
+      e.preventDefault();
+      const activeTermId = useTerminalStore.getState().activeTerminalId;
+      if (activeTermId) {
+        // Resolve to the tab root if active terminal is inside a split layout
+        const layouts = useLayoutStore.getState().layouts;
+        const tabRoot = findLayoutKeyForTerminal(layouts, activeTermId);
+        const targetId = tabRoot || activeTermId;
+        window.dispatchEvent(new CustomEvent("rename-terminal", { detail: { terminalId: targetId } }));
+      }
+    }
     // Font size: Cmd+= / Cmd+- / Cmd+0
     if (isMeta && e.key === "=") {
       e.preventDefault();
