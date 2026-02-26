@@ -13,6 +13,7 @@ import {
 import type { TerminalOutputPayload } from "../lib/tauriCommands";
 import { useFontSizeStore } from "../stores/useFontSizeStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
+import { useProjectStore } from "../stores/useProjectStore";
 
 // ---------------------------------------------------------------------------
 // Persistent terminal instances — survive React remounts caused by layout
@@ -37,6 +38,18 @@ const createdPtys = new Set<string>();
 
 const writeBuffers = new Map<string, string[]>();
 const writeRafs = new Map<string, number>();
+
+// Debounced sidebar promotion — only promote once per terminal per interval.
+const PROMOTE_DEBOUNCE_MS = 2000;
+const lastPromoted = new Map<string, number>();
+
+function maybePromote(terminalId: string) {
+  const now = Date.now();
+  const last = lastPromoted.get(terminalId) ?? 0;
+  if (now - last < PROMOTE_DEBOUNCE_MS) return;
+  lastPromoted.set(terminalId, now);
+  useProjectStore.getState().promoteChild(terminalId);
+}
 
 function batchedWrite(terminalId: string, data: string) {
   let buffer = writeBuffers.get(terminalId);
@@ -297,6 +310,8 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     // Forward user input to PTY.
     const dataDisposable = inst.xterm.onData((data) => {
       writeTerminal(terminalId, data).catch(() => {});
+      maybePromote(terminalId);
+      window.dispatchEvent(new CustomEvent("terminal-typed", { detail: terminalId }));
     });
 
     // Handle resize

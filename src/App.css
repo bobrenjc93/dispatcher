@@ -425,18 +425,20 @@ html, body, #root {
 
 .detail-panel-title-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   flex: 1;
   min-width: 0;
 }
 
+.detail-panel-title-row .status-dot {
+  margin-top: 4px;
+}
+
 .detail-panel-title {
   font-size: 14px;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  word-break: break-word;
   cursor: default;
   color: var(--text-primary);
   letter-spacing: -0.3px;

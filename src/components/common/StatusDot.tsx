@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { useTerminalStore } from "../../stores/useTerminalStore";
 
 const GRAY = "#888888";
+const GREEN = "#00c853";
 const DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
-// Persist deactivation timestamps outside React so the animation
+// Persist timestamps outside React so the animation
 // survives component remounts (e.g. when projects are reordered).
-const deactivatedAt = new Map<string, number>();
+const lastTypedAt = new Map<string, number>();
 
 function lerpColor(t: number): string {
   const r = Math.round(0x88 + (0x00 - 0x88) * t);
@@ -16,43 +16,59 @@ function lerpColor(t: number): string {
 }
 
 export function StatusDot({ terminalId }: { terminalId: string }) {
-  const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
-  const isActive = activeTerminalId === terminalId;
   const [color, setColor] = useState(() => {
-    if (isActive) return GRAY;
-    const ts = deactivatedAt.get(terminalId);
-    if (!ts) return GRAY;
+    const ts = lastTypedAt.get(terminalId);
+    if (!ts) return GREEN;
     const t = Math.min((performance.now() - ts) / DURATION_MS, 1);
     return lerpColor(t);
   });
   const rafRef = useRef<number>(0);
+  const animatingRef = useRef(false);
 
   useEffect(() => {
-    if (isActive) {
-      cancelAnimationFrame(rafRef.current);
-      deactivatedAt.delete(terminalId);
-      setColor(GRAY);
-      return;
-    }
-
-    // Record deactivation time if not already set
-    if (!deactivatedAt.has(terminalId)) {
-      deactivatedAt.set(terminalId, performance.now());
-    }
-    const start = deactivatedAt.get(terminalId)!;
-
     function tick() {
+      const start = lastTypedAt.get(terminalId);
+      if (!start) {
+        animatingRef.current = false;
+        setColor(GREEN);
+        return;
+      }
       const elapsed = performance.now() - start;
       const t = Math.min(elapsed / DURATION_MS, 1);
       setColor(lerpColor(t));
       if (t < 1) {
         rafRef.current = requestAnimationFrame(tick);
+      } else {
+        animatingRef.current = false;
       }
     }
 
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [isActive, terminalId]);
+    function ensureAnimating() {
+      if (animatingRef.current) return;
+      animatingRef.current = true;
+      rafRef.current = requestAnimationFrame(tick);
+    }
+
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent).detail;
+      if (id !== terminalId) return;
+      lastTypedAt.set(terminalId, performance.now());
+      ensureAnimating();
+    };
+
+    window.addEventListener("terminal-typed", handler);
+
+    // Resume animation if there's an existing timestamp that hasn't fully elapsed
+    if (lastTypedAt.has(terminalId)) {
+      ensureAnimating();
+    }
+
+    return () => {
+      cancelAnimationFrame(rafRef.current);
+      animatingRef.current = false;
+      window.removeEventListener("terminal-typed", handler);
+    };
+  }, [terminalId]);
 
   return (
     <span
