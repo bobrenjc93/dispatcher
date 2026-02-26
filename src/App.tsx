@@ -481,6 +481,17 @@ export default function App() {
         window.dispatchEvent(new CustomEvent("rename-terminal", { detail: { terminalId: targetId } }));
       }
     }
+    // Promote active tab to top of its project: Cmd+U / Ctrl+U
+    if (isMeta && !e.shiftKey && e.key === "u") {
+      e.preventDefault();
+      const activeTermId = useTerminalStore.getState().activeTerminalId;
+      if (activeTermId) {
+        // If focus is inside a split, promote the owning sidebar tab.
+        const layouts = useLayoutStore.getState().layouts;
+        const tabRoot = findLayoutKeyForTerminal(layouts, activeTermId);
+        useProjectStore.getState().promoteChild(tabRoot || activeTermId);
+      }
+    }
     // Font size: Cmd+= / Cmd+- / Cmd+0
     if (isMeta && e.key === "=") {
       e.preventDefault();

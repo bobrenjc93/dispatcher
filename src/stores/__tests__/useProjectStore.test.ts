@@ -85,6 +85,31 @@ describe("useProjectStore", () => {
     });
   });
 
+  describe("promoteChild", () => {
+    it("moves a terminal node to first position under its parent", () => {
+      const store = useProjectStore.getState();
+      store.addNode({ id: "parent", type: "group", name: "G", children: ["n1", "n2", "n3"], parentId: null });
+      store.addNode({ id: "n1", type: "terminal", name: "T1", terminalId: "t1", parentId: "parent" });
+      store.addNode({ id: "n2", type: "terminal", name: "T2", terminalId: "t2", parentId: "parent" });
+      store.addNode({ id: "n3", type: "terminal", name: "T3", terminalId: "t3", parentId: "parent" });
+
+      store.promoteChild("t3");
+
+      expect(useProjectStore.getState().nodes["parent"].children).toEqual(["n3", "n1", "n2"]);
+    });
+
+    it("is a no-op when terminal is already first", () => {
+      const store = useProjectStore.getState();
+      store.addNode({ id: "parent", type: "group", name: "G", children: ["n1", "n2"], parentId: null });
+      store.addNode({ id: "n1", type: "terminal", name: "T1", terminalId: "t1", parentId: "parent" });
+      store.addNode({ id: "n2", type: "terminal", name: "T2", terminalId: "t2", parentId: "parent" });
+
+      store.promoteChild("t1");
+
+      expect(useProjectStore.getState().nodes["parent"].children).toEqual(["n1", "n2"]);
+    });
+  });
+
   describe("moveNode", () => {
     it("updates both parents + node parentId", () => {
       const store = useProjectStore.getState();
