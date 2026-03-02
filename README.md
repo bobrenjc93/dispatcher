@@ -2,7 +2,7 @@
 
 A cross-platform desktop terminal multiplexer built with Tauri, React, and xterm.js. Organize your terminal sessions into projects and groups with a visual tree sidebar, split panes, and drag-and-drop reordering.
 
-<img width="2814" height="2348" alt="CleanShot 2026-03-01 at 19 58 55@2x" src="https://github.com/user-attachments/assets/1f400779-a69a-4b1f-80ee-4bd925d02717" />
+<img width="2822" height="2356" alt="CleanShot 2026-03-01 at 20 01 32@2x" src="https://github.com/user-attachments/assets/fbb8441b-d426-4875-8a47-093e4bc88a21" />
 
 ## Features
 
