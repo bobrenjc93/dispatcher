@@ -1,7 +1,7 @@
 import { StatusDot } from "../common/StatusDot";
 import { EditableText } from "../common/EditableText";
 import { useTerminalStore } from "../../stores/useTerminalStore";
-import { useFontSizeStore } from "../../stores/useFontSizeStore";
+import { useFontStore } from "../../stores/useFontStore";
 
 interface DetailPanelProps {
   terminalId: string;
@@ -19,7 +19,7 @@ export function DetailPanel({
   const session = useTerminalStore((s) => s.sessions[terminalId]);
   const updateTitle = useTerminalStore((s) => s.updateTitle);
   const updateNotes = useTerminalStore((s) => s.updateNotes);
-  const fontSize = useFontSizeStore((s) => s.fontSize);
+  const fontSize = useFontStore((s) => s.fontSize);
 
   if (!session) return null;
 

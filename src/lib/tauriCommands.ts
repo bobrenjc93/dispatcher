@@ -51,3 +51,15 @@ export async function refreshPool(): Promise<void> {
 export async function getTerminalCwd(terminalId: string): Promise<string | null> {
   return await invoke("get_terminal_cwd", { terminalId });
 }
+
+export async function showFontPanel(
+  family: string,
+  size: number,
+  weight: string
+): Promise<void> {
+  await invoke("show_font_panel", { family, size, weight });
+}
+
+export async function hideFontPanel(): Promise<void> {
+  await invoke("hide_font_panel");
+}

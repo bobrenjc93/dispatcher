@@ -4,6 +4,8 @@ import { useTerminalStore } from "../../stores/useTerminalStore";
 import { ProjectNode } from "./ProjectNode";
 import { ContextMenu } from "../common/ContextMenu";
 import { HotkeyHelp } from "../common/HotkeyHelp";
+import { FontSettings } from "../common/FontSettings";
+import { SchemePicker } from "../common/SchemePicker";
 import { registerDragCallbacks } from "../../lib/dragState";
 
 interface SidebarProps {
@@ -47,6 +49,15 @@ export function Sidebar({
 
   const [bgMenu, setBgMenu] = useState<{ x: number; y: number } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [showFontSettings, setShowFontSettings] = useState(false);
+  const [showSchemePicker, setShowSchemePicker] = useState(false);
+
+  // Listen for the global toggle-scheme-picker event (fired by keyboard shortcut)
+  useEffect(() => {
+    const handler = () => setShowSchemePicker((v) => !v);
+    window.addEventListener("toggle-scheme-picker", handler);
+    return () => window.removeEventListener("toggle-scheme-picker", handler);
+  }, []);
 
   const projectList = projectOrder.map((id) => projects[id]).filter(Boolean);
 
@@ -130,6 +141,20 @@ export function Sidebar({
         ))}
       </div>
       <div className="sidebar-footer">
+        <button className="sidebar-help-btn" onClick={() => setShowSchemePicker(true)} title="Color Scheme (⇧⌘T)">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <circle cx="5" cy="5.5" r="2.5" stroke="currentColor" strokeWidth="1.2"/>
+            <circle cx="9" cy="5.5" r="2.5" stroke="currentColor" strokeWidth="1.2"/>
+            <circle cx="7" cy="9" r="2.5" stroke="currentColor" strokeWidth="1.2"/>
+          </svg>
+        </button>
+        <button className="sidebar-help-btn" onClick={() => setShowFontSettings(true)} title="Font Settings">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path d="M7 1.5C4.1 1.5 1.73 3.53 1.5 6.3a5.5 5.5 0 1 0 10.73 1.7A5.5 5.5 0 0 0 7 1.5Z" stroke="currentColor" strokeWidth="1.2"/>
+            <circle cx="7" cy="7" r="1.5" stroke="currentColor" strokeWidth="1.2"/>
+            <path d="M7 1.5V3M7 11V12.5M1.5 7H3M11 7h1.5M2.87 3.17l1.06 1.06M9.77 10.07l1.06 1.06M11.13 3.17l-1.06 1.06M4.23 10.07l-1.06 1.06" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+          </svg>
+        </button>
         <button className="sidebar-help-btn" onClick={() => setShowHelp(true)} title="Keyboard Shortcuts">
           ?
         </button>
@@ -143,6 +168,8 @@ export function Sidebar({
         />
       )}
       {showHelp && <HotkeyHelp onClose={() => setShowHelp(false)} />}
+      {showFontSettings && <FontSettings onClose={() => setShowFontSettings(false)} />}
+      {showSchemePicker && <SchemePicker onClose={() => setShowSchemePicker(false)} />}
     </div>
   );
 }

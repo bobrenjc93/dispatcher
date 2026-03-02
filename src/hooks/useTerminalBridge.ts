@@ -11,7 +11,9 @@ import {
   warmPool,
 } from "../lib/tauriCommands";
 import type { TerminalOutputPayload } from "../lib/tauriCommands";
-import { useFontSizeStore } from "../stores/useFontSizeStore";
+import { useFontStore } from "../stores/useFontStore";
+import { useColorSchemeStore } from "../stores/useColorSchemeStore";
+import { buildFontFamilyCSS } from "../components/common/FontSettings";
 import { useTerminalStore } from "../stores/useTerminalStore";
 
 // ---------------------------------------------------------------------------
@@ -206,32 +208,16 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       element.style.width = "100%";
       element.style.height = "100%";
 
+      const fontState = useFontStore.getState();
       const xterm = new Terminal({
         cursorBlink: true,
-        fontSize: useFontSizeStore.getState().fontSize,
-        fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
-        theme: {
-          background: "#0a0a0a",
-          foreground: "#ededed",
-          cursor: "#ffffff",
-          selectionBackground: "#333333",
-          black: "#000000",
-          red: "#ff3333",
-          green: "#00c853",
-          yellow: "#ffcc00",
-          blue: "#0070f3",
-          magenta: "#a855f7",
-          cyan: "#06b6d4",
-          white: "#ededed",
-          brightBlack: "#666666",
-          brightRed: "#ff5555",
-          brightGreen: "#50fa7b",
-          brightYellow: "#f1fa8c",
-          brightBlue: "#6cb6ff",
-          brightMagenta: "#d183e8",
-          brightCyan: "#8be9fd",
-          brightWhite: "#ffffff",
-        },
+        fontSize: fontState.fontSize,
+        fontFamily: buildFontFamilyCSS(fontState.fontFamily),
+        fontWeight: fontState.fontWeight,
+        fontWeightBold: fontState.fontWeightBold,
+        lineHeight: fontState.lineHeight,
+        letterSpacing: fontState.letterSpacing,
+        theme: useColorSchemeStore.getState().getActiveScheme().terminal,
         scrollback: 10000,
         allowProposedApi: true,
       });
@@ -259,7 +245,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
         }
 
         // App-level shortcuts — let them bubble to the global handler
-        if (e.metaKey && ["t", "n", "d", "w", "f", "u", "r", "b", "=", "-", "0"].includes(e.key)) {
+        if (e.metaKey && ["t", "T", "n", "d", "w", "f", "u", "r", "b", "=", "-", "0"].includes(e.key)) {
           return false;
         }
         // Bracket shortcuts: Cmd+]/[ (projects) and Cmd+Shift+]/[ (terminals)
@@ -281,9 +267,18 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     fitAddonRef.current = inst.fitAddon;
     searchAddonRef.current = inst.searchAddon;
 
-    // Ensure remounted terminals always pick up the latest font size. Without
+    // Ensure remounted terminals always pick up the latest font settings. Without
     // this, hidden tabs can remount with stale metrics and render incorrectly.
-    inst.xterm.options.fontSize = useFontSizeStore.getState().fontSize;
+    const currentFont = useFontStore.getState();
+    inst.xterm.options.fontSize = currentFont.fontSize;
+    inst.xterm.options.fontFamily = buildFontFamilyCSS(currentFont.fontFamily);
+    inst.xterm.options.fontWeight = currentFont.fontWeight;
+    inst.xterm.options.fontWeightBold = currentFont.fontWeightBold;
+    inst.xterm.options.lineHeight = currentFont.lineHeight;
+    inst.xterm.options.letterSpacing = currentFont.letterSpacing;
+
+    // Sync terminal theme on remount
+    inst.xterm.options.theme = useColorSchemeStore.getState().getActiveScheme().terminal;
 
     // Defer fit() to the next animation frame so the browser has laid out the
     // container and fit() can measure accurate dimensions.  Without this, the
@@ -338,11 +333,16 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       resizeTerminal(terminalId, cols, rows).catch(() => {});
     });
 
-    // Sync font size from store whenever it changes
-    const unsubFontSize = useFontSizeStore.subscribe((state) => {
+    // Sync all font properties from store whenever they change
+    const unsubFont = useFontStore.subscribe((state) => {
       const i = instances.get(terminalId);
       if (i) {
         i.xterm.options.fontSize = state.fontSize;
+        i.xterm.options.fontFamily = buildFontFamilyCSS(state.fontFamily);
+        i.xterm.options.fontWeight = state.fontWeight;
+        i.xterm.options.fontWeightBold = state.fontWeightBold;
+        i.xterm.options.lineHeight = state.lineHeight;
+        i.xterm.options.letterSpacing = state.letterSpacing;
         cancelAnimationFrame(pendingFitRef.current);
         pendingFitRef.current = requestAnimationFrame(() => {
           i.fitAddon.fit();
@@ -350,10 +350,19 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       }
     });
 
+    // Sync terminal color scheme whenever the store changes
+    const unsubScheme = useColorSchemeStore.subscribe((state) => {
+      const i = instances.get(terminalId);
+      if (i) {
+        i.xterm.options.theme = state.getActiveScheme().terminal;
+      }
+    });
+
     return () => {
       cancelAnimationFrame(rafId);
       cancelAnimationFrame(pendingFitRef.current);
-      unsubFontSize();
+      unsubFont();
+      unsubScheme();
       dataDisposable.dispose();
       resizeDisposable.dispose();
 

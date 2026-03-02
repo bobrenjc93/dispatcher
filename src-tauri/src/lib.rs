@@ -1,5 +1,8 @@
 mod commands;
 mod errors;
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs)]
+mod font_panel;
 mod pty_manager;
 
 use pty_manager::PtyManager;
@@ -15,6 +18,8 @@ pub fn run() {
             commands::warm_pool,
             commands::refresh_pool,
             commands::get_terminal_cwd,
+            commands::show_font_panel,
+            commands::hide_font_panel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

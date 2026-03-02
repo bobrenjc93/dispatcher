@@ -5,7 +5,9 @@ import { NameDialog } from "./components/common/NameDialog";
 import { useProjectStore } from "./stores/useProjectStore";
 import { useLayoutStore } from "./stores/useLayoutStore";
 import { useTerminalStore } from "./stores/useTerminalStore";
-import { useFontSizeStore } from "./stores/useFontSizeStore";
+import { useFontStore } from "./stores/useFontStore";
+import { useColorSchemeStore } from "./stores/useColorSchemeStore";
+import { applyUIColors } from "./lib/colorSchemes";
 import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from "./lib/layoutUtils";
 import { closeTerminal, warmPool, refreshPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
@@ -114,6 +116,14 @@ export default function App() {
     warmPool(3).catch(() => {});
     const id = setInterval(() => refreshPool().catch(() => {}), 5 * 60 * 1000);
     return () => clearInterval(id);
+  }, []);
+
+  // Apply UI colors from color scheme on mount and subscribe to changes
+  useEffect(() => {
+    applyUIColors(useColorSchemeStore.getState().getActiveScheme().ui);
+    return useColorSchemeStore.subscribe((state) => {
+      applyUIColors(state.getActiveScheme().ui);
+    });
   }, []);
 
   const createProjectWithTerminal = useCallback(
@@ -500,9 +510,13 @@ export default function App() {
     if (dialog) return; // Don't handle shortcuts while dialog is open
     const isMeta = e.metaKey || e.ctrlKey;
 
-    if (isMeta && e.key === "t") {
+    if (isMeta && !e.shiftKey && e.key === "t") {
       e.preventDefault();
       handleNewTerminal();
+    }
+    if (isMeta && e.shiftKey && e.key === "T") {
+      e.preventDefault();
+      window.dispatchEvent(new CustomEvent("toggle-scheme-picker"));
     }
     if (isMeta && e.key === "n") {
       e.preventDefault();
@@ -565,15 +579,15 @@ export default function App() {
     // Font size: Cmd+= / Cmd+- / Cmd+0
     if (isMeta && e.key === "=") {
       e.preventDefault();
-      useFontSizeStore.getState().increase();
+      useFontStore.getState().increase();
     }
     if (isMeta && e.key === "-") {
       e.preventDefault();
-      useFontSizeStore.getState().decrease();
+      useFontStore.getState().decrease();
     }
     if (isMeta && e.key === "0") {
       e.preventDefault();
-      useFontSizeStore.getState().reset();
+      useFontStore.getState().reset();
     }
     // Cycle projects: Cmd+] (next) / Cmd+[ (prev)
     if (isMeta && !e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {

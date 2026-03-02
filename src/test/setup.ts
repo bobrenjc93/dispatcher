@@ -24,7 +24,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 import { useProjectStore } from "../stores/useProjectStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import { useLayoutStore } from "../stores/useLayoutStore";
-import { useFontSizeStore } from "../stores/useFontSizeStore";
+import { useFontStore } from "../stores/useFontStore";
 
 // ---------------------------------------------------------------------------
 // Reset stores + localStorage before each test
@@ -44,5 +44,12 @@ beforeEach(() => {
     activeTerminalId: null,
   });
   useLayoutStore.setState({ layouts: {} });
-  useFontSizeStore.setState({ fontSize: 13 });
+  useFontStore.setState({
+    fontFamily: "Menlo",
+    fontSize: 13,
+    fontWeight: "normal",
+    fontWeightBold: "bold",
+    lineHeight: 1.0,
+    letterSpacing: 0,
+  });
 });

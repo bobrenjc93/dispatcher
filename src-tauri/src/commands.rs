@@ -1,5 +1,6 @@
 use crate::errors::PtyError;
 use crate::pty_manager::{PtyManager, TerminalOutput};
+#[allow(unused_imports)]
 use tauri::{ipc::Channel, AppHandle, State};
 
 #[tauri::command]
@@ -65,4 +66,31 @@ pub fn refresh_pool(
     state: State<'_, PtyManager>,
 ) -> Result<(), PtyError> {
     state.refresh_pool(&app_handle)
+}
+
+#[tauri::command]
+pub fn show_font_panel(
+    app_handle: AppHandle,
+    family: String,
+    size: f64,
+    weight: String,
+) -> Result<(), PtyError> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::font_panel::show(app_handle, &family, size, &weight)?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app_handle, family, size, weight);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn hide_font_panel() -> Result<(), PtyError> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::font_panel::hide()?;
+    }
+    Ok(())
 }
