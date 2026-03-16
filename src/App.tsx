@@ -541,7 +541,11 @@ export default function App() {
   const keyDownRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyDownRef.current = (e: KeyboardEvent) => {
     if (dialog) return; // Don't handle shortcuts while dialog is open
-    const isMeta = e.metaKey || e.ctrlKey;
+    // On macOS use Cmd for app shortcuts so Ctrl passes through to the
+    // terminal (Ctrl+R reverse search, Ctrl+D EOF, Ctrl+W delete word, etc.).
+    // On other platforms fall back to Ctrl as the app modifier.
+    const isMac = navigator.platform.startsWith("Mac");
+    const isMeta = isMac ? e.metaKey : e.ctrlKey;
 
     if (isMeta && !e.shiftKey && e.key === "t") {
       e.preventDefault();
@@ -576,8 +580,8 @@ export default function App() {
         handleClosePane(activeTermId);
       }
     }
-    // Rename active tab: Cmd+R (Ctrl+R is reserved for terminal reverse search)
-    if (e.metaKey && !e.ctrlKey && !e.shiftKey && e.key === "r") {
+    // Rename active tab: Cmd+R / Ctrl+R
+    if (isMeta && !e.shiftKey && e.key === "r") {
       e.preventDefault();
       const activeTermId = useTerminalStore.getState().activeTerminalId;
       if (activeTermId) {
