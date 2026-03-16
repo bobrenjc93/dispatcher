@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nickheal/tauri-docs-1/refs/heads/v2/src/content/docs/_schema/config.schema.json",
   "productName": "Dispatcher",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "identifier": "com.dispatcher.desktop",
   "build": {
     "frontendDist": "../dist",
