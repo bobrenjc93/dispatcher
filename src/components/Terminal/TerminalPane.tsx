@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useTerminalBridge } from "../../hooks/useTerminalBridge";
 import { useResizeObserver } from "../../hooks/useResizeObserver";
 import { useTerminalStore } from "../../stores/useTerminalStore";
+import { writeTerminal } from "../../lib/tauriCommands";
 import { ContextMenu } from "../common/ContextMenu";
 
 interface TerminalPaneProps {
@@ -82,9 +83,22 @@ export function TerminalPane({
         e.preventDefault();
         e.stopPropagation();
         openSearch();
+        return;
       }
       if (e.key === "Escape" && searchOpen) {
         closeSearch();
+        return;
+      }
+      // On macOS WKWebView, the Cocoa text input system swallows
+      // Ctrl+letter before xterm.js can process them.  Intercept in
+      // capture phase and send the control character directly to the PTY.
+      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.length === 1) {
+        const code = e.key.toUpperCase().charCodeAt(0);
+        if (code >= 65 && code <= 90) {
+          e.preventDefault();
+          e.stopPropagation();
+          writeTerminal(terminalId, String.fromCharCode(code - 64)).catch(() => {});
+        }
       }
     };
 

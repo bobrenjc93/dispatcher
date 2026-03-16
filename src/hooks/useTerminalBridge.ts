@@ -253,20 +253,6 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
           return false;
         }
 
-        // On macOS WKWebView, the Cocoa text input system swallows Ctrl+letter
-        // before xterm.js can process them.  Manually send the control character
-        // so terminal shortcuts like Ctrl+R (reverse search), Ctrl+D (EOF),
-        // Ctrl+C (SIGINT), Ctrl+W (delete word), etc. reach the PTY.
-        if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) {
-          const code = e.key.toUpperCase().charCodeAt(0);
-          if (code >= 65 && code <= 90) {
-            const controlChar = String.fromCharCode(code - 64);
-            writeTerminal(terminalId, controlChar).catch(() => {});
-            e.preventDefault();
-            return false;
-          }
-        }
-
         return true;
       });
 
