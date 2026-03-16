@@ -78,6 +78,13 @@ export function TerminalPane({
     if (!el) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // DEBUG: trace Ctrl+R in capture phase
+      if (e.ctrlKey && e.key === "r") {
+        console.log("[TerminalPane capture] Ctrl+R seen", {
+          defaultPrevented: e.defaultPrevented,
+          target: (e.target as HTMLElement)?.tagName,
+        });
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
         e.preventDefault();
         e.stopPropagation();

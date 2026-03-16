@@ -237,6 +237,17 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       xterm.attachCustomKeyEventHandler((e) => {
         if (e.type !== "keydown") return true;
 
+        // DEBUG: trace Ctrl+R through the event pipeline
+        if (e.ctrlKey && e.key === "r") {
+          console.log("[xterm customKeyHandler] Ctrl+R detected", {
+            metaKey: e.metaKey,
+            ctrlKey: e.ctrlKey,
+            key: e.key,
+            code: e.code,
+            defaultPrevented: e.defaultPrevented,
+          });
+        }
+
         // Cmd+K: clear terminal scrollback
         if (e.metaKey && e.key === "k") {
           e.preventDefault();
@@ -246,6 +257,9 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
         // App-level shortcuts — let them bubble to the global handler
         if (e.metaKey && ["t", "T", "n", "d", "w", "f", "u", "r", "b", "=", "-", "0"].includes(e.key)) {
+          if (e.ctrlKey && e.key === "r") {
+            console.log("[xterm customKeyHandler] Ctrl+R blocked by metaKey shortcut list — returning false");
+          }
           return false;
         }
         // Bracket shortcuts: Cmd+]/[ (projects) and Cmd+Shift+]/[ (terminals)
@@ -253,6 +267,9 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
           return false;
         }
 
+        if (e.ctrlKey && e.key === "r") {
+          console.log("[xterm customKeyHandler] Ctrl+R returning true — xterm will handle");
+        }
         return true;
       });
 
@@ -321,6 +338,10 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
     // Forward user input to PTY.
     const dataDisposable = inst.xterm.onData((data) => {
+      // DEBUG: trace Ctrl+R (\x12) through onData
+      if (data === "\x12") {
+        console.log("[xterm onData] Ctrl+R (\\x12) received — sending to PTY", { terminalId });
+      }
       // Any submitted command may change cwd; force a fresh lookup on next spawn.
       if (data.includes("\r")) {
         useTerminalStore.getState().updateCwd(terminalId, undefined);

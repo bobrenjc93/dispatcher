@@ -547,6 +547,18 @@ export default function App() {
     const isMac = navigator.platform.startsWith("Mac");
     const isMeta = isMac ? e.metaKey : e.ctrlKey;
 
+    // DEBUG: trace Ctrl+R in window bubble handler
+    if (e.ctrlKey && e.key === "r") {
+      console.log("[App window handler] Ctrl+R seen", {
+        isMac,
+        isMeta,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        defaultPrevented: e.defaultPrevented,
+        target: (e.target as HTMLElement)?.tagName,
+      });
+    }
+
     if (isMeta && !e.shiftKey && e.key === "t") {
       e.preventDefault();
       handleNewTerminal();
@@ -695,7 +707,23 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => keyDownRef.current(e);
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+
+    // DEBUG: capture-phase listener to see if Ctrl+R reaches JS at all
+    const captureCtrlR = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === "r") {
+        console.log("[window CAPTURE] Ctrl+R reached JS", {
+          defaultPrevented: e.defaultPrevented,
+          target: (e.target as HTMLElement)?.tagName,
+          className: (e.target as HTMLElement)?.className,
+        });
+      }
+    };
+    window.addEventListener("keydown", captureCtrlR, true);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keydown", captureCtrlR, true);
+    };
   }, []);
 
   const handleDialogConfirm = (name: string) => {
