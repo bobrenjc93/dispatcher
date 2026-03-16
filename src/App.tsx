@@ -126,6 +126,39 @@ export default function App() {
     });
   }, []);
 
+  // Sync activeProjectId whenever activeTerminalId changes so that
+  // Cmd+T (and other shortcuts that read activeProjectId) target the
+  // correct project after clicking into a terminal pane.
+  useEffect(() => {
+    return useTerminalStore.subscribe((state) => {
+      const activeId = state.activeTerminalId;
+      if (!activeId) return;
+
+      const { projects: allProjects, nodes: allNodes, projectOrder, activeProjectId: currentProjectId } = useProjectStore.getState();
+      const allLayouts = useLayoutStore.getState().layouts;
+
+      for (const projId of projectOrder) {
+        const proj = allProjects[projId];
+        if (!proj) continue;
+        const rootNode = allNodes[proj.rootGroupId];
+        if (!rootNode?.children) continue;
+
+        for (const childId of rootNode.children) {
+          const child = allNodes[childId];
+          if (child?.type === "terminal" && child.terminalId) {
+            // Match if the active terminal IS this tab root, or lives inside its split layout
+            if (child.terminalId === activeId || findLayoutKeyForTerminal(allLayouts, activeId) === child.terminalId) {
+              if (projId !== currentProjectId) {
+                useProjectStore.getState().setActiveProject(projId);
+              }
+              return;
+            }
+          }
+        }
+      }
+    });
+  }, []);
+
   const createProjectWithTerminal = useCallback(
     (projectName: string, terminalName: string) => {
       const projId = generateId();
