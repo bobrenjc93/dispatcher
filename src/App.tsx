@@ -576,8 +576,8 @@ export default function App() {
         handleClosePane(activeTermId);
       }
     }
-    // Rename active tab: Cmd+R / Ctrl+R
-    if (isMeta && !e.shiftKey && e.key === "r") {
+    // Rename active tab: Cmd+R (Ctrl+R is reserved for terminal reverse search)
+    if (e.metaKey && !e.ctrlKey && !e.shiftKey && e.key === "r") {
       e.preventDefault();
       const activeTermId = useTerminalStore.getState().activeTerminalId;
       if (activeTermId) {
