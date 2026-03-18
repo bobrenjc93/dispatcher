@@ -29,8 +29,15 @@ interface TerminalInstance {
   element: HTMLDivElement;
 }
 
+interface SyntheticInputSuppression {
+  data: string;
+  expiresAt: number;
+}
+
 const instances = new Map<string, TerminalInstance>();
 const createdPtys = new Set<string>();
+const syntheticInputSuppressions = new Map<string, SyntheticInputSuppression>();
+const SYNTHETIC_INPUT_SUPPRESSION_MS = 50;
 
 // ---------------------------------------------------------------------------
 // Write batching — coalesce PTY output per animation frame so xterm.js
@@ -92,6 +99,25 @@ function disposeWriteBatch(terminalId: string) {
     writeRafs.delete(terminalId);
   }
   writeBuffers.delete(terminalId);
+}
+
+function shouldSuppressSyntheticEcho(terminalId: string, data: string): boolean {
+  const suppression = syntheticInputSuppressions.get(terminalId);
+  if (!suppression) {
+    return false;
+  }
+
+  if (suppression.expiresAt < Date.now()) {
+    syntheticInputSuppressions.delete(terminalId);
+    return false;
+  }
+
+  if (suppression.data !== data) {
+    return false;
+  }
+
+  syntheticInputSuppressions.delete(terminalId);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +196,17 @@ export function focusTerminalInstance(terminalId: string) {
   instances.get(terminalId)?.xterm.focus();
 }
 
+export function sendSyntheticTerminalInput(terminalId: string, data: string) {
+  syntheticInputSuppressions.set(terminalId, {
+    data,
+    expiresAt: Date.now() + SYNTHETIC_INPUT_SUPPRESSION_MS,
+  });
+
+  writeTerminal(terminalId, data).catch(() => {
+    syntheticInputSuppressions.delete(terminalId);
+  });
+}
+
 /** Dispose an xterm instance and its PTY tracking when a terminal is truly closed. */
 export function disposeTerminalInstance(terminalId: string) {
   const inst = instances.get(terminalId);
@@ -180,6 +217,7 @@ export function disposeTerminalInstance(terminalId: string) {
   }
   createdPtys.delete(terminalId);
   disposeWriteBatch(terminalId);
+  syntheticInputSuppressions.delete(terminalId);
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +256,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
         lineHeight: fontState.lineHeight,
         letterSpacing: fontState.letterSpacing,
         theme: useColorSchemeStore.getState().getActiveScheme().terminal,
+        macOptionIsMeta: true,
         scrollback: 10000,
         allowProposedApi: true,
       });
@@ -236,6 +275,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       // Handle Cmd+key shortcuts that xterm.js ignores by default
       xterm.attachCustomKeyEventHandler((e) => {
         if (e.type !== "keydown") return true;
+        if (e.defaultPrevented) return false;
 
         // Cmd+K: clear terminal scrollback
         if (e.metaKey && e.key === "k") {
@@ -321,6 +361,9 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
     // Forward user input to PTY.
     const dataDisposable = inst.xterm.onData((data) => {
+      if (shouldSuppressSyntheticEcho(terminalId, data)) {
+        return;
+      }
       // Any submitted command may change cwd; force a fresh lookup on next spawn.
       if (data.includes("\r")) {
         useTerminalStore.getState().updateCwd(terminalId, undefined);

@@ -1,8 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useTerminalBridge } from "../../hooks/useTerminalBridge";
+import { sendSyntheticTerminalInput, useTerminalBridge } from "../../hooks/useTerminalBridge";
 import { useResizeObserver } from "../../hooks/useResizeObserver";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { ContextMenu } from "../common/ContextMenu";
+import {
+  getCtrlLetterControlCharacter,
+  getMacOptionMetaSequence,
+  suppressMacCtrlChordTextInput,
+} from "../../lib/keyboardShortcuts";
 
 interface TerminalPaneProps {
   terminalId: string;
@@ -57,6 +62,24 @@ export function TerminalPane({
     xtermRef.current?.focus();
   }, [searchAddonRef, xtermRef]);
 
+  const scheduleMacTextInputSuppressionCleanup = useCallback((cleanup: () => void) => {
+    // Use the next macrotask, not the next animation frame, so fast tmux
+    // prefix sequences like Option+Q, C do not lose the second key.
+    setTimeout(cleanup, 0);
+  }, []);
+
+  const resetMacOptionCompositionState = useCallback((eventTarget: EventTarget | null) => {
+    const helperTextarea = eventTarget instanceof HTMLTextAreaElement ? eventTarget : null;
+    if (helperTextarea) {
+      helperTextarea.value = "";
+      helperTextarea.blur();
+    }
+
+    requestAnimationFrame(() => {
+      xtermRef.current?.focus();
+    });
+  }, [terminalId, xtermRef]);
+
   const doSearch = useCallback(
     (query: string, direction: "next" | "prev" = "next") => {
       if (!query) {
@@ -98,20 +121,56 @@ export function TerminalPane({
       // Intercept in capture phase and inject the control character
       // through xterm's paste() so it flows through the normal
       // onData → writeTerminal pipeline (the same path as typing).
-      if (isMac && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.length === 1) {
-        const code = e.key.toUpperCase().charCodeAt(0);
-        if (code >= 65 && code <= 90) {
-          const controlChar = String.fromCharCode(code - 64);
+      // Use e.code (physical key) instead of e.key because Cocoa may
+      // transform e.key for certain Ctrl combinations (e.g. Ctrl+O
+      // becomes "insert newline" and e.key is no longer "o").
+      if (isMac) {
+        const controlChar = getCtrlLetterControlCharacter(e);
+        if (controlChar) {
+          if (e.repeat) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            const cleanupSuppression = suppressMacCtrlChordTextInput(e.target, document);
+            scheduleMacTextInputSuppressionCleanup(cleanupSuppression);
+            return;
+          }
           e.preventDefault();
           e.stopPropagation();
-          xtermRef.current?.input(controlChar, false);
+          e.stopImmediatePropagation();
+          // WebKit may still emit a text-input action after keydown
+          // (notably Ctrl+O -> insertNewline:). Block the immediate
+          // follow-up input events so only the control byte lands.
+          const cleanupSuppression = suppressMacCtrlChordTextInput(e.target, document);
+          scheduleMacTextInputSuppressionCleanup(cleanupSuppression);
+          sendSyntheticTerminalInput(terminalId, controlChar);
+          return;
+        }
+
+        const metaSequence = getMacOptionMetaSequence(e);
+        if (metaSequence) {
+          if (e.repeat) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            const cleanupSuppression = suppressMacCtrlChordTextInput(e.target, document);
+            scheduleMacTextInputSuppressionCleanup(cleanupSuppression);
+            return;
+          }
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          const cleanupSuppression = suppressMacCtrlChordTextInput(e.target, document);
+          scheduleMacTextInputSuppressionCleanup(cleanupSuppression);
+          sendSyntheticTerminalInput(terminalId, metaSequence);
+          resetMacOptionCompositionState(e.target);
         }
       }
     };
 
     el.addEventListener("keydown", handleKeyDown, true);
     return () => el.removeEventListener("keydown", handleKeyDown, true);
-  }, [openSearch, closeSearch, searchOpen, resizeRef, xtermRef]);
+  }, [openSearch, closeSearch, resetMacOptionCompositionState, scheduleMacTextInputSuppressionCleanup, searchOpen, resizeRef, xtermRef]);
 
   const setActiveTerminal = useTerminalStore((s) => s.setActiveTerminal);
   const isActive = useTerminalStore((s) => s.activeTerminalId === terminalId);

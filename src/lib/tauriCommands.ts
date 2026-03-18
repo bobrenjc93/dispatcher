@@ -5,6 +5,14 @@ export interface TerminalOutputPayload {
   data: string;
 }
 
+export interface TerminalDebugInfo {
+  terminal_id: string;
+  foreground_pgid: number | null;
+  foreground_command: string | null;
+  vdiscard: number | null;
+  vreprint: number | null;
+}
+
 export async function createTerminal(
   terminalId: string,
   onOutput: Channel<TerminalOutputPayload>,
@@ -50,6 +58,10 @@ export async function refreshPool(): Promise<void> {
 
 export async function getTerminalCwd(terminalId: string): Promise<string | null> {
   return await invoke("get_terminal_cwd", { terminalId });
+}
+
+export async function getTerminalDebugInfo(terminalId: string): Promise<TerminalDebugInfo> {
+  return await invoke("get_terminal_debug_info", { terminalId });
 }
 
 export async function showFontPanel(

@@ -100,7 +100,7 @@ export function Sidebar({
             <line x1="556" y1="512" x2="776" y2="512" stroke="#ededed" strokeWidth="52" strokeLinecap="round"/>
             <line x1="556" y1="624" x2="720" y2="624" stroke="#ededed" strokeWidth="52" strokeLinecap="round"/>
           </svg>
-          <span>Dispatcher</span>
+          <span>DevDispatcher</span>
         </div>
         <div className="sidebar-actions">
           <button onClick={onNewProject} title="New Project (⌘N)">

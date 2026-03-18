@@ -1,5 +1,5 @@
 use crate::errors::PtyError;
-use crate::pty_manager::{PtyManager, TerminalOutput};
+use crate::pty_manager::{PtyManager, TerminalDebugInfo, TerminalOutput};
 #[allow(unused_imports)]
 use tauri::{ipc::Channel, AppHandle, State};
 
@@ -49,6 +49,14 @@ pub fn get_terminal_cwd(
     terminal_id: String,
 ) -> Result<Option<String>, PtyError> {
     state.get_terminal_cwd(&terminal_id)
+}
+
+#[tauri::command]
+pub fn get_terminal_debug_info(
+    state: State<'_, PtyManager>,
+    terminal_id: String,
+) -> Result<TerminalDebugInfo, PtyError> {
+    state.get_terminal_debug_info(&terminal_id)
 }
 
 #[tauri::command]

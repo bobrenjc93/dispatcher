@@ -3,6 +3,10 @@ name = "dispatcher"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "DevDispatcher"
+path = "src/main.rs"
+
 [lib]
 name = "dispatcher_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

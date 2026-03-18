@@ -1,9 +1,11 @@
 use crate::errors::PtyError;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tauri::{ipc::Channel, AppHandle, Emitter};
 
@@ -17,7 +19,7 @@ fn apply_shell_env(cmd: &mut CommandBuilder) {
     // Start each PTY as a clean terminal session instead of inheriting
     // emulator-specific parent metadata from Terminal.app/iTerm/tmux.
     cmd.env("TERM", "xterm-256color");
-    cmd.env("TERM_PROGRAM", "Dispatcher");
+    cmd.env("TERM_PROGRAM", "DevDispatcher");
     cmd.env_remove("TERM_PROGRAM_VERSION");
     cmd.env_remove("TERM_SESSION_ID");
     cmd.env_remove("COLORTERM");
@@ -124,13 +126,14 @@ fn write_zsh_shim_file(path: &PathBuf, content: &str) -> Result<(), PtyError> {
     fs::write(path, content).map_err(PtyError::from)
 }
 
-fn clear_reprint_control_char(master: &dyn MasterPty) {
+fn clear_problematic_control_chars(master: &dyn MasterPty) {
     #[cfg(unix)]
     if let Some(fd) = master.as_raw_fd() {
         let mut termios = unsafe { std::mem::MaybeUninit::<libc::termios>::zeroed().assume_init() };
         if unsafe { libc::tcgetattr(fd, &mut termios) } == 0 {
             let disabled = libc::_POSIX_VDISABLE;
             termios.c_cc[libc::VREPRINT] = disabled;
+            termios.c_cc[libc::VDISCARD] = disabled;
             unsafe {
                 let _ = libc::tcsetattr(fd, libc::TCSANOW, &termios);
             }
@@ -282,7 +285,7 @@ impl PtyManager {
                 pixel_height: 0,
             })
             .map_err(PtyError::from)?;
-        clear_reprint_control_char(&*pair.master);
+        clear_problematic_control_chars(&*pair.master);
 
         let mut cmd = CommandBuilder::new_default_prog();
         apply_shell_env(&mut cmd);
@@ -493,7 +496,7 @@ impl PtyManager {
                 pixel_height: 0,
             })
             .map_err(|e| PtyError::from(e))?;
-        clear_reprint_control_char(&*pair.master);
+        clear_problematic_control_chars(&*pair.master);
 
         let mut cmd = CommandBuilder::new_default_prog();
         apply_shell_env(&mut cmd);
@@ -599,6 +602,64 @@ impl PtyManager {
         Ok(())
     }
 
+    pub fn get_terminal_debug_info(&self, terminal_id: &str) -> Result<TerminalDebugInfo, PtyError> {
+        let sessions = self.sessions.lock().unwrap();
+        let session = sessions
+            .get(terminal_id)
+            .ok_or_else(|| PtyError::from(format!("Terminal {} not found", terminal_id)))?;
+
+        #[cfg(unix)]
+        {
+            let mut foreground_pgid = None;
+            let mut foreground_command = None;
+            let mut vdiscard = None;
+            let mut vreprint = None;
+
+            if let Some(fd) = session.master.as_raw_fd() {
+                let pgid = unsafe { libc::tcgetpgrp(fd) };
+                if pgid > 0 {
+                    foreground_pgid = Some(pgid);
+                    foreground_command = Command::new("ps")
+                        .args(["-o", "comm=", "-p", &pgid.to_string()])
+                        .output()
+                        .ok()
+                        .and_then(|output| {
+                            if !output.status.success() {
+                                return None;
+                            }
+                            let cmd = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                            if cmd.is_empty() { None } else { Some(cmd) }
+                        });
+                }
+
+                let mut termios = unsafe { std::mem::MaybeUninit::<libc::termios>::zeroed().assume_init() };
+                if unsafe { libc::tcgetattr(fd, &mut termios) } == 0 {
+                    vdiscard = Some(termios.c_cc[libc::VDISCARD]);
+                    vreprint = Some(termios.c_cc[libc::VREPRINT]);
+                }
+            }
+
+            return Ok(TerminalDebugInfo {
+                terminal_id: terminal_id.to_owned(),
+                foreground_pgid,
+                foreground_command,
+                vdiscard,
+                vreprint,
+            });
+        }
+
+        #[cfg(not(unix))]
+        {
+            Ok(TerminalDebugInfo {
+                terminal_id: terminal_id.to_owned(),
+                foreground_pgid: None,
+                foreground_command: None,
+                vdiscard: None,
+                vreprint: None,
+            })
+        }
+    }
+
     pub fn resize_terminal(
         &self,
         terminal_id: &str,
@@ -673,6 +734,15 @@ impl PtyManager {
 pub struct TerminalOutput {
     pub terminal_id: String,
     pub data: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct TerminalDebugInfo {
+    pub terminal_id: String,
+    pub foreground_pgid: Option<i32>,
+    pub foreground_command: Option<String>,
+    pub vdiscard: Option<u8>,
+    pub vreprint: Option<u8>,
 }
 
 #[derive(Clone, serde::Serialize)]

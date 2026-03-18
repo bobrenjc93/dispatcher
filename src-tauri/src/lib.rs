@@ -9,6 +9,7 @@ use pty_manager::PtyManager;
 
 pub fn run() {
     tauri::Builder::default()
+        .setup(|_app| Ok(()))
         .manage(PtyManager::new())
         .invoke_handler(tauri::generate_handler![
             commands::create_terminal,
@@ -18,6 +19,7 @@ pub fn run() {
             commands::warm_pool,
             commands::refresh_pool,
             commands::get_terminal_cwd,
+            commands::get_terminal_debug_info,
             commands::show_font_panel,
             commands::hide_font_panel,
         ])
