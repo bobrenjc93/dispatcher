@@ -9,8 +9,24 @@ interface FontSettingsProps {
   onClose: () => void;
 }
 
+const NERD_FONT_FALLBACKS = [
+  "Symbols Nerd Font Mono",
+  "Symbols Nerd Font",
+];
+
 function buildFontFamilyCSS(family: string): string {
-  return `"${family}", "Menlo", "Monaco", "Courier New", monospace`;
+  const fonts = [
+    family,
+    ...NERD_FONT_FALLBACKS,
+    "Menlo",
+    "Monaco",
+    "Courier New",
+    "monospace",
+  ];
+
+  return fonts
+    .map((font) => (font === "monospace" ? font : `"${font}"`))
+    .join(", ");
 }
 
 function weightLabel(w: FontWeight): string {
@@ -181,6 +197,10 @@ export function FontSettings({ onClose }: FontSettingsProps) {
             <span>x = </span>
             <span style={{ color: terminalColors.cyan }}>{"[1, 2, 3]"}</span>
             <span style={{ color: terminalColors.brightBlack }}>{" // array"}</span>
+          </div>
+          <div>
+            <span style={{ color: terminalColors.green }}>{" "}</span>
+            <span>{" main 󰘬 nf-glyph-check"}</span>
           </div>
         </div>
 
