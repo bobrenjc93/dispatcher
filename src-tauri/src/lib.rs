@@ -9,6 +9,7 @@ use pty_manager::PtyManager;
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .setup(|_app| Ok(()))
         .manage(PtyManager::new())
         .invoke_handler(tauri::generate_handler![

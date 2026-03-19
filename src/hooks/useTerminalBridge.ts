@@ -2,8 +2,10 @@ import { useEffect, useRef, useCallback } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Channel } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-shell";
 import {
   createTerminal as createPty,
   writeTerminal,
@@ -67,6 +69,11 @@ function readWebglEnabledPreference(): boolean {
 }
 
 let webglEnabled = readWebglEnabledPreference();
+
+function isLinkOpenModifierPressed(event: MouseEvent): boolean {
+  const isMac = navigator.platform.startsWith("Mac");
+  return isMac ? event.metaKey : event.ctrlKey;
+}
 
 function persistWebglEnabled(enabled: boolean) {
   webglEnabled = enabled;
@@ -306,6 +313,32 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
       const searchAddon = new SearchAddon();
       xterm.loadAddon(searchAddon);
+
+      const webLinksAddon = new WebLinksAddon((event, uri) => {
+        if (!isLinkOpenModifierPressed(event)) {
+          return;
+        }
+
+        event.preventDefault();
+        void open(uri).catch(() => {});
+      }, {
+        hover: (event, uri) => {
+          const target = event.target as HTMLElement | null;
+          if (!target) {
+            return;
+          }
+
+          const isMac = navigator.platform.startsWith("Mac");
+          target.title = isMac ? `Cmd-click to open ${uri}` : `Ctrl-click to open ${uri}`;
+        },
+        leave: (event) => {
+          const target = event.target as HTMLElement | null;
+          if (target) {
+            target.removeAttribute("title");
+          }
+        },
+      });
+      xterm.loadAddon(webLinksAddon);
 
       xterm.open(element);
 
