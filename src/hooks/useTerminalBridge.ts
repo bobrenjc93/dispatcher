@@ -5,6 +5,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Channel } from "@tauri-apps/api/core";
+import { readText as readClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-shell";
 import {
   createTerminal as createPty,
@@ -73,6 +74,20 @@ let webglEnabled = readWebglEnabledPreference();
 function isLinkOpenModifierPressed(event: MouseEvent): boolean {
   const isMac = navigator.platform.startsWith("Mac");
   return isMac ? event.metaKey : event.ctrlKey;
+}
+
+async function pasteClipboardIntoTerminal(terminalId: string, xterm: Terminal) {
+  pushKeyDebug(`terminal.middle-paste-request:${terminalId}`, {});
+
+  const text = await readClipboardText();
+  if (!text) {
+    pushKeyDebug(`terminal.middle-paste-empty:${terminalId}`, {});
+    return;
+  }
+
+  pushKeyDebug(`terminal.middle-paste-data:${terminalId}`, describeTerminalData(text));
+  xterm.focus();
+  xterm.paste(text);
 }
 
 function persistWebglEnabled(enabled: boolean) {
@@ -391,6 +406,32 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     inst.xterm.options.lineHeight = currentFont.lineHeight;
     inst.xterm.options.letterSpacing = currentFont.letterSpacing;
 
+    const handleMiddleMouseDown = (event: MouseEvent) => {
+      if (event.button !== 1) {
+        return;
+      }
+
+      pushKeyDebug(`terminal.middle-mousedown:${terminalId}`, {
+        button: event.button,
+        buttons: event.buttons,
+        target: event.target instanceof Element
+          ? { tag: event.target.tagName, classes: event.target.className }
+          : String(event.target),
+      });
+
+      // Prevent browser middle-click behaviors like autoscroll so the click
+      // can behave like a terminal paste gesture.
+      event.preventDefault();
+      event.stopPropagation();
+      void pasteClipboardIntoTerminal(terminalId, inst.xterm).catch((error) => {
+        pushKeyDebug(`terminal.middle-paste-error:${terminalId}`, {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    };
+
+    inst.element.addEventListener("mousedown", handleMiddleMouseDown, true);
+
     // Sync terminal theme on remount
     inst.xterm.options.theme = useColorSchemeStore.getState().getActiveScheme().terminal;
 
@@ -493,6 +534,8 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       xtermRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
+
+      inst.element.removeEventListener("mousedown", handleMiddleMouseDown, true);
 
       // Detach the element from the DOM but do NOT dispose the xterm.
       // It will be re-attached if the component remounts (layout change).

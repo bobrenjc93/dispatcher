@@ -8,6 +8,7 @@
     "core:event:allow-listen",
     "core:event:allow-emit",
     "core:window:allow-set-theme",
+    "clipboard-manager:allow-read-text",
     "shell:allow-open"
   ]
 }
