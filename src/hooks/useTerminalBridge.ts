@@ -45,6 +45,7 @@ const syntheticInputSuppressions = new Map<string, SyntheticInputSuppression>();
 const focusSequenceSuppressions = new Map<string, FocusSequenceSuppression>();
 const SYNTHETIC_INPUT_SUPPRESSION_MS = 50;
 const FOCUS_SEQUENCE_SUPPRESSION_MS = 150;
+const DEFAULT_SCROLLBACK = 1_000_000;
 
 // ---------------------------------------------------------------------------
 // Write batching — coalesce PTY output per animation frame so xterm.js
@@ -290,7 +291,13 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
         letterSpacing: fontState.letterSpacing,
         theme: useColorSchemeStore.getState().getActiveScheme().terminal,
         macOptionIsMeta: true,
-        scrollback: 10000,
+        // Preserve the longstanding macOS terminal convention where holding
+        // Option while dragging forces local text selection, even if the app
+        // inside the PTY has enabled mouse reporting (for example tmux mouse mode).
+        macOptionClickForcesSelection: true,
+        // xterm requires a finite scrollback limit. Keep the default high enough
+        // to behave like "never truncate" for normal terminal usage.
+        scrollback: DEFAULT_SCROLLBACK,
         allowProposedApi: true,
       });
 
