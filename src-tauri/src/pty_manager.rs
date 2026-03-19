@@ -19,7 +19,7 @@ fn apply_shell_env(cmd: &mut CommandBuilder) {
     // Start each PTY as a clean terminal session instead of inheriting
     // emulator-specific parent metadata from Terminal.app/iTerm/tmux.
     cmd.env("TERM", "xterm-256color");
-    cmd.env("TERM_PROGRAM", "DevDispatcher");
+    cmd.env("TERM_PROGRAM", "Dispatcher");
     cmd.env_remove("TERM_PROGRAM_VERSION");
     cmd.env_remove("TERM_SESSION_ID");
     cmd.env_remove("COLORTERM");
