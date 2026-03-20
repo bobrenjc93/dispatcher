@@ -283,7 +283,14 @@ export default function App() {
   );
 
   const handleMoveTerminal = useCallback(
-    (terminalId: string, fromProjectId: string, toProjectId: string) => {
+    (
+      terminalId: string,
+      fromProjectId: string,
+      toProjectId: string,
+      targetParentNodeId?: string,
+      targetNodeId?: string,
+      position?: "before" | "after"
+    ) => {
       const fromProject = projects[fromProjectId];
       const toProject = projects[toProjectId];
       if (!fromProject || !toProject) return;
@@ -305,7 +312,14 @@ export default function App() {
       // Each tab terminal owns its own layout (keyed by terminalId),
       // so moving between projects only requires moving the tree node.
       const moveNode = useProjectStore.getState().moveNode;
-      moveNode(treeNodeId, toProject.rootGroupId);
+      const reorderChild = useProjectStore.getState().reorderChild;
+      const destinationParentId = targetParentNodeId ?? toProject.rootGroupId;
+
+      moveNode(treeNodeId, destinationParentId);
+
+      if (targetNodeId && position) {
+        reorderChild(destinationParentId, treeNodeId, targetNodeId, position);
+      }
     },
     [projects, nodes]
   );

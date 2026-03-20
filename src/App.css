@@ -286,6 +286,10 @@ html, body, #root {
   /* children indentation is handled per-node */
 }
 
+.sidebar-group-children {
+  /* children indentation is handled per-node */
+}
+
 /* Drag and Drop */
 .sidebar-project-node.drag-over > .sidebar-project-header {
   background: var(--bg-active);

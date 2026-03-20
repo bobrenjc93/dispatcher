@@ -14,7 +14,14 @@ interface SidebarProps {
   onNewProject: () => void;
   onDeleteProject: (projectId: string) => void;
   onDeleteTerminal: (terminalId: string, projectId: string) => void;
-  onMoveTerminal: (terminalId: string, fromProjectId: string, toProjectId: string) => void;
+  onMoveTerminal: (
+    terminalId: string,
+    fromProjectId: string,
+    toProjectId: string,
+    targetParentNodeId?: string,
+    targetNodeId?: string,
+    position?: "before" | "after"
+  ) => void;
   style?: React.CSSProperties;
 }
 

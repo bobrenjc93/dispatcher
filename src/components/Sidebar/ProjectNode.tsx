@@ -174,7 +174,11 @@ export function ProjectNode({
         />
       )}
       {project.expanded && rootNode && rootNode.children && (
-        <div className="sidebar-project-children">
+        <div
+          className="sidebar-project-children"
+          data-project-id={project.id}
+          data-terminal-list-parent-node-id={project.rootGroupId}
+        >
           {rootNode.children.map((childId) => {
             const child = nodes[childId];
             if (!child) return null;

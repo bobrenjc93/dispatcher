@@ -4,7 +4,14 @@ type DragInfo =
 
 interface DragCallbacks {
   onReorderProject: (draggedId: string, targetId: string, position: "before" | "after") => void;
-  onMoveTerminal: (terminalId: string, sourceProjectId: string, targetProjectId: string) => void;
+  onMoveTerminal: (
+    terminalId: string,
+    sourceProjectId: string,
+    targetProjectId: string,
+    targetParentNodeId?: string,
+    targetNodeId?: string,
+    position?: "before" | "after"
+  ) => void;
   onReorderChild: (parentNodeId: string, childId: string, targetChildId: string, position: "before" | "after") => void;
 }
 
@@ -75,11 +82,18 @@ function handlePointerMove(e: PointerEvent) {
     }
   } else if (info.type === "terminal") {
     const terminalNode = el.closest<HTMLElement>("[data-node-id]");
-    if (terminalNode && terminalNode.dataset.nodeId !== info.nodeId && terminalNode.dataset.projectId === info.projectId) {
+    if (terminalNode && terminalNode.dataset.nodeId !== info.nodeId) {
       const cls = e.clientY < getMidY(terminalNode) ? "drop-indicator-above" : "drop-indicator-below";
       terminalNode.classList.add(cls);
       lastIndicatorEl = terminalNode;
     } else if (!terminalNode) {
+      const childContainer = el.closest<HTMLElement>("[data-terminal-list-parent-node-id]");
+      if (childContainer && childContainer.dataset.projectId !== info.projectId) {
+        childContainer.classList.add("drop-indicator-below");
+        lastIndicatorEl = childContainer;
+        return;
+      }
+
       const projectNode = el.closest<HTMLElement>("[data-project-id]");
       if (projectNode && projectNode.dataset.projectId !== info.projectId) {
         projectNode.classList.add("drag-over");
@@ -109,16 +123,38 @@ function handlePointerUp(e: PointerEvent) {
       }
     } else if (info.type === "terminal") {
       const terminalNode = el.closest<HTMLElement>("[data-node-id]");
-      if (terminalNode && terminalNode.dataset.nodeId !== info.nodeId && terminalNode.dataset.projectId === info.projectId) {
+      if (terminalNode && terminalNode.dataset.nodeId !== info.nodeId) {
+        const targetProjectId = terminalNode.dataset.projectId;
         const parentNodeId = terminalNode.dataset.parentNodeId;
-        if (parentNodeId) {
+        if (targetProjectId && parentNodeId) {
           const position = e.clientY < getMidY(terminalNode) ? "before" : "after";
-          callbacks.onReorderChild(parentNodeId, info.nodeId, terminalNode.dataset.nodeId!, position);
+          if (targetProjectId === info.projectId) {
+            callbacks.onReorderChild(parentNodeId, info.nodeId, terminalNode.dataset.nodeId!, position);
+          } else {
+            callbacks.onMoveTerminal(
+              info.terminalId,
+              info.projectId,
+              targetProjectId,
+              parentNodeId,
+              terminalNode.dataset.nodeId!,
+              position
+            );
+          }
         }
       } else if (!terminalNode) {
-        const projectNode = el.closest<HTMLElement>("[data-project-id]");
-        if (projectNode && projectNode.dataset.projectId !== info.projectId) {
-          callbacks.onMoveTerminal(info.terminalId, info.projectId, projectNode.dataset.projectId!);
+        const childContainer = el.closest<HTMLElement>("[data-terminal-list-parent-node-id]");
+        if (childContainer && childContainer.dataset.projectId !== info.projectId) {
+          callbacks.onMoveTerminal(
+            info.terminalId,
+            info.projectId,
+            childContainer.dataset.projectId!,
+            childContainer.dataset.terminalListParentNodeId
+          );
+        } else {
+          const projectNode = el.closest<HTMLElement>("[data-project-id]");
+          if (projectNode && projectNode.dataset.projectId !== info.projectId) {
+            callbacks.onMoveTerminal(info.terminalId, info.projectId, projectNode.dataset.projectId!);
+          }
         }
       }
     }

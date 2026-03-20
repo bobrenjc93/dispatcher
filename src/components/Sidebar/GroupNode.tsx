@@ -49,7 +49,11 @@ export function GroupNode({
         <span className="group-name">{node.name}</span>
       </div>
       {expanded && node.children && (
-        <div className="sidebar-group-children">
+        <div
+          className="sidebar-group-children"
+          data-project-id={projectId}
+          data-terminal-list-parent-node-id={nodeId}
+        >
           {node.children.map((childId) => {
             const child = nodes[childId];
             if (!child) return null;
