@@ -480,7 +480,6 @@ function renderTerminalBufferScreenshot(instance: TerminalInstance): string | nu
   const theme = xterm.options.theme ?? {};
   const background = theme.background ?? "#000000";
   const foreground = theme.foreground ?? "#f0f0f0";
-  const cursor = theme.cursor ?? foreground;
   const fontSize = typeof xterm.options.fontSize === "number" ? xterm.options.fontSize : 13;
   const lineHeight = typeof xterm.options.lineHeight === "number" ? xterm.options.lineHeight : 1;
   const fontFamily = typeof xterm.options.fontFamily === "string" ? xterm.options.fontFamily : "Menlo, monospace";
@@ -502,18 +501,6 @@ function renderTerminalBufferScreenshot(instance: TerminalInstance): string | nu
     context.fillText(text, 0, row * cellHeight + baselineOffset * lineHeight);
   }
 
-  const cursorRow = buffer.cursorY - buffer.viewportY;
-  if (cursorRow >= 0 && cursorRow < xterm.rows && buffer.cursorX >= 0 && buffer.cursorX < xterm.cols) {
-    context.strokeStyle = cursor;
-    context.lineWidth = 1;
-    context.strokeRect(
-      Math.floor(buffer.cursorX * cellWidth) + 0.5,
-      Math.floor(cursorRow * cellHeight) + 0.5,
-      Math.max(1, Math.floor(cellWidth) - 1),
-      Math.max(1, Math.floor(cellHeight) - 1)
-    );
-  }
-
   return canvas.toDataURL("image/png");
 }
 
@@ -529,8 +516,8 @@ export function captureTerminalScreenshot(terminalId: string): string | null {
   }
 
   return (
-    captureCanvasScreenshot(instance.element, instance.lastWidth, instance.lastHeight) ??
-    renderTerminalBufferScreenshot(instance)
+    renderTerminalBufferScreenshot(instance) ??
+    captureCanvasScreenshot(instance.element, instance.lastWidth, instance.lastHeight)
   );
 }
 
