@@ -145,10 +145,17 @@ export function useTerminalScreenshotMonitor() {
           const shouldKeepBrownUntilInput =
             (session?.isPossiblyDone ?? false) &&
             lastUserInputAt <= acknowledgedTime;
-          const nextNeedsAttention = shouldKeepBrownUntilInput ? false : (isNeedsAttention && !isLongInactive);
-          const nextPossiblyDone = shouldKeepBrownUntilInput
-            ? !isLongInactive
-            : isPossiblyDone;
+          const shouldRevertToGreen = changed && !shouldKeepBrownUntilInput;
+          const nextNeedsAttention = shouldRevertToGreen
+            ? false
+            : shouldKeepBrownUntilInput
+              ? false
+              : (isNeedsAttention && !isLongInactive);
+          const nextPossiblyDone = shouldRevertToGreen
+            ? false
+            : shouldKeepBrownUntilInput
+              ? !isLongInactive
+              : isPossiblyDone;
 
           previousHashes.set(terminalId, hash);
           lastChangedAt.set(terminalId, changedAt);
