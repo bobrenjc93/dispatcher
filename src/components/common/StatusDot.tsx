@@ -9,10 +9,12 @@ export function StatusDot({ terminalId }: { terminalId: string }) {
   const isNeedsAttention = useTerminalStore((state) => state.sessions[terminalId]?.isNeedsAttention ?? false);
   const isPossiblyDone = useTerminalStore((state) => state.sessions[terminalId]?.isPossiblyDone ?? false);
   const isLongInactive = useTerminalStore((state) => state.sessions[terminalId]?.isLongInactive ?? false);
-  const backgroundColor = isLongInactive || !hasDetectedActivity
+  const backgroundColor = !hasDetectedActivity
       ? GRAY
       : isNeedsAttention
         ? GREEN
+      : isLongInactive
+        ? GRAY
       : isPossiblyDone
         ? BROWN
         : GREEN;
