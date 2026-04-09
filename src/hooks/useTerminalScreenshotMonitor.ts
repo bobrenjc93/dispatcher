@@ -145,7 +145,7 @@ export function useTerminalScreenshotMonitor() {
           const shouldKeepBrownUntilInput =
             (session?.isPossiblyDone ?? false) &&
             lastUserInputAt <= acknowledgedTime;
-          const shouldRevertToGreen = changed;
+          const shouldRevertToGreen = changed && !(session?.isNeedsAttention ?? false);
           const nextNeedsAttention = shouldRevertToGreen
             ? false
             : shouldKeepBrownUntilInput
