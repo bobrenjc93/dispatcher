@@ -96,7 +96,10 @@ export function useTerminalScreenshotMonitor() {
         }
 
         for (const terminalId of terminalIds) {
-          const session = store.sessions[terminalId];
+          const session = useTerminalStore.getState().sessions[terminalId];
+          if (!session) {
+            continue;
+          }
           ensureTerminalScreenshotTarget(terminalId, session?.cwd);
           const screenshot = captureTerminalScreenshot(terminalId);
           if (screenshot === null) {
@@ -108,14 +111,19 @@ export function useTerminalScreenshotMonitor() {
             return;
           }
 
+          const latestSession = useTerminalStore.getState().sessions[terminalId];
+          if (!latestSession) {
+            continue;
+          }
+
           const previousHash = previousHashes.get(terminalId) ?? null;
           const isBaselineCapture = previousHash === null;
           const changed = !isBaselineCapture && previousHash !== hash;
           const changedAt = changed ? now : (lastChangedAt.get(terminalId) ?? now);
-          const lastUserInputAt = session?.lastUserInputAt ?? 0;
+          const lastUserInputAt = latestSession.lastUserInputAt ?? 0;
           const effectiveChangedAt = Math.max(changedAt, lastUserInputAt);
           const hasDetectedActivity =
-            (session?.hasDetectedActivity ?? false) || lastUserInputAt > 0;
+            latestSession.hasDetectedActivity || lastUserInputAt > 0;
           const acknowledgedTime = acknowledgedAt.get(terminalId) ?? 0;
           const hasAcknowledgedCurrentOutput =
             hasDetectedActivity && acknowledgedTime >= effectiveChangedAt;
@@ -142,20 +150,25 @@ export function useTerminalScreenshotMonitor() {
             hasAcknowledgedCurrentOutput &&
             !isLongInactive &&
             now - idleStartedAt >= SCREENSHOT_INACTIVITY_MS;
+          const shouldKeepAttentionUntilFocus = latestSession.isNeedsAttention;
           const shouldKeepBrownUntilInput =
-            (session?.isPossiblyDone ?? false) &&
+            latestSession.isPossiblyDone &&
             lastUserInputAt <= acknowledgedTime;
-          const shouldRevertToGreen = changed && !(session?.isNeedsAttention ?? false);
-          const nextNeedsAttention = shouldRevertToGreen
-            ? false
-            : shouldKeepBrownUntilInput
+          const shouldRevertToGreen = changed && !shouldKeepAttentionUntilFocus;
+          const nextNeedsAttention = shouldKeepAttentionUntilFocus
+            ? true
+            : shouldRevertToGreen
               ? false
-              : (isNeedsAttention && !isLongInactive);
-          const nextPossiblyDone = shouldRevertToGreen
+              : shouldKeepBrownUntilInput
+                ? false
+                : (isNeedsAttention && !isLongInactive);
+          const nextPossiblyDone = shouldKeepAttentionUntilFocus
             ? false
-            : shouldKeepBrownUntilInput
-              ? !isLongInactive
-              : isPossiblyDone;
+            : shouldRevertToGreen
+              ? false
+              : shouldKeepBrownUntilInput
+                ? !isLongInactive
+                : isPossiblyDone;
           const nextLongInactive = nextNeedsAttention ? false : isLongInactive;
 
           previousHashes.set(terminalId, hash);
