@@ -57,9 +57,26 @@ describe("terminalScreenshotStatus", () => {
       acknowledgedTime: 1_000,
       effectiveChangedAt: 15_000,
     })).toMatchObject({
+      changedForStatus: true,
       shouldKeepBrownUntilInput: false,
       nextNeedsAttention: false,
       nextPossiblyDone: false,
+      nextLongInactive: false,
+    });
+  });
+
+  it("keeps brown when a visual change is ignored as focus-only churn", () => {
+    expect(status({
+      changed: true,
+      ignoreVisualChange: true,
+      wasPossiblyDone: true,
+      acknowledgedTime: 1_000,
+      effectiveChangedAt: 15_000,
+    })).toMatchObject({
+      changedForStatus: false,
+      shouldKeepBrownUntilInput: true,
+      nextNeedsAttention: false,
+      nextPossiblyDone: true,
       nextLongInactive: false,
     });
   });

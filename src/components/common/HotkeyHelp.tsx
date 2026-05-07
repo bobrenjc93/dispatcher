@@ -23,6 +23,7 @@ const shortcuts = [
   { keys: "⌘\u2212", description: "Decrease font size" },
   { keys: "⌘0", description: "Reset font size" },
   { keys: "⇧⌘T", description: "Color scheme" },
+  { keys: "⇧⌘?", description: "Status debug" },
 ];
 
 export function HotkeyHelp({ onClose }: HotkeyHelpProps) {

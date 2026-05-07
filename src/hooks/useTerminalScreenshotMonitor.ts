@@ -19,6 +19,7 @@ import {
 } from "../lib/terminalScreenshotHash";
 import { resolveTerminalScreenshotStatus } from "../lib/terminalScreenshotStatus";
 import { debugLog, previewDebugText } from "../lib/debugLog";
+import { pushStatusDebug } from "../lib/statusDebug";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
@@ -27,6 +28,7 @@ import type { TerminalSession } from "../types/terminal";
 const SCREENSHOT_INTERVAL_MS = 5_000;
 const SCREENSHOT_INACTIVITY_MS = 10_000;
 const SCREENSHOT_LONG_INACTIVITY_MS = 60 * 60 * 1000;
+const FOCUS_VISUAL_SUPPRESSION_MS = SCREENSHOT_INTERVAL_MS + 2_500;
 const SCREENSHOT_ARTIFACT_INTERVAL_MS = 30_000;
 const MAX_SCREENSHOT_ARTIFACT_COMPONENTS = 4;
 const MAX_SCREENSHOT_ARTIFACT_LINES = 120;
@@ -37,6 +39,16 @@ type ScreenshotSample = {
   screenshot?: string;
   snapshot: TerminalVisualTextSnapshot;
 };
+
+type FocusVisualSuppression = {
+  startedAt: number;
+  until: number;
+  reason: string;
+};
+
+function isTmuxStatusSession(session: TerminalSession): boolean {
+  return session.backendKind === "tmux-window" || session.backendKind === "tmux-pane";
+}
 
 async function hashScreenshot(screenshot: string): Promise<string> {
   const bytes = new TextEncoder().encode(screenshot);
@@ -152,6 +164,9 @@ async function writeScreenshotDebugArtifacts(args: {
   previousHash: string | null;
   visualChange: TerminalVisualChangeSummary;
   changed: boolean;
+  changedForStatus: boolean;
+  ignoreVisualChange: boolean;
+  visualChangeIgnoredReason?: string;
   hasDetectedActivity: boolean;
   isActiveTab: boolean;
   lastUserInputAt: number;
@@ -186,6 +201,9 @@ async function writeScreenshotDebugArtifacts(args: {
     previousHash: args.previousHash,
     componentHashes: args.componentHashes,
     changed: args.changed,
+    changedForStatus: args.changedForStatus,
+    ignoreVisualChange: args.ignoreVisualChange,
+    visualChangeIgnoredReason: args.visualChangeIgnoredReason ?? null,
     exactChanged: args.visualChange.exactChanged,
     repeatingHashOscillation: args.visualChange.repeatingHashOscillation,
     hasThreeSamples: args.visualChange.hasThreeSamples,
@@ -253,6 +271,9 @@ async function writeScreenshotDebugArtifacts(args: {
           statusDotSemantic,
           nextStatusSnapshot: args.nextStatusSnapshot,
           changed: args.changed,
+          changedForStatus: args.changedForStatus,
+          ignoreVisualChange: args.ignoreVisualChange,
+          visualChangeIgnoredReason: args.visualChangeIgnoredReason ?? null,
           exactChanged: args.visualChange.exactChanged,
           repeatingHashOscillation: args.visualChange.repeatingHashOscillation,
           changedRows: args.visualChange.changedRows,
@@ -278,6 +299,7 @@ export function useTerminalScreenshotMonitor() {
     const previousStatusSnapshots = new Map<string, string>();
     const lastChangedAt = new Map<string, number>();
     const acknowledgedAt = new Map<string, number>();
+    const focusVisualSuppressions = new Map<string, FocusVisualSuppression>();
     const lastArtifactAt = new Map<string, number>();
     const scheduledSamples = new Set<number>();
     let isSampling = false;
@@ -291,6 +313,7 @@ export function useTerminalScreenshotMonitor() {
       previousStatusSnapshots.delete(tabRootTerminalId);
       lastChangedAt.delete(tabRootTerminalId);
       acknowledgedAt.delete(tabRootTerminalId);
+      focusVisualSuppressions.delete(tabRootTerminalId);
       lastArtifactAt.delete(tabRootTerminalId);
     };
 
@@ -307,8 +330,43 @@ export function useTerminalScreenshotMonitor() {
       const store = useTerminalStore.getState();
       const layouts = useLayoutStore.getState().layouts;
       const statusTerminalIds = getTabStatusTerminalIds(layouts, tabRootTerminalId, sessionIds);
+      const statusSessions = statusTerminalIds
+        .map((terminalId) => store.sessions[terminalId])
+        .filter((session): session is TerminalSession => session !== undefined);
       const previousAcknowledgedAt = acknowledgedAt.get(tabRootTerminalId) ?? 0;
       acknowledgedAt.set(tabRootTerminalId, now);
+      const focusSuppression =
+        reason === "active-terminal-changed" && statusSessions.some(isTmuxStatusSession)
+          ? {
+              startedAt: now,
+              until: now + FOCUS_VISUAL_SUPPRESSION_MS,
+              reason,
+            }
+          : null;
+      const suppressedTabRootTerminalIds: string[] = [];
+      if (focusSuppression) {
+        const tmuxControlSessionIds = new Set(
+          statusSessions
+            .map((session) => session.tmuxControlSessionId)
+            .filter((id): id is string => Boolean(id))
+        );
+        const relatedTabRootTerminalIds = tmuxControlSessionIds.size > 0
+          ? getTabRootTerminalIds(layouts, sessionIds).filter((rootTerminalId) => {
+              const rootStatusTerminalIds = getTabStatusTerminalIds(layouts, rootTerminalId, sessionIds);
+              return rootStatusTerminalIds.some((terminalId) => {
+                const session = store.sessions[terminalId];
+                return Boolean(
+                  session?.tmuxControlSessionId
+                  && tmuxControlSessionIds.has(session.tmuxControlSessionId)
+                );
+              });
+            })
+          : [tabRootTerminalId];
+        for (const rootTerminalId of new Set([tabRootTerminalId, ...relatedTabRootTerminalIds])) {
+          focusVisualSuppressions.set(rootTerminalId, focusSuppression);
+          suppressedTabRootTerminalIds.push(rootTerminalId);
+        }
+      }
       for (const terminalId of statusTerminalIds) {
         const session = store.sessions[terminalId];
         if (session?.isNeedsAttention) {
@@ -322,6 +380,19 @@ export function useTerminalScreenshotMonitor() {
         previousAcknowledgedAt,
         acknowledgedAt: now,
         statusTerminalIds,
+        focusVisualSuppressionUntil: focusSuppression?.until ?? null,
+        suppressedTabRootTerminalIds,
+      });
+      pushStatusDebug({
+        terminalId: tabRootTerminalId,
+        event: "acknowledge",
+        reason,
+        statusTerminalIds,
+        previousAcknowledgedAt,
+        acknowledgedTime: now,
+        focusVisualSuppressionUntil: focusSuppression?.until ?? null,
+        terminalIds: suppressedTabRootTerminalIds,
+        backendKinds: [...new Set(statusSessions.map((session) => session.backendKind))],
       });
     };
 
@@ -427,10 +498,6 @@ export function useTerminalScreenshotMonitor() {
             recentHashes: isBaselineCapture ? [] : recentTabHashes,
           });
           const changed = !isBaselineCapture && visualChange.changed;
-          const changedAt =
-            changed || isBaselineCapture
-              ? now
-              : (lastChangedAt.get(tabRootTerminalId) ?? now);
           const lastUserInputAt = latestSessions.reduce(
             (maxTime, session) => Math.max(maxTime, session.lastUserInputAt ?? 0),
             0
@@ -439,6 +506,27 @@ export function useTerminalScreenshotMonitor() {
             (maxTime, session) => Math.max(maxTime, session.lastOutputAt ?? 0),
             0
           );
+          const focusVisualSuppression = focusVisualSuppressions.get(tabRootTerminalId) ?? null;
+          if (focusVisualSuppression && now > focusVisualSuppression.until) {
+            focusVisualSuppressions.delete(tabRootTerminalId);
+          }
+          const activeFocusVisualSuppression =
+            focusVisualSuppression && now <= focusVisualSuppression.until
+              ? focusVisualSuppression
+              : null;
+          const ignoreVisualChange =
+            changed
+            && activeFocusVisualSuppression !== null
+            && latestSessions.some(isTmuxStatusSession)
+            && lastUserInputAt <= activeFocusVisualSuppression.startedAt;
+          const visualChangeIgnoredReason = ignoreVisualChange
+            ? "tmux-focus-refresh"
+            : undefined;
+          const changedForStatus = changed && !ignoreVisualChange;
+          const changedAt =
+            changedForStatus || isBaselineCapture
+              ? now
+              : (lastChangedAt.get(tabRootTerminalId) ?? now);
           const effectiveChangedAt = Math.max(changedAt, lastUserInputAt, lastOutputAt);
           const hasDetectedActivity =
             latestSessions.some((session) => session.hasDetectedActivity)
@@ -449,6 +537,7 @@ export function useTerminalScreenshotMonitor() {
           const {
             hasAcknowledgedCurrentOutput,
             idleStartedAt,
+            changedForStatus: resolvedChangedForStatus,
             shouldKeepAttentionUntilFocus,
             shouldKeepBrownUntilInput,
             nextNeedsAttention,
@@ -458,6 +547,7 @@ export function useTerminalScreenshotMonitor() {
             hasDetectedActivity,
             isActiveTab,
             changed,
+            ignoreVisualChange,
             now,
             effectiveChangedAt,
             acknowledgedTime,
@@ -475,7 +565,7 @@ export function useTerminalScreenshotMonitor() {
           const nextStatusSnapshot = [
             hasDetectedActivity ? "activity" : "idle",
             isActiveTab ? "active" : "background",
-            changed ? "changed" : "stable",
+            resolvedChangedForStatus ? "changed" : "stable",
             hasAcknowledgedCurrentOutput ? "ack" : "unack",
             nextNeedsAttention ? "attention" : "no-attention",
             nextPossiblyDone ? "done" : "not-done",
@@ -483,36 +573,56 @@ export function useTerminalScreenshotMonitor() {
           ].join("|");
           const previousStatusSnapshot = previousStatusSnapshots.get(tabRootTerminalId) ?? null;
           const statusTransitioned = previousStatusSnapshot !== nextStatusSnapshot;
+          const statusDebugDetails = {
+            tabRootTerminalId,
+            previousStatusSnapshot,
+            nextStatusSnapshot,
+            activeTabRootTerminalId,
+            terminalIds,
+            statusTerminalIds,
+            statusDotSemantic,
+            changed,
+            changedForStatus: resolvedChangedForStatus,
+            ignoreVisualChange,
+            visualChangeIgnoredReason,
+            focusVisualSuppressionUntil: activeFocusVisualSuppression?.until ?? null,
+            hasDetectedActivity,
+            isActiveTab,
+            lastUserInputAt,
+            lastOutputAt,
+            effectiveChangedAt,
+            acknowledgedTime,
+            idleStartedAt,
+            exactChanged: visualChange.exactChanged,
+            repeatingHashOscillation: visualChange.repeatingHashOscillation,
+            hasThreeSamples: visualChange.hasThreeSamples,
+            changedRows: visualChange.changedRows,
+            changedChars: visualChange.changedChars,
+            changedRowRatio: visualChange.changedRowRatio,
+            changedCharRatio: visualChange.changedCharRatio,
+            nextNeedsAttention,
+            nextPossiblyDone,
+            nextLongInactive,
+            shouldKeepAttentionUntilFocus,
+            shouldKeepBrownUntilInput,
+            backendKinds: [...new Set(latestSessions.map((session) => session.backendKind))],
+          };
+          if (ignoreVisualChange) {
+            debugLog("status.monitor", "ignored focus-only visual change", statusDebugDetails);
+            pushStatusDebug({
+              terminalId: tabRootTerminalId,
+              event: "visual-change-ignored",
+              reason: visualChangeIgnoredReason,
+              ...statusDebugDetails,
+            });
+          }
           if (statusTransitioned) {
             previousStatusSnapshots.set(tabRootTerminalId, nextStatusSnapshot);
-            debugLog("status.monitor", "state transition", {
-              tabRootTerminalId,
-              previousStatusSnapshot,
-              nextStatusSnapshot,
-              activeTabRootTerminalId,
-              terminalIds,
-              statusTerminalIds,
-              statusDotSemantic,
-              changed,
-              hasDetectedActivity,
-              isActiveTab,
-              lastUserInputAt,
-              lastOutputAt,
-              effectiveChangedAt,
-              acknowledgedTime,
-              idleStartedAt,
-              exactChanged: visualChange.exactChanged,
-              repeatingHashOscillation: visualChange.repeatingHashOscillation,
-              hasThreeSamples: visualChange.hasThreeSamples,
-              changedRows: visualChange.changedRows,
-              changedChars: visualChange.changedChars,
-              changedRowRatio: visualChange.changedRowRatio,
-              changedCharRatio: visualChange.changedCharRatio,
-              nextNeedsAttention,
-              nextPossiblyDone,
-              nextLongInactive,
-              shouldKeepAttentionUntilFocus,
-              shouldKeepBrownUntilInput,
+            debugLog("status.monitor", "state transition", statusDebugDetails);
+            pushStatusDebug({
+              terminalId: tabRootTerminalId,
+              event: "transition",
+              ...statusDebugDetails,
             });
           }
 
@@ -541,6 +651,9 @@ export function useTerminalScreenshotMonitor() {
               previousHash,
               visualChange,
               changed,
+              changedForStatus: resolvedChangedForStatus,
+              ignoreVisualChange,
+              visualChangeIgnoredReason,
               hasDetectedActivity,
               isActiveTab,
               lastUserInputAt,
@@ -567,6 +680,9 @@ export function useTerminalScreenshotMonitor() {
                 hash,
                 previousHash,
                 changed,
+                changedForStatus: resolvedChangedForStatus,
+                ignoreVisualChange,
+                visualChangeIgnoredReason: visualChangeIgnoredReason ?? null,
                 exactChanged: visualChange.exactChanged,
                 repeatingHashOscillation: visualChange.repeatingHashOscillation,
                 changedRows: visualChange.changedRows,
@@ -596,6 +712,9 @@ export function useTerminalScreenshotMonitor() {
             hash,
             previousHash,
             changed,
+            changedForStatus: resolvedChangedForStatus,
+            ignoreVisualChange,
+            visualChangeIgnoredReason,
             exactChanged: visualChange.exactChanged,
             repeatingHashOscillation: visualChange.repeatingHashOscillation,
             hasThreeSamples: visualChange.hasThreeSamples,

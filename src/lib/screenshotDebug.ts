@@ -10,6 +10,9 @@ export interface ScreenshotDebugEntry {
   componentHashes?: string[];
   componentImageDataUrls?: string[];
   changed: boolean;
+  changedForStatus?: boolean;
+  ignoreVisualChange?: boolean;
+  visualChangeIgnoredReason?: string;
   exactChanged?: boolean;
   repeatingHashOscillation?: boolean;
   hasThreeSamples?: boolean;

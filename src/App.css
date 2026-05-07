@@ -285,6 +285,10 @@ html, body, #root {
   grid-template-columns: 92px 132px 1fr;
 }
 
+.key-debug-entry-status {
+  grid-template-columns: 92px 132px 1fr;
+}
+
 .key-debug-screenshot-gallery {
   grid-column: 2 / 4;
   display: grid;

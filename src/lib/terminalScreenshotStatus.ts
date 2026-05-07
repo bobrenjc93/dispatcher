@@ -2,6 +2,7 @@ export interface TerminalScreenshotStatusInput {
   hasDetectedActivity: boolean;
   isActiveTab: boolean;
   changed: boolean;
+  ignoreVisualChange?: boolean;
   now: number;
   effectiveChangedAt: number;
   acknowledgedTime: number;
@@ -17,6 +18,7 @@ export interface TerminalScreenshotStatusState {
   isNeedsAttention: boolean;
   isPossiblyDone: boolean;
   isLongInactive: boolean;
+  changedForStatus: boolean;
   shouldKeepAttentionUntilFocus: boolean;
   shouldKeepBrownUntilInput: boolean;
   nextNeedsAttention: boolean;
@@ -27,6 +29,7 @@ export interface TerminalScreenshotStatusState {
 export function resolveTerminalScreenshotStatus(
   input: TerminalScreenshotStatusInput
 ): TerminalScreenshotStatusState {
+  const changedForStatus = input.changed && !input.ignoreVisualChange;
   const hasAcknowledgedCurrentOutput =
     input.hasDetectedActivity && input.acknowledgedTime >= input.effectiveChangedAt;
   const idleStartedAt = hasAcknowledgedCurrentOutput
@@ -35,23 +38,23 @@ export function resolveTerminalScreenshotStatus(
   const isNeedsAttention =
     input.hasDetectedActivity &&
     !input.isActiveTab &&
-    !input.changed &&
+    !changedForStatus &&
     !hasAcknowledgedCurrentOutput &&
     input.now - input.effectiveChangedAt >= input.inactivityMs;
   const isLongInactive =
     input.hasDetectedActivity &&
-    !input.changed &&
+    !changedForStatus &&
     input.now - idleStartedAt >= input.longInactivityMs;
   const isPossiblyDone =
     input.hasDetectedActivity &&
-    !input.changed &&
+    !changedForStatus &&
     !isNeedsAttention &&
     hasAcknowledgedCurrentOutput &&
     !isLongInactive &&
     input.now - idleStartedAt >= input.inactivityMs;
-  const shouldKeepAttentionUntilFocus = !input.changed && input.wasNeedsAttention;
-  const shouldKeepBrownUntilInput = !input.changed && input.wasPossiblyDone;
-  const shouldRevertToGreen = input.changed && !shouldKeepAttentionUntilFocus;
+  const shouldKeepAttentionUntilFocus = !changedForStatus && input.wasNeedsAttention;
+  const shouldKeepBrownUntilInput = !changedForStatus && input.wasPossiblyDone;
+  const shouldRevertToGreen = changedForStatus && !shouldKeepAttentionUntilFocus;
   const nextNeedsAttention = shouldKeepAttentionUntilFocus
     ? true
     : shouldRevertToGreen
@@ -74,6 +77,7 @@ export function resolveTerminalScreenshotStatus(
     isNeedsAttention,
     isPossiblyDone,
     isLongInactive,
+    changedForStatus,
     shouldKeepAttentionUntilFocus,
     shouldKeepBrownUntilInput,
     nextNeedsAttention,
