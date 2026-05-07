@@ -42,7 +42,9 @@ vi.mock("@xterm/xterm", () => {
     loadAddon = vi.fn();
     attachCustomKeyEventHandler = vi.fn();
     scrollToBottom = vi.fn();
-    write = vi.fn();
+    write = vi.fn((_data: string, callback?: () => void) => {
+      callback?.();
+    });
     focus = vi.fn();
     clear = vi.fn();
     paste = vi.fn();
@@ -283,6 +285,9 @@ describe("useTerminalBridge synthetic input", () => {
 
     queueTerminalOutput("term-query-test", "\u001b]11;?\u001b\\\u001b[6n");
 
-    expect(createdTerminals[0].write).toHaveBeenCalledWith("\u001b]11;?\u001b\\\u001b[6n");
+    expect(createdTerminals[0].write).toHaveBeenCalledWith(
+      "\u001b]11;?\u001b\\\u001b[6n",
+      expect.any(Function)
+    );
   });
 });

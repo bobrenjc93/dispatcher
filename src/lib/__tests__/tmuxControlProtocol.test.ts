@@ -5,8 +5,10 @@ import {
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
   encodeTmuxSendKeysHex,
+  normalizeTmuxPasteBufferText,
   parseTmuxPaneSnapshot,
   parseTmuxWindowSnapshot,
+  quoteTmuxCommandArgument,
   selectTmuxWindowSnapshot,
   unescapeTmuxOutput,
 } from "../tmuxControlProtocol";
@@ -18,6 +20,16 @@ describe("tmuxControlProtocol", () => {
 
   it("encodes input bytes into hex chunks for send-keys -H", () => {
     expect(encodeTmuxSendKeysHex("A€", 16)).toEqual(["41 e2 82 ac"]);
+  });
+
+  it("quotes tmux command arguments without allowing parser expansion", () => {
+    expect(quoteTmuxCommandArgument('~/$HOME/"x"\\y\nz\r\t\u001b')).toBe(
+      '"\\~/\\$HOME/\\"x\\"\\\\y\\nz\\r\\t\\e"'
+    );
+  });
+
+  it("normalizes pasted text to tmux paste-buffer line endings", () => {
+    expect(normalizeTmuxPasteBufferText("a\r\nb\rc\nd")).toBe("a\nb\nc\nd");
   });
 
   it("parses tmux window snapshots", () => {

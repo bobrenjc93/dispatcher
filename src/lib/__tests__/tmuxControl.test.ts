@@ -35,6 +35,8 @@ import {
   createTmuxWindowForTerminal,
   resizeTmuxPaneByTerminal,
   routeTmuxTransportOutput,
+  sendInputToTmuxTerminal,
+  sendPasteToTmuxTerminal,
   syncTmuxWindowSize,
   syncTmuxWindowSizeFromPaneTerminal,
 } from "../tmuxControl";
@@ -288,6 +290,23 @@ function getNodeIdForTerminalId(terminalId: string): string {
   return entry![0];
 }
 
+function completeTmuxCommand(transportTerminalId: string, commandId: number) {
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
+      `%begin ${commandId} 0`,
+      `%end ${commandId} 0`,
+      "",
+    ].join("\n")
+  );
+}
+
+function getWrittenTmuxCommand(index: number): string {
+  const call = writeTerminalMock.mock.calls[index] as unknown as [string, string] | undefined;
+  expect(call).toBeDefined();
+  return call![1];
+}
+
 describe("tmuxControl", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -300,6 +319,63 @@ describe("tmuxControl", () => {
   afterEach(() => {
     vi.useRealTimers();
     resetTmuxRuntime();
+  });
+
+  it("pastes tmux pane input through a bracket-aware tmux paste buffer", async () => {
+    const transportTerminalId = "transport-paste";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId, { captureInitialContent: false });
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+
+    const pastePromise = sendPasteToTmuxTerminal(paneTerminalId, "one\r\ntwo");
+    await Promise.resolve();
+
+    expect(writeTerminalMock).toHaveBeenCalledTimes(1);
+    const setBufferCommand = getWrittenTmuxCommand(0);
+    const bufferName = /set-buffer -b (\S+) /.exec(setBufferCommand)?.[1];
+    expect(bufferName).toMatch(/^dispatcher-paste-/);
+    expect(setBufferCommand).toContain('"one\\ntwo"');
+
+    completeTmuxCommand(transportTerminalId, 10);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(writeTerminalMock).toHaveBeenCalledTimes(2);
+    expect(getWrittenTmuxCommand(1)).toBe(
+      `paste-buffer -p -d -b ${bufferName} -t %1\n`
+    );
+
+    completeTmuxCommand(transportTerminalId, 11);
+    await expect(pastePromise).resolves.toBe(true);
+  });
+
+  it("routes complete bracketed paste input through the tmux paste path", async () => {
+    const transportTerminalId = "transport-bracketed-paste";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId, { captureInitialContent: false });
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+
+    const pastePromise = sendInputToTmuxTerminal(
+      paneTerminalId,
+      "\u001b[200~alpha\rbravo\u001b[201~"
+    );
+    await Promise.resolve();
+
+    expect(writeTerminalMock).toHaveBeenCalledTimes(1);
+    expect(getWrittenTmuxCommand(0)).toContain("set-buffer -b dispatcher-paste-");
+    expect(getWrittenTmuxCommand(0)).toContain('"alpha\\nbravo"');
+    expect(getWrittenTmuxCommand(0)).not.toContain("send-keys");
+
+    completeTmuxCommand(transportTerminalId, 20);
+    await Promise.resolve();
+    await Promise.resolve();
+    completeTmuxCommand(transportTerminalId, 21);
+
+    await expect(pastePromise).resolves.toBe(true);
   });
 
   it("keeps hydrated tmux windows as disconnected placeholders when control mode exits", async () => {

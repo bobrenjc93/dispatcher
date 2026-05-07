@@ -115,6 +115,10 @@ export function encodeTmuxSendKeysHex(data: string, chunkSize: number = 64): str
   return chunks;
 }
 
+export function normalizeTmuxPasteBufferText(data: string): string {
+  return data.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
 export function parseTmuxWindowSnapshot(line: string): TmuxWindowSnapshot | null {
   const [windowId, title, activeFlag, flags = ""] = line.split("\t");
   if (!windowId || title === undefined || activeFlag === undefined) {
@@ -191,5 +195,40 @@ export function parseTmuxPaneSnapshot(line: string): TmuxPaneSnapshot | null {
 }
 
 export function quoteTmuxCommandArgument(value: string): string {
-  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  let quoted = '"';
+  for (const char of value) {
+    switch (char) {
+      case "\\":
+        quoted += "\\\\";
+        break;
+      case '"':
+        quoted += '\\"';
+        break;
+      case "$":
+        quoted += "\\$";
+        break;
+      case "~":
+        quoted += "\\~";
+        break;
+      case "\n":
+        quoted += "\\n";
+        break;
+      case "\r":
+        quoted += "\\r";
+        break;
+      case "\t":
+        quoted += "\\t";
+        break;
+      case "\u001b":
+        quoted += "\\e";
+        break;
+      default: {
+        const code = char.charCodeAt(0);
+        quoted += code < 32 || code === 127
+          ? `\\${code.toString(8).padStart(3, "0")}`
+          : char;
+      }
+    }
+  }
+  return `${quoted}"`;
 }

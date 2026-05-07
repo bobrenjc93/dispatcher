@@ -25,7 +25,7 @@ import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
 import { debugLog } from "../lib/debugLog";
 import { isLinkOpenModifierPressed } from "../lib/terminalMouse";
-import { routeTmuxTransportOutput, sendInputToTmuxTerminal } from "../lib/tmuxControl";
+import { routeTmuxTransportOutput, sendInputToTmuxTerminal, sendPasteToTmuxTerminal } from "../lib/tmuxControl";
 
 // ---------------------------------------------------------------------------
 // Persistent terminal instances — survive React remounts caused by layout
@@ -66,6 +66,7 @@ interface TerminalBridgeRuntimeState {
   focusSequenceSuppressions: Map<string, FocusSequenceSuppression>;
   writeBuffers: Map<string, string[]>;
   writeRafs: Map<string, number>;
+  writeInFlight: Set<string>;
   writeStatusRecorded: Set<string>;
   webglFailures: Map<Terminal, number>;
   webglProbeTimers: Map<Terminal, ReturnType<typeof setTimeout>>;
@@ -84,6 +85,7 @@ function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
       createdPtys: globalThis.__dispatcherTerminalBridgeRuntimeState.createdPtys.size,
       writeBuffers: globalThis.__dispatcherTerminalBridgeRuntimeState.writeBuffers.size,
     });
+    globalThis.__dispatcherTerminalBridgeRuntimeState.writeInFlight ??= new Set<string>();
     return globalThis.__dispatcherTerminalBridgeRuntimeState;
   }
 
@@ -94,6 +96,7 @@ function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
     focusSequenceSuppressions: new Map<string, FocusSequenceSuppression>(),
     writeBuffers: new Map<string, string[]>(),
     writeRafs: new Map<string, number>(),
+    writeInFlight: new Set<string>(),
     writeStatusRecorded: new Set<string>(),
     webglFailures: new Map<Terminal, number>(),
     webglProbeTimers: new Map<Terminal, ReturnType<typeof setTimeout>>(),
@@ -126,6 +129,7 @@ const PARKING_ROOT_ID = "dispatcher-terminal-parking-root";
 
 const writeBuffers = terminalBridgeRuntime.writeBuffers;
 const writeRafs = terminalBridgeRuntime.writeRafs;
+const writeInFlight = terminalBridgeRuntime.writeInFlight;
 const writeStatusRecorded = terminalBridgeRuntime.writeStatusRecorded;
 const TERMINAL_RESPONSE_QUERY_PATTERN =
   /\x1b(?:\[(?:\??6n|>c|c)|\](?:(?:1[0-2])|4;\d+);\?(?:\x07|\x1b\\))/;
@@ -151,6 +155,29 @@ function shouldFitFrontendToViewport(backendKind: TerminalBackendKind | undefine
   return backendKind !== "tmux-pane" && backendKind !== "tmux-window";
 }
 
+function markPastedTerminalActivity(terminalId: string, text: string) {
+  if (text.includes("\n") || text.includes("\r")) {
+    useTerminalStore.getState().updateCwd(terminalId, undefined);
+  }
+  useTerminalStore.getState().markTerminalActivity(terminalId);
+  reflectImmediateTabActivity(terminalId);
+}
+
+async function pasteTextIntoTerminal(terminalId: string, xterm: Terminal, text: string) {
+  pushKeyDebug(`terminal.paste-data:${terminalId}`, describeTerminalData(text));
+  xterm.focus();
+
+  const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+  if (backendKind === "tmux-pane") {
+    markPastedTerminalActivity(terminalId, text);
+    xterm.scrollToBottom();
+    await sendPasteToTmuxTerminal(terminalId, text);
+    return;
+  }
+
+  xterm.paste(text);
+}
+
 async function pasteClipboardIntoTerminal(terminalId: string, xterm: Terminal) {
   pushKeyDebug(`terminal.middle-paste-request:${terminalId}`, {});
 
@@ -160,9 +187,7 @@ async function pasteClipboardIntoTerminal(terminalId: string, xterm: Terminal) {
     return;
   }
 
-  pushKeyDebug(`terminal.middle-paste-data:${terminalId}`, describeTerminalData(text));
-  xterm.focus();
-  xterm.paste(text);
+  await pasteTextIntoTerminal(terminalId, xterm, text);
 }
 
 async function copyTerminalSelectionToClipboard(terminalId: string, xterm: Terminal) {
@@ -199,15 +224,48 @@ function flushBufferedWrite(terminalId: string) {
     writeRafs.delete(terminalId);
   }
 
-  writeStatusRecorded.delete(terminalId);
+  drainTerminalWriteBuffer(terminalId);
+}
+
+function scheduleBufferedWrite(terminalId: string) {
+  if (writeRafs.has(terminalId) || writeInFlight.has(terminalId)) {
+    return;
+  }
+
+  const rafId = requestAnimationFrame(() => {
+    writeRafs.delete(terminalId);
+    drainTerminalWriteBuffer(terminalId);
+  });
+  writeRafs.set(terminalId, rafId);
+}
+
+function drainTerminalWriteBuffer(terminalId: string) {
+  if (writeInFlight.has(terminalId)) {
+    return;
+  }
+
   const buf = writeBuffers.get(terminalId);
   if (!buf || buf.length === 0) {
+    writeStatusRecorded.delete(terminalId);
     return;
   }
 
   const combined = buf.join("");
   buf.length = 0;
-  instances.get(terminalId)?.xterm.write(combined);
+  const xterm = instances.get(terminalId)?.xterm;
+  if (!xterm) {
+    writeStatusRecorded.delete(terminalId);
+    return;
+  }
+
+  writeInFlight.add(terminalId);
+  xterm.write(combined, () => {
+    writeInFlight.delete(terminalId);
+    writeStatusRecorded.delete(terminalId);
+    if ((writeBuffers.get(terminalId)?.length ?? 0) > 0) {
+      scheduleBufferedWrite(terminalId);
+    }
+  });
 }
 
 function batchedWrite(
@@ -238,19 +296,7 @@ function batchedWrite(
     return;
   }
 
-  if (!writeRafs.has(terminalId)) {
-    const rafId = requestAnimationFrame(() => {
-      writeRafs.delete(terminalId);
-      writeStatusRecorded.delete(terminalId);
-      const buf = writeBuffers.get(terminalId);
-      if (buf && buf.length > 0) {
-        const combined = buf.join("");
-        buf.length = 0;
-        instances.get(terminalId)?.xterm.write(combined);
-      }
-    });
-    writeRafs.set(terminalId, rafId);
-  }
+  scheduleBufferedWrite(terminalId);
 }
 
 export function queueTerminalOutput(
@@ -302,6 +348,7 @@ function disposeWriteBatch(terminalId: string) {
     writeRafs.delete(terminalId);
   }
   writeBuffers.delete(terminalId);
+  writeInFlight.delete(terminalId);
   writeStatusRecorded.delete(terminalId);
 }
 
@@ -1022,6 +1069,42 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       });
     };
 
+    const handlePaste = (event: ClipboardEvent) => {
+      const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+      if (backendKind !== "tmux-pane") {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const text = event.clipboardData?.getData("text/plain");
+      if (text !== undefined) {
+        if (!text) {
+          return;
+        }
+        void pasteTextIntoTerminal(terminalId, inst.xterm, text).catch((error) => {
+          pushKeyDebug(`terminal.paste-error:${terminalId}`, {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return;
+      }
+
+      pushKeyDebug(`terminal.paste-clipboard-fallback:${terminalId}`, {});
+      void readClipboardText().then((clipboardText) => {
+        if (!clipboardText) {
+          pushKeyDebug(`terminal.paste-fallback-empty:${terminalId}`, {});
+          return;
+        }
+        return pasteTextIntoTerminal(terminalId, inst.xterm, clipboardText);
+      }).catch((error) => {
+        pushKeyDebug(`terminal.paste-fallback-error:${terminalId}`, {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    };
+
     let optionSelectionPending = false;
 
     const handleOptionSelectionMouseDown = (event: MouseEvent) => {
@@ -1069,6 +1152,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     };
 
     inst.element.addEventListener("mousedown", handleMiddleMouseDown, true);
+    inst.element.addEventListener("paste", handlePaste, true);
     inst.element.addEventListener("mousedown", handleOptionSelectionMouseDown, true);
     inst.element.addEventListener("mouseup", handleOptionSelectionMouseUp, true);
     inst.element.addEventListener("dblclick", handleOptionDoubleClick, true);
@@ -1182,6 +1266,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       searchAddonRef.current = null;
 
       inst.element.removeEventListener("mousedown", handleMiddleMouseDown, true);
+      inst.element.removeEventListener("paste", handlePaste, true);
       inst.element.removeEventListener("mousedown", handleOptionSelectionMouseDown, true);
       inst.element.removeEventListener("mouseup", handleOptionSelectionMouseUp, true);
       inst.element.removeEventListener("dblclick", handleOptionDoubleClick, true);

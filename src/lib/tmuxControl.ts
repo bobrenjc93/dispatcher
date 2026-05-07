@@ -13,6 +13,7 @@ import {
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
   encodeTmuxSendKeysHex,
+  normalizeTmuxPasteBufferText,
   parseTmuxPaneSnapshot,
   parseTmuxWindowSnapshot,
   quoteTmuxCommandArgument,
@@ -203,6 +204,10 @@ const TMUX_INITIAL_CAPTURE_RETRY_DELAY_MS = 50;
 const TMUX_PENDING_PANE_OUTPUT_MAX_CHUNKS = 512;
 const TMUX_PENDING_PANE_OUTPUT_MAX_CHARS = 2_000_000;
 const TMUX_CLIENT_RESIZE_LAYOUT_SUPPRESSION_MS = 1_000;
+const TMUX_PASTE_BUFFER_CHUNK_SIZE = 8_000;
+const BRACKETED_PASTE_START = "\u001b[200~";
+const BRACKETED_PASTE_END = "\u001b[201~";
+let tmuxPasteBufferSequence = 0;
 const TMUX_CONTROL_LINE_PREFIXES = [
   "%begin",
   "%client-",
@@ -2794,7 +2799,86 @@ export function resolvePreferredTerminalFocus(terminalId: string): string {
   return controlSession.panes.get(windowState.activePaneId)?.terminalId ?? terminalId;
 }
 
+function getBracketedPastePayload(data: string): string | null {
+  if (!data.startsWith(BRACKETED_PASTE_START) || !data.endsWith(BRACKETED_PASTE_END)) {
+    return null;
+  }
+
+  return data.slice(
+    BRACKETED_PASTE_START.length,
+    data.length - BRACKETED_PASTE_END.length
+  );
+}
+
+function chunkTmuxPasteBufferText(data: string): string[] {
+  const chunks: string[] = [];
+  let chunk = "";
+  for (const char of data) {
+    chunk += char;
+    if (chunk.length >= TMUX_PASTE_BUFFER_CHUNK_SIZE) {
+      chunks.push(chunk);
+      chunk = "";
+    }
+  }
+  if (chunk.length > 0) {
+    chunks.push(chunk);
+  }
+  return chunks;
+}
+
+export async function sendPasteToTmuxTerminal(terminalId: string, data: string): Promise<boolean> {
+  const pane = getTmuxPaneStateByTerminal(terminalId);
+  const session = pane ? getControlSessionForTerminal(terminalId) : null;
+  if (!pane || !session) {
+    const terminal = getTerminalSession(terminalId);
+    debugLog("tmux.paste", "missing pane/session", {
+      terminalId,
+      backendKind: terminal?.backendKind ?? null,
+      tmuxControlSessionId: terminal?.tmuxControlSessionId ?? null,
+      tmuxWindowId: terminal?.tmuxWindowId ?? null,
+      tmuxPaneId: terminal?.tmuxPaneId ?? null,
+      hasPane: Boolean(pane),
+      hasSession: Boolean(session),
+      preview: previewDebugText(data, 120),
+    });
+    return false;
+  }
+
+  const normalized = normalizeTmuxPasteBufferText(data);
+  if (normalized.length === 0) {
+    return true;
+  }
+
+  const bufferName = `dispatcher-paste-${Date.now().toString(36)}-${tmuxPasteBufferSequence++}`;
+  const chunks = chunkTmuxPasteBufferText(normalized);
+  debugLog("tmux.paste", "send", {
+    terminalId,
+    sessionId: session.id,
+    paneId: pane.paneId,
+    chars: normalized.length,
+    chunks: chunks.length,
+    bufferName,
+    preview: previewDebugText(normalized, 120),
+  });
+
+  for (const [index, chunk] of chunks.entries()) {
+    const appendFlag = index === 0 ? "" : " -a";
+    await sendCommand(
+      session,
+      `set-buffer${appendFlag} -b ${bufferName} ${quoteTmuxCommandArgument(chunk)}`
+    );
+  }
+  await sendCommand(session, `paste-buffer -p -d -b ${bufferName} -t ${pane.paneId}`);
+
+  return true;
+}
+
 export async function sendInputToTmuxTerminal(terminalId: string, data: string): Promise<boolean> {
+  const bracketedPastePayload = getBracketedPastePayload(data);
+  if (bracketedPastePayload !== null) {
+    return sendPasteToTmuxTerminal(terminalId, bracketedPastePayload);
+  }
+
   const pane = getTmuxPaneStateByTerminal(terminalId);
   const session = pane ? getControlSessionForTerminal(terminalId) : null;
   if (!pane || !session) {
