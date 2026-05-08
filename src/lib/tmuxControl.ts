@@ -2944,10 +2944,16 @@ export function handleTmuxTerminalFocus(terminalId: string) {
     debugLogError("tmux.focus", "select-window failed", error);
   });
   if (pane) {
-    queueInitialPaneContentCapture(session, pane, {
-      priority: true,
-      reason: "focus",
-    });
+    if (pane.initialContentCaptured) {
+      void redrawVisiblePaneContent(session, pane, "focus").catch((error) => {
+        debugLogError("tmux.capture", "focus pane redraw failed", error);
+      });
+    } else {
+      queueInitialPaneContentCapture(session, pane, {
+        priority: true,
+        reason: "focus",
+      });
+    }
     void sendCommand(session, `select-pane -t ${pane.paneId}`).catch((error) => {
       debugLogError("tmux.focus", "select-pane failed", error);
     });

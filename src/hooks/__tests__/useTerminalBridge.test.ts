@@ -139,6 +139,7 @@ vi.mock("../../components/common/FontSettings", () => ({
 import {
   disposeTerminalInstance,
   ensureTerminalScreenshotTarget,
+  hasTerminalFrontend,
   queueTerminalOutput,
   reflectImmediateTabActivity,
   sendSyntheticTerminalInput,
@@ -170,8 +171,11 @@ describe("useTerminalBridge synthetic input", () => {
   });
 
   it("scrolls synthetic terminal input to the bottom before writing to the PTY", () => {
+    expect(hasTerminalFrontend("term-scroll-test")).toBe(false);
+
     ensureTerminalScreenshotTarget("term-scroll-test");
 
+    expect(hasTerminalFrontend("term-scroll-test")).toBe(true);
     expect(createdTerminals).toHaveLength(1);
 
     sendSyntheticTerminalInput("term-scroll-test", "\u0003");
@@ -203,6 +207,24 @@ describe("useTerminalBridge synthetic input", () => {
 
     expect(createdFitAddons).toHaveLength(1);
     expect(createdFitAddons[0].fit).not.toHaveBeenCalled();
+
+    disposeTerminalInstance("tmux-pane-test");
+  });
+
+  it("does not render output into parked tmux panes", () => {
+    useTerminalStore.getState().addSession("tmux-pane-test", "A");
+    useTerminalStore.getState().patchSession("tmux-pane-test", {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+
+    ensureTerminalScreenshotTarget("tmux-pane-test");
+    queueTerminalOutput("tmux-pane-test", "\u001b]11;?\u001b\\\u001b[6n");
+
+    expect(createdTerminals[0].write).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().sessions["tmux-pane-test"].lastOutputAt).toBeGreaterThan(0);
 
     disposeTerminalInstance("tmux-pane-test");
   });

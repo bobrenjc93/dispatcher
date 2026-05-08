@@ -252,8 +252,13 @@ function drainTerminalWriteBuffer(terminalId: string) {
 
   const combined = buf.join("");
   buf.length = 0;
-  const xterm = instances.get(terminalId)?.xterm;
+  const instance = instances.get(terminalId);
+  const xterm = instance?.xterm;
   if (!xterm) {
+    writeStatusRecorded.delete(terminalId);
+    return;
+  }
+  if (shouldSkipParkedTmuxWrite(terminalId, instance)) {
     writeStatusRecorded.delete(terminalId);
     return;
   }
@@ -351,6 +356,20 @@ function disposeWriteBatch(terminalId: string) {
   writeBuffers.delete(terminalId);
   writeInFlight.delete(terminalId);
   writeStatusRecorded.delete(terminalId);
+}
+
+function isParkedTerminalInstance(instance: TerminalInstance): boolean {
+  return instance.element.parentElement?.id === PARKING_ROOT_ID;
+}
+
+function shouldSkipParkedTmuxWrite(terminalId: string, instance: TerminalInstance): boolean {
+  const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind;
+  // Parked tmux panes can be redrawn from tmux on focus; rendering their live
+  // output while hidden is pure renderer load.
+  return (
+    isParkedTerminalInstance(instance)
+    && (backendKind === "tmux-pane" || backendKind === "tmux-window")
+  );
 }
 
 function shouldSuppressSyntheticEcho(terminalId: string, data: string): boolean {
@@ -651,6 +670,10 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
 
 export function ensureTerminalFrontend(terminalId: string) {
   createTerminalInstance(terminalId);
+}
+
+export function hasTerminalFrontend(terminalId: string): boolean {
+  return instances.has(terminalId);
 }
 
 function ensureTerminalBackend(terminalId: string, cwd?: string) {

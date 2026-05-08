@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import {
   captureTerminalVisualSnapshot,
-  ensureTerminalScreenshotTarget,
+  hasTerminalFrontend,
 } from "./useTerminalBridge";
 import { findLayoutKeyForTerminal } from "../lib/layoutUtils";
 import { pushScreenshotDebug } from "../lib/screenshotDebug";
@@ -29,6 +29,7 @@ const SCREENSHOT_INACTIVITY_MS = 10_000;
 const SCREENSHOT_LONG_INACTIVITY_MS = 60 * 60 * 1000;
 const FOCUS_VISUAL_SUPPRESSION_MS = SCREENSHOT_INTERVAL_MS + 2_500;
 const SCREENSHOT_ARTIFACT_INTERVAL_MS = 30_000;
+const MAX_VISUAL_TABS_PER_SAMPLE = 6;
 const MAX_SCREENSHOT_ARTIFACT_COMPONENTS = 4;
 const MAX_SCREENSHOT_ARTIFACT_LINES = 120;
 const MAX_SCREENSHOT_ARTIFACT_LINE_CHARS = 240;
@@ -166,6 +167,45 @@ function getStatusDotSemantic(args: {
     return "brown-possibly-done";
   }
   return "green-active";
+}
+
+export function selectVisualSampleTabRootTerminalIds(args: {
+  tabRootTerminalIds: string[];
+  activeTabRootTerminalId: string | null;
+  maxTabs: number;
+  cursor: number;
+  canSample: (tabRootTerminalId: string) => boolean;
+}): { selected: string[]; nextCursor: number } {
+  if (args.maxTabs <= 0 || args.tabRootTerminalIds.length === 0) {
+    return { selected: [], nextCursor: args.cursor };
+  }
+
+  const visuallyReady = args.tabRootTerminalIds.filter(args.canSample);
+  if (visuallyReady.length === 0) {
+    return { selected: [], nextCursor: 0 };
+  }
+
+  const selected: string[] = [];
+  const activeTabRootTerminalId = args.activeTabRootTerminalId;
+  if (activeTabRootTerminalId !== null && visuallyReady.includes(activeTabRootTerminalId)) {
+    selected.push(activeTabRootTerminalId);
+  }
+
+  const remaining = Math.max(0, args.maxTabs - selected.length);
+  const candidates = visuallyReady.filter((terminalId) => terminalId !== activeTabRootTerminalId);
+  if (remaining === 0 || candidates.length === 0) {
+    return { selected, nextCursor: args.cursor % Math.max(candidates.length, 1) };
+  }
+
+  const start = args.cursor % candidates.length;
+  for (let offset = 0; offset < Math.min(remaining, candidates.length); offset += 1) {
+    selected.push(candidates[(start + offset) % candidates.length]);
+  }
+
+  return {
+    selected,
+    nextCursor: (start + remaining) % candidates.length,
+  };
 }
 
 async function writeScreenshotDebugArtifacts(args: {
@@ -318,6 +358,7 @@ export function useTerminalScreenshotMonitor() {
     const focusVisualSuppressions = new Map<string, FocusVisualSuppression>();
     const lastArtifactAt = new Map<string, number>();
     const scheduledSamples = new Set<number>();
+    let visualSampleCursor = 0;
     let isSampling = false;
     let isDisposed = false;
 
@@ -331,6 +372,146 @@ export function useTerminalScreenshotMonitor() {
       acknowledgedAt.delete(tabRootTerminalId);
       focusVisualSuppressions.delete(tabRootTerminalId);
       lastArtifactAt.delete(tabRootTerminalId);
+    };
+
+    const applyTimestampStatus = (args: {
+      tabRootTerminalId: string;
+      now: number;
+      layouts: ReturnType<typeof useLayoutStore.getState>["layouts"];
+      sessionIds: Set<string>;
+      activeTabRootTerminalId: string | null;
+      reason: string;
+    }) => {
+      const terminalIds = getTabTerminalIds(args.layouts, args.tabRootTerminalId, args.sessionIds);
+      const statusTerminalIds = getTabStatusTerminalIds(args.layouts, args.tabRootTerminalId, args.sessionIds);
+      if (terminalIds.length === 0 || statusTerminalIds.length === 0) {
+        return;
+      }
+
+      const latestStore = useTerminalStore.getState();
+      const latestSessions = statusTerminalIds
+        .map((terminalId) => latestStore.sessions[terminalId])
+        .filter((session): session is TerminalSession => session !== undefined);
+      if (latestSessions.length !== statusTerminalIds.length) {
+        return;
+      }
+
+      const previousActivityAt = lastChangedAt.get(args.tabRootTerminalId) ?? 0;
+      const lastUserInputAt = latestSessions.reduce(
+        (maxTime, session) => Math.max(maxTime, session.lastUserInputAt ?? 0),
+        0
+      );
+      const lastOutputAt = latestSessions.reduce(
+        (maxTime, session) => Math.max(maxTime, session.lastOutputAt ?? 0),
+        0
+      );
+      const latestActivityAt = Math.max(lastUserInputAt, lastOutputAt);
+      const hasTimestampBaseline = previousActivityAt > 0;
+      const changed = hasTimestampBaseline && latestActivityAt > previousActivityAt;
+      const changedAt =
+        changed || !hasTimestampBaseline
+          ? (latestActivityAt > 0 ? latestActivityAt : args.now)
+          : previousActivityAt;
+      const effectiveChangedAt = Math.max(changedAt, lastUserInputAt, lastOutputAt);
+      const hasDetectedActivity =
+        latestSessions.some((session) => session.hasDetectedActivity)
+        || lastUserInputAt > 0
+        || lastOutputAt > 0;
+      const acknowledgedTime = acknowledgedAt.get(args.tabRootTerminalId) ?? 0;
+      const isActiveTab = args.activeTabRootTerminalId === args.tabRootTerminalId;
+      const {
+        hasAcknowledgedCurrentOutput,
+        idleStartedAt,
+        changedForStatus,
+        shouldKeepAttentionUntilFocus,
+        shouldKeepBrownUntilInput,
+        nextNeedsAttention,
+        nextPossiblyDone,
+        nextLongInactive,
+      } = resolveTerminalScreenshotStatus({
+        hasDetectedActivity,
+        isActiveTab,
+        changed,
+        ignoreVisualChange: false,
+        now: args.now,
+        effectiveChangedAt,
+        acknowledgedTime,
+        wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
+        wasPossiblyDone: latestSessions.some((session) => session.isPossiblyDone),
+        inactivityMs: SCREENSHOT_INACTIVITY_MS,
+        longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
+      });
+      const statusDotSemantic = getStatusDotSemantic({
+        hasDetectedActivity,
+        nextNeedsAttention,
+        nextPossiblyDone,
+        nextLongInactive,
+      });
+      const nextStatusSnapshot = [
+        hasDetectedActivity ? "activity" : "idle",
+        isActiveTab ? "active" : "background",
+        changedForStatus ? "changed" : "stable",
+        hasAcknowledgedCurrentOutput ? "ack" : "unack",
+        nextNeedsAttention ? "attention" : "no-attention",
+        nextPossiblyDone ? "done" : "not-done",
+        nextLongInactive ? "long-idle" : "not-long-idle",
+      ].join("|");
+      const previousStatusSnapshot = previousStatusSnapshots.get(args.tabRootTerminalId) ?? null;
+      const statusTransitioned = previousStatusSnapshot !== nextStatusSnapshot;
+      const statusDebugDetails = {
+        tabRootTerminalId: args.tabRootTerminalId,
+        previousStatusSnapshot,
+        nextStatusSnapshot,
+        activeTabRootTerminalId: args.activeTabRootTerminalId,
+        terminalIds,
+        statusTerminalIds,
+        statusDotSemantic,
+        changed,
+        changedForStatus,
+        ignoreVisualChange: false,
+        visualChangeIgnoredReason: undefined,
+        focusVisualSuppressionUntil: focusVisualSuppressions.get(args.tabRootTerminalId)?.until ?? null,
+        hasDetectedActivity,
+        isActiveTab,
+        lastUserInputAt,
+        lastOutputAt,
+        effectiveChangedAt,
+        acknowledgedTime,
+        idleStartedAt,
+        exactChanged: false,
+        repeatingHashOscillation: false,
+        hasThreeSamples: false,
+        changedRows: 0,
+        changedChars: 0,
+        changedRowRatio: 0,
+        changedCharRatio: 0,
+        nextNeedsAttention,
+        nextPossiblyDone,
+        nextLongInactive,
+        shouldKeepAttentionUntilFocus,
+        shouldKeepBrownUntilInput,
+        visualSampled: false,
+        reason: args.reason,
+        backendKinds: [...new Set(latestSessions.map((session) => session.backendKind))],
+      };
+
+      if (statusTransitioned) {
+        previousStatusSnapshots.set(args.tabRootTerminalId, nextStatusSnapshot);
+        debugLog("status.monitor", "timestamp transition", statusDebugDetails);
+        pushStatusDebug({
+          terminalId: args.tabRootTerminalId,
+          event: "transition",
+          ...statusDebugDetails,
+        });
+      }
+
+      lastChangedAt.set(args.tabRootTerminalId, changedAt);
+      for (const terminalId of statusTerminalIds) {
+        latestStore.setDetectedActivity(terminalId, hasDetectedActivity);
+        latestStore.setNeedsAttention(terminalId, nextNeedsAttention);
+        latestStore.setPossiblyDone(terminalId, nextPossiblyDone);
+        latestStore.setLongInactive(terminalId, nextLongInactive);
+      }
     };
 
     const acknowledgeTab = (
@@ -472,7 +653,11 @@ export function useTerminalScreenshotMonitor() {
               break;
             }
 
-            ensureTerminalScreenshotTarget(terminalId, session.cwd);
+            if (!hasTerminalFrontend(terminalId)) {
+              isReady = false;
+              break;
+            }
+
             const visualSnapshot = captureTerminalVisualSnapshot(terminalId);
             if (visualSnapshot === null) {
               isReady = false;
@@ -491,6 +676,14 @@ export function useTerminalScreenshotMonitor() {
           }
 
           if (!isReady || screenshots.length !== terminalIds.length) {
+            applyTimestampStatus({
+              tabRootTerminalId,
+              now,
+              layouts,
+              sessionIds,
+              activeTabRootTerminalId,
+              reason: "visual-not-ready",
+            });
             continue;
           }
 
@@ -638,6 +831,7 @@ export function useTerminalScreenshotMonitor() {
             nextLongInactive,
             shouldKeepAttentionUntilFocus,
             shouldKeepBrownUntilInput,
+            visualSampled: true,
             backendKinds: [...new Set(latestSessions.map((session) => session.backendKind))],
           };
           if (ignoreVisualChange) {
@@ -766,7 +960,32 @@ export function useTerminalScreenshotMonitor() {
       const store = useTerminalStore.getState();
       const layouts = useLayoutStore.getState().layouts;
       const sessionIds = new Set(Object.keys(store.sessions));
-      await sampleTabs(getTabRootTerminalIds(layouts, sessionIds));
+      const activeTabRootTerminalId = getActiveTabRootTerminalId();
+      const tabRootTerminalIds = getTabRootTerminalIds(layouts, sessionIds);
+
+      for (const tabRootTerminalId of tabRootTerminalIds) {
+        applyTimestampStatus({
+          tabRootTerminalId,
+          now: Date.now(),
+          layouts,
+          sessionIds,
+          activeTabRootTerminalId,
+          reason: "interval",
+        });
+      }
+
+      const selection = selectVisualSampleTabRootTerminalIds({
+        tabRootTerminalIds,
+        activeTabRootTerminalId,
+        maxTabs: MAX_VISUAL_TABS_PER_SAMPLE,
+        cursor: visualSampleCursor,
+        canSample: (tabRootTerminalId) => {
+          const terminalIds = getTabTerminalIds(layouts, tabRootTerminalId, sessionIds);
+          return terminalIds.length > 0 && terminalIds.every((terminalId) => hasTerminalFrontend(terminalId));
+        },
+      });
+      visualSampleCursor = selection.nextCursor;
+      await sampleTabs(selection.selected);
     };
 
     const scheduleSample = (delayMs: number) => {
