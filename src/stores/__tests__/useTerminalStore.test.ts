@@ -121,13 +121,13 @@ describe("useTerminalStore", () => {
   });
 
   describe("setActiveTerminal", () => {
-    it("acknowledges pulsing attention state as seen idle", () => {
+    it("acknowledges pulsing attention without marking the terminal done", () => {
       useTerminalStore.getState().addSession("t1", "First");
       useTerminalStore.getState().setNeedsAttention("t1", true);
       useTerminalStore.getState().setActiveTerminal("t1");
       const session = useTerminalStore.getState().sessions["t1"];
       expect(session.isNeedsAttention).toBe(false);
-      expect(session.isPossiblyDone).toBe(true);
+      expect(session.isPossiblyDone).toBe(false);
     });
   });
 

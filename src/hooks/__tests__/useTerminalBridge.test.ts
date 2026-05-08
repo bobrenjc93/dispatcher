@@ -232,7 +232,7 @@ describe("useTerminalBridge synthetic input", () => {
     expect(useTerminalStore.getState().sessions["pane"].isLongInactive).toBe(false);
   });
 
-  it("records real output without clearing brown tab status", () => {
+  it("records real output and clears brown tab status", () => {
     useTerminalStore.getState().addSession("tab-root", "A");
     useTerminalStore.getState().addSession("pane", "A");
     useLayoutStore.getState().initLayout("tab-root", "pane");
@@ -249,11 +249,11 @@ describe("useTerminalBridge synthetic input", () => {
     queueTerminalOutput("pane", "still running\n");
 
     expect(useTerminalStore.getState().sessions["tab-root"].isNeedsAttention).toBe(true);
-    expect(useTerminalStore.getState().sessions["tab-root"].isPossiblyDone).toBe(true);
+    expect(useTerminalStore.getState().sessions["tab-root"].isPossiblyDone).toBe(false);
     expect(useTerminalStore.getState().sessions["tab-root"].isLongInactive).toBe(false);
     expect(useTerminalStore.getState().sessions["tab-root"].hasDetectedActivity).toBe(true);
     expect(useTerminalStore.getState().sessions["pane"].isNeedsAttention).toBe(true);
-    expect(useTerminalStore.getState().sessions["pane"].isPossiblyDone).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].isPossiblyDone).toBe(false);
     expect(useTerminalStore.getState().sessions["pane"].isLongInactive).toBe(false);
     expect(useTerminalStore.getState().sessions["pane"].lastOutputAt).toBeGreaterThan(0);
   });

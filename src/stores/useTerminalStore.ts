@@ -140,7 +140,6 @@ export const useTerminalStore = create<TerminalStore>()(
                 [id]: {
                   ...session,
                   isNeedsAttention: false,
-                  isPossiblyDone: session.isNeedsAttention ? true : session.isPossiblyDone,
                   isRecentlyFocused: true,
                 },
               },

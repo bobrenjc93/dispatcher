@@ -337,6 +337,7 @@ function reflectImmediateTabOutput(terminalId: string) {
 
   for (const statusTerminalId of statusTerminalIds) {
     terminalStore.setDetectedActivity(statusTerminalId, true);
+    terminalStore.setPossiblyDone(statusTerminalId, false);
     terminalStore.setLongInactive(statusTerminalId, false);
   }
 }

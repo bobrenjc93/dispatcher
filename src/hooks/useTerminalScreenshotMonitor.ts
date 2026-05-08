@@ -65,6 +65,23 @@ function getActiveTabRootTerminalId(): string | null {
   return findLayoutKeyForTerminal(layouts, activeTerminalId) ?? activeTerminalId;
 }
 
+export function shouldIgnoreTmuxFocusVisualChange(args: {
+  changed: boolean;
+  hasActiveFocusVisualSuppression: boolean;
+  hasTmuxStatusSession: boolean;
+  lastUserInputAt: number;
+  lastOutputAt: number;
+  suppressionStartedAt: number;
+}): boolean {
+  return (
+    args.changed
+    && args.hasActiveFocusVisualSuppression
+    && args.hasTmuxStatusSession
+    && args.lastUserInputAt <= args.suppressionStartedAt
+    && args.lastOutputAt <= args.suppressionStartedAt
+  );
+}
+
 function sanitizeArtifactNamePart(value: string): string {
   const sanitized = value.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
   return sanitized.length > 0 ? sanitized : "terminal";
@@ -385,7 +402,6 @@ export function useTerminalScreenshotMonitor() {
         const session = store.sessions[terminalId];
         if (session?.isNeedsAttention) {
           store.setNeedsAttention(terminalId, false);
-          store.setPossiblyDone(terminalId, true);
         }
       }
       debugLog("status.monitor", "focus acknowledge", {
@@ -528,11 +544,14 @@ export function useTerminalScreenshotMonitor() {
             focusVisualSuppression && now <= focusVisualSuppression.until
               ? focusVisualSuppression
               : null;
-          const ignoreVisualChange =
-            changed
-            && activeFocusVisualSuppression !== null
-            && latestSessions.some(isTmuxStatusSession)
-            && lastUserInputAt <= activeFocusVisualSuppression.startedAt;
+          const ignoreVisualChange = shouldIgnoreTmuxFocusVisualChange({
+            changed,
+            hasActiveFocusVisualSuppression: activeFocusVisualSuppression !== null,
+            hasTmuxStatusSession: latestSessions.some(isTmuxStatusSession),
+            lastUserInputAt,
+            lastOutputAt,
+            suppressionStartedAt: activeFocusVisualSuppression?.startedAt ?? 0,
+          });
           const visualChangeIgnoredReason = ignoreVisualChange
             ? "tmux-focus-refresh"
             : undefined;
