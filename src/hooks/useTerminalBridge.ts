@@ -60,6 +60,15 @@ interface QueuedTerminalOutputOptions {
   allowParkedWrite?: boolean;
 }
 
+type SkippedTmuxWriteReason = "parked" | "missing-frontend";
+
+interface ParkedTmuxWriteDropSummary {
+  chunks: number;
+  bytes: number;
+  lastLoggedAt: number;
+  reason: SkippedTmuxWriteReason;
+}
+
 interface TerminalBridgeRuntimeState {
   instances: Map<string, TerminalInstance>;
   createdPtys: Set<string>;
@@ -68,8 +77,11 @@ interface TerminalBridgeRuntimeState {
   writeBuffers: Map<string, string[]>;
   writeBufferAllowParked: Set<string>;
   writeRafs: Map<string, number>;
+  writeTimeouts: Map<string, ReturnType<typeof setTimeout>>;
   writeInFlight: Set<string>;
   writeStatusRecorded: Set<string>;
+  parkedTmuxWriteDrops: Map<string, ParkedTmuxWriteDropSummary>;
+  parkedTmuxActivityLastRecordedAt: Map<string, number>;
   webglFailures: Map<Terminal, number>;
   webglProbeTimers: Map<Terminal, ReturnType<typeof setTimeout>>;
 }
@@ -89,6 +101,9 @@ function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
     });
     globalThis.__dispatcherTerminalBridgeRuntimeState.writeInFlight ??= new Set<string>();
     globalThis.__dispatcherTerminalBridgeRuntimeState.writeBufferAllowParked ??= new Set<string>();
+    globalThis.__dispatcherTerminalBridgeRuntimeState.writeTimeouts ??= new Map<string, ReturnType<typeof setTimeout>>();
+    globalThis.__dispatcherTerminalBridgeRuntimeState.parkedTmuxWriteDrops ??= new Map<string, ParkedTmuxWriteDropSummary>();
+    globalThis.__dispatcherTerminalBridgeRuntimeState.parkedTmuxActivityLastRecordedAt ??= new Map<string, number>();
     return globalThis.__dispatcherTerminalBridgeRuntimeState;
   }
 
@@ -100,8 +115,11 @@ function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
     writeBuffers: new Map<string, string[]>(),
     writeBufferAllowParked: new Set<string>(),
     writeRafs: new Map<string, number>(),
+    writeTimeouts: new Map<string, ReturnType<typeof setTimeout>>(),
     writeInFlight: new Set<string>(),
     writeStatusRecorded: new Set<string>(),
+    parkedTmuxWriteDrops: new Map<string, ParkedTmuxWriteDropSummary>(),
+    parkedTmuxActivityLastRecordedAt: new Map<string, number>(),
     webglFailures: new Map<Terminal, number>(),
     webglProbeTimers: new Map<Terminal, ReturnType<typeof setTimeout>>(),
   };
@@ -136,10 +154,18 @@ const SLOW_SCREENSHOT_CAPTURE_MS = 80;
 const writeBuffers = terminalBridgeRuntime.writeBuffers;
 const writeBufferAllowParked = terminalBridgeRuntime.writeBufferAllowParked;
 const writeRafs = terminalBridgeRuntime.writeRafs;
+const writeTimeouts = terminalBridgeRuntime.writeTimeouts;
 const writeInFlight = terminalBridgeRuntime.writeInFlight;
 const writeStatusRecorded = terminalBridgeRuntime.writeStatusRecorded;
+const parkedTmuxWriteDrops = terminalBridgeRuntime.parkedTmuxWriteDrops;
+const parkedTmuxActivityLastRecordedAt = terminalBridgeRuntime.parkedTmuxActivityLastRecordedAt;
 const TERMINAL_RESPONSE_QUERY_PATTERN =
   /\x1b(?:\[(?:\??6n|>c|c)|\](?:(?:1[0-2])|4;\d+);\?(?:\x07|\x1b\\))/;
+const HIDDEN_WRITE_FALLBACK_MS = 50;
+const PARKED_TMUX_DROP_SUMMARY_INTERVAL_MS = 5_000;
+const PARKED_TMUX_ACTIVITY_THROTTLE_MS = 1_000;
+const LARGE_WRITE_DRAIN_BYTES = 1_000_000;
+const SLOW_WRITE_DRAIN_MS = 100;
 
 const WEBGL_OPT_IN_STORAGE_KEY = "dispatcher.webgl.enabled";
 
@@ -224,26 +250,62 @@ function containsTerminalResponseQuery(data: string): boolean {
   return TERMINAL_RESPONSE_QUERY_PATTERN.test(data);
 }
 
+function clearBufferedWriteTimeout(terminalId: string) {
+  const timeoutId = writeTimeouts.get(terminalId);
+  if (timeoutId !== undefined) {
+    clearTimeout(timeoutId);
+    writeTimeouts.delete(terminalId);
+  }
+}
+
+function scheduleHiddenWriteFallback(terminalId: string) {
+  if (writeTimeouts.has(terminalId) || typeof document === "undefined") {
+    return;
+  }
+  if (document.visibilityState === "visible") {
+    return;
+  }
+
+  const timeoutId = setTimeout(() => {
+    writeTimeouts.delete(terminalId);
+    const rafId = writeRafs.get(terminalId);
+    if (rafId !== undefined) {
+      cancelAnimationFrame(rafId);
+      writeRafs.delete(terminalId);
+    }
+    drainTerminalWriteBuffer(terminalId);
+  }, HIDDEN_WRITE_FALLBACK_MS);
+  writeTimeouts.set(terminalId, timeoutId);
+}
+
 function flushBufferedWrite(terminalId: string) {
   const rafId = writeRafs.get(terminalId);
   if (rafId !== undefined) {
     cancelAnimationFrame(rafId);
     writeRafs.delete(terminalId);
   }
+  clearBufferedWriteTimeout(terminalId);
 
   drainTerminalWriteBuffer(terminalId);
 }
 
 function scheduleBufferedWrite(terminalId: string) {
-  if (writeRafs.has(terminalId) || writeInFlight.has(terminalId)) {
+  if (writeInFlight.has(terminalId)) {
+    return;
+  }
+
+  if (writeRafs.has(terminalId)) {
+    scheduleHiddenWriteFallback(terminalId);
     return;
   }
 
   const rafId = requestAnimationFrame(() => {
     writeRafs.delete(terminalId);
+    clearBufferedWriteTimeout(terminalId);
     drainTerminalWriteBuffer(terminalId);
   });
   writeRafs.set(terminalId, rafId);
+  scheduleHiddenWriteFallback(terminalId);
 }
 
 function drainTerminalWriteBuffer(terminalId: string) {
@@ -257,6 +319,7 @@ function drainTerminalWriteBuffer(terminalId: string) {
     return;
   }
 
+  const chunkCount = buf.length;
   const combined = buf.join("");
   buf.length = 0;
   const allowParkedWrite = writeBufferAllowParked.delete(terminalId);
@@ -266,19 +329,125 @@ function drainTerminalWriteBuffer(terminalId: string) {
     writeStatusRecorded.delete(terminalId);
     return;
   }
-  if (!allowParkedWrite && shouldSkipParkedTmuxWrite(terminalId, instance)) {
+  const skippedTmuxWriteReason = allowParkedWrite
+    ? null
+    : getSkippedTmuxWriteReason(terminalId, instance);
+  if (skippedTmuxWriteReason) {
+    recordParkedTmuxWriteDrop(terminalId, combined, skippedTmuxWriteReason);
     writeStatusRecorded.delete(terminalId);
     return;
   }
 
+  const drainStartedAt = performance.now();
+  if (combined.length >= LARGE_WRITE_DRAIN_BYTES) {
+    debugLog("terminal.output", "large buffered write drain", {
+      terminalId,
+      backendKind: getTerminalBackendKind(terminalId),
+      chunks: chunkCount,
+      bytes: combined.length,
+      visibilityState: typeof document === "undefined" ? null : document.visibilityState,
+    });
+  }
+
   writeInFlight.add(terminalId);
   xterm.write(combined, () => {
+    const durationMs = performance.now() - drainStartedAt;
     writeInFlight.delete(terminalId);
     writeStatusRecorded.delete(terminalId);
+    if (durationMs >= SLOW_WRITE_DRAIN_MS) {
+      debugLog("terminal.output", "slow buffered write drain", {
+        terminalId,
+        backendKind: getTerminalBackendKind(terminalId),
+        bytes: combined.length,
+        durationMs,
+        visibilityState: typeof document === "undefined" ? null : document.visibilityState,
+      });
+    }
     if ((writeBuffers.get(terminalId)?.length ?? 0) > 0) {
       scheduleBufferedWrite(terminalId);
     }
   });
+}
+
+function isRecordableTerminalOutput(data: string, options?: QueuedTerminalOutputOptions): boolean {
+  return (
+    options?.recordActivity !== false
+    && data.length > 0
+    && !isTransientFocusSequence(data)
+    && hasTerminalActivityOutput(data)
+  );
+}
+
+function recordTerminalOutputActivity(terminalId: string) {
+  useTerminalStore.getState().markTerminalOutput(terminalId);
+  reflectImmediateTabOutput(terminalId);
+}
+
+function maybeRecordDroppedParkedTmuxActivity(
+  terminalId: string,
+  data: string,
+  options?: QueuedTerminalOutputOptions
+) {
+  if (!isRecordableTerminalOutput(data, options)) {
+    return;
+  }
+
+  const now = Date.now();
+  const lastRecordedAt = parkedTmuxActivityLastRecordedAt.get(terminalId);
+  if (
+    lastRecordedAt !== undefined
+    && now - lastRecordedAt < PARKED_TMUX_ACTIVITY_THROTTLE_MS
+  ) {
+    return;
+  }
+
+  parkedTmuxActivityLastRecordedAt.set(terminalId, now);
+  recordTerminalOutputActivity(terminalId);
+}
+
+function recordParkedTmuxWriteDrop(
+  terminalId: string,
+  data: string,
+  reason: SkippedTmuxWriteReason
+) {
+  const now = Date.now();
+  let summary = parkedTmuxWriteDrops.get(terminalId);
+  if (!summary) {
+    summary = {
+      chunks: 0,
+      bytes: 0,
+      lastLoggedAt: now,
+      reason,
+    };
+    parkedTmuxWriteDrops.set(terminalId, summary);
+    debugLog("terminal.output", "dropping parked tmux output", {
+      terminalId,
+      backendKind: getTerminalBackendKind(terminalId),
+      reason,
+      visibilityState: typeof document === "undefined" ? null : document.visibilityState,
+    });
+  }
+
+  summary.chunks += 1;
+  summary.bytes += data.length;
+  summary.reason = reason;
+
+  if (now - summary.lastLoggedAt < PARKED_TMUX_DROP_SUMMARY_INTERVAL_MS) {
+    return;
+  }
+
+  debugLog("terminal.output", "parked tmux output drop summary", {
+    terminalId,
+    backendKind: getTerminalBackendKind(terminalId),
+    reason: summary.reason,
+    chunks: summary.chunks,
+    bytes: summary.bytes,
+    intervalMs: now - summary.lastLoggedAt,
+    visibilityState: typeof document === "undefined" ? null : document.visibilityState,
+  });
+  summary.chunks = 0;
+  summary.bytes = 0;
+  summary.lastLoggedAt = now;
 }
 
 function batchedWrite(
@@ -286,6 +455,18 @@ function batchedWrite(
   data: string,
   options?: QueuedTerminalOutputOptions
 ) {
+  if (!options?.allowParkedWrite) {
+    const skippedTmuxWriteReason = getSkippedTmuxWriteReason(
+      terminalId,
+      instances.get(terminalId)
+    );
+    if (skippedTmuxWriteReason) {
+      maybeRecordDroppedParkedTmuxActivity(terminalId, data, options);
+      recordParkedTmuxWriteDrop(terminalId, data, skippedTmuxWriteReason);
+      return;
+    }
+  }
+
   let buffer = writeBuffers.get(terminalId);
   if (!buffer) {
     buffer = [];
@@ -297,15 +478,11 @@ function batchedWrite(
   }
 
   const shouldRecordOutput =
-    options?.recordActivity !== false
-    && data.length > 0
-    && !isTransientFocusSequence(data)
-    && hasTerminalActivityOutput(data)
+    isRecordableTerminalOutput(data, options)
     && !writeStatusRecorded.has(terminalId);
   if (shouldRecordOutput) {
     writeStatusRecorded.add(terminalId);
-    useTerminalStore.getState().markTerminalOutput(terminalId);
-    reflectImmediateTabOutput(terminalId);
+    recordTerminalOutputActivity(terminalId);
   }
 
   if (data.includes("\u001b") && containsTerminalResponseQuery(buffer.join(""))) {
@@ -365,24 +542,37 @@ function disposeWriteBatch(terminalId: string) {
     cancelAnimationFrame(rafId);
     writeRafs.delete(terminalId);
   }
+  clearBufferedWriteTimeout(terminalId);
   writeBuffers.delete(terminalId);
   writeBufferAllowParked.delete(terminalId);
   writeInFlight.delete(terminalId);
   writeStatusRecorded.delete(terminalId);
+  parkedTmuxWriteDrops.delete(terminalId);
+  parkedTmuxActivityLastRecordedAt.delete(terminalId);
 }
 
 function isParkedTerminalInstance(instance: TerminalInstance): boolean {
   return instance.element.parentElement?.id === PARKING_ROOT_ID;
 }
 
-function shouldSkipParkedTmuxWrite(terminalId: string, instance: TerminalInstance): boolean {
-  const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind;
-  // Parked tmux panes can be redrawn from tmux on focus; rendering their live
-  // output while hidden is pure renderer load.
-  return (
-    isParkedTerminalInstance(instance)
-    && (backendKind === "tmux-pane" || backendKind === "tmux-window")
-  );
+function getTerminalBackendKind(terminalId: string): TerminalBackendKind | undefined {
+  return useTerminalStore.getState().sessions[terminalId]?.backendKind;
+}
+
+function getSkippedTmuxWriteReason(
+  terminalId: string,
+  instance: TerminalInstance | undefined
+): SkippedTmuxWriteReason | null {
+  const backendKind = getTerminalBackendKind(terminalId);
+  if (backendKind !== "tmux-pane" && backendKind !== "tmux-window") {
+    return null;
+  }
+
+  if (!instance) {
+    return "missing-frontend";
+  }
+
+  return isParkedTerminalInstance(instance) ? "parked" : null;
 }
 
 function shouldSuppressSyntheticEcho(terminalId: string, data: string): boolean {

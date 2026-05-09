@@ -168,6 +168,7 @@ describe("useTerminalBridge synthetic input", () => {
     disposeTerminalInstance("term-canvas-screenshot");
     disposeTerminalInstance("term-large-canvas-screenshot");
     disposeTerminalInstance("tmux-pane-test");
+    disposeTerminalInstance("tmux-pane-no-frontend");
     disposeTerminalInstance("term-query-test");
     disposeTerminalInstance("tab-root");
     disposeTerminalInstance("pane");
@@ -346,6 +347,57 @@ describe("useTerminalBridge synthetic input", () => {
     expect(useTerminalStore.getState().sessions["tmux-pane-test"].lastOutputAt).toBeGreaterThan(0);
 
     disposeTerminalInstance("tmux-pane-test");
+  });
+
+  it("drops parked tmux pane output before scheduling a frame", () => {
+    useTerminalStore.getState().addSession("tmux-pane-test", "A");
+    useTerminalStore.getState().patchSession("tmux-pane-test", {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+
+    ensureTerminalScreenshotTarget("tmux-pane-test");
+    const requestAnimationFrameSpy = vi
+      .spyOn(globalThis, "requestAnimationFrame")
+      .mockImplementation((_callback: FrameRequestCallback) => 1);
+
+    try {
+      queueTerminalOutput("tmux-pane-test", "real progress\n");
+      queueTerminalOutput("tmux-pane-test", "more progress\n");
+
+      expect(requestAnimationFrameSpy).not.toHaveBeenCalled();
+      expect(createdTerminals[0].write).not.toHaveBeenCalled();
+      expect(useTerminalStore.getState().sessions["tmux-pane-test"].lastOutputAt).toBeGreaterThan(0);
+    } finally {
+      requestAnimationFrameSpy.mockRestore();
+      disposeTerminalInstance("tmux-pane-test");
+    }
+  });
+
+  it("drops tmux pane output without a frontend before scheduling a frame", () => {
+    useTerminalStore.getState().addSession("tmux-pane-no-frontend", "A");
+    useTerminalStore.getState().patchSession("tmux-pane-no-frontend", {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+
+    const requestAnimationFrameSpy = vi
+      .spyOn(globalThis, "requestAnimationFrame")
+      .mockImplementation((_callback: FrameRequestCallback) => 1);
+
+    try {
+      queueTerminalOutput("tmux-pane-no-frontend", "real progress\n");
+
+      expect(requestAnimationFrameSpy).not.toHaveBeenCalled();
+      expect(useTerminalStore.getState().sessions["tmux-pane-no-frontend"].lastOutputAt).toBeGreaterThan(0);
+    } finally {
+      requestAnimationFrameSpy.mockRestore();
+      disposeTerminalInstance("tmux-pane-no-frontend");
+    }
   });
 
   it("renders explicit history hydration writes into parked tmux panes", async () => {
