@@ -137,6 +137,7 @@ vi.mock("../../components/common/FontSettings", () => ({
 }));
 
 import {
+  captureTerminalScreenshot,
   disposeTerminalInstance,
   ensureTerminalScreenshotTarget,
   hasTerminalFrontend,
@@ -164,6 +165,8 @@ describe("useTerminalBridge synthetic input", () => {
 
   afterEach(() => {
     disposeTerminalInstance("term-scroll-test");
+    disposeTerminalInstance("term-canvas-screenshot");
+    disposeTerminalInstance("term-large-canvas-screenshot");
     disposeTerminalInstance("tmux-pane-test");
     disposeTerminalInstance("term-query-test");
     disposeTerminalInstance("tab-root");
@@ -192,6 +195,121 @@ describe("useTerminalBridge synthetic input", () => {
     expect(createdTerminals[0].resize).toHaveBeenCalledWith(109, 25);
     expect(createdTerminals[0].cols).toBe(109);
     expect(createdTerminals[0].rows).toBe(25);
+  });
+
+  it("captures attached xterm canvas layers before falling back to synthetic text rendering", () => {
+    const context = {
+      drawImage: vi.fn(),
+      fillRect: vi.fn(),
+      fillText: vi.fn(),
+      scale: vi.fn(),
+      globalAlpha: 1,
+      imageSmoothingEnabled: true,
+      fillStyle: "",
+      font: "",
+      textBaseline: "",
+    };
+    const getContextSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockImplementation(() => context as unknown as CanvasRenderingContext2D);
+    const toDataURLSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockImplementation(function toDataURL(this: HTMLCanvasElement) {
+        return `data:image/png;base64,${this.width}x${this.height}`;
+      });
+
+    try {
+      ensureTerminalScreenshotTarget("term-canvas-screenshot");
+      const parkingRoot = document.getElementById("dispatcher-terminal-parking-root");
+      const element = parkingRoot?.firstElementChild as HTMLDivElement | null;
+      expect(element).not.toBeNull();
+
+      element!.style.width = "100px";
+      element!.style.height = "50px";
+      document.body.appendChild(element!);
+
+      const layer = document.createElement("canvas");
+      layer.width = 200;
+      layer.height = 100;
+      layer.style.width = "100px";
+      layer.style.height = "50px";
+      element!.appendChild(layer);
+
+      expect(captureTerminalScreenshot("term-canvas-screenshot")).toBe("data:image/png;base64,100x50");
+      expect(context.drawImage).toHaveBeenCalledWith(
+        layer,
+        0,
+        0,
+        200,
+        100,
+        0,
+        0,
+        100,
+        50
+      );
+      expect(context.fillText).not.toHaveBeenCalled();
+    } finally {
+      getContextSpy.mockRestore();
+      toDataURLSpy.mockRestore();
+    }
+  });
+
+  it("caps debug canvas screenshot resolution before encoding", () => {
+    const originalDevicePixelRatio = window.devicePixelRatio;
+    Object.defineProperty(window, "devicePixelRatio", {
+      configurable: true,
+      value: 2,
+    });
+
+    const context = {
+      drawImage: vi.fn(),
+      fillRect: vi.fn(),
+      fillText: vi.fn(),
+      scale: vi.fn(),
+      globalAlpha: 1,
+      imageSmoothingEnabled: true,
+      fillStyle: "",
+      font: "",
+      textBaseline: "",
+    };
+    const getContextSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockImplementation(() => context as unknown as CanvasRenderingContext2D);
+    const toDataURLSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockImplementation(function toDataURL(this: HTMLCanvasElement) {
+        return `data:image/png;base64,${this.width}x${this.height}`;
+      });
+
+    try {
+      ensureTerminalScreenshotTarget("term-large-canvas-screenshot");
+      const parkingRoot = document.getElementById("dispatcher-terminal-parking-root");
+      const element = parkingRoot?.firstElementChild as HTMLDivElement | null;
+      expect(element).not.toBeNull();
+
+      element!.style.width = "2000px";
+      element!.style.height = "1000px";
+      document.body.appendChild(element!);
+
+      const layer = document.createElement("canvas");
+      layer.width = 4000;
+      layer.height = 2000;
+      layer.style.width = "2000px";
+      layer.style.height = "1000px";
+      element!.appendChild(layer);
+
+      expect(captureTerminalScreenshot("term-large-canvas-screenshot")).toBe(
+        "data:image/png;base64,1732x866"
+      );
+      expect(context.fillText).not.toHaveBeenCalled();
+    } finally {
+      getContextSpy.mockRestore();
+      toDataURLSpy.mockRestore();
+      Object.defineProperty(window, "devicePixelRatio", {
+        configurable: true,
+        value: originalDevicePixelRatio,
+      });
+    }
   });
 
   it("does not fit tmux pane frontends against the DOM viewport on creation", () => {

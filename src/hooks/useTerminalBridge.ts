@@ -125,6 +125,8 @@ const DEFAULT_SCROLLBACK = 50_000;
 const PARKED_TERMINAL_WIDTH = 1200;
 const PARKED_TERMINAL_HEIGHT = 720;
 const PARKING_ROOT_ID = "dispatcher-terminal-parking-root";
+const MAX_SCREENSHOT_CAPTURE_DEVICE_PIXELS = 1_500_000;
+const SLOW_SCREENSHOT_CAPTURE_MS = 80;
 
 // ---------------------------------------------------------------------------
 // Write batching — coalesce PTY output per animation frame so xterm.js
@@ -735,31 +737,205 @@ function ensureTerminalBackend(terminalId: string, cwd?: string) {
   return instance;
 }
 
-function captureCanvasScreenshot(element: HTMLDivElement, fallbackWidth: number, fallbackHeight: number): string | null {
-  const canvases = Array.from(element.querySelectorAll("canvas"));
-  if (canvases.length === 0) {
+function parseCssPixelValue(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function isTransparentCssColor(value: string | null | undefined): boolean {
+  if (!value || value === "transparent") {
+    return true;
+  }
+
+  const rgbaMatch = /^rgba?\(([^)]+)\)$/.exec(value.trim());
+  if (!rgbaMatch) {
+    return false;
+  }
+
+  const parts = rgbaMatch[1].split(",").map((part) => part.trim());
+  if (parts.length < 4) {
+    return false;
+  }
+
+  const alpha = Number.parseFloat(parts[3]);
+  return Number.isFinite(alpha) && alpha <= 0;
+}
+
+function getElementCaptureSize(
+  element: HTMLElement,
+  fallbackWidth: number,
+  fallbackHeight: number
+): { width: number; height: number; rect: DOMRect } {
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  const width =
+    (rect.width > 0 ? rect.width : null)
+    ?? parseCssPixelValue(style.width)
+    ?? Math.max(fallbackWidth, 1);
+  const height =
+    (rect.height > 0 ? rect.height : null)
+    ?? parseCssPixelValue(style.height)
+    ?? Math.max(fallbackHeight, 1);
+  return { width, height, rect };
+}
+
+function getCanvasCaptureRect(
+  canvas: HTMLCanvasElement,
+  rootRect: DOMRect
+): { left: number; top: number; width: number; height: number } | null {
+  if (canvas.width <= 0 || canvas.height <= 0) {
     return null;
   }
 
-  const width = canvases.reduce((max, canvas) => Math.max(max, canvas.width), 0) || fallbackWidth;
-  const height = canvases.reduce((max, canvas) => Math.max(max, canvas.height), 0) || fallbackHeight;
+  const rect = canvas.getBoundingClientRect();
+  const style = window.getComputedStyle(canvas);
+  const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+  const width =
+    (rect.width > 0 ? rect.width : null)
+    ?? parseCssPixelValue(style.width)
+    ?? (canvas.clientWidth > 0 ? canvas.clientWidth : null)
+    ?? canvas.width / devicePixelRatio;
+  const height =
+    (rect.height > 0 ? rect.height : null)
+    ?? parseCssPixelValue(style.height)
+    ?? (canvas.clientHeight > 0 ? canvas.clientHeight : null)
+    ?? canvas.height / devicePixelRatio;
   if (width <= 0 || height <= 0) {
     return null;
   }
 
+  return {
+    left: rect.width > 0 || rect.height > 0
+      ? rect.left - rootRect.left
+      : parseCssPixelValue(style.left) ?? 0,
+    top: rect.width > 0 || rect.height > 0
+      ? rect.top - rootRect.top
+      : parseCssPixelValue(style.top) ?? 0,
+    width,
+    height,
+  };
+}
+
+function getTerminalCanvasBackground(element: HTMLDivElement): string {
+  const candidates = [
+    element.querySelector(".xterm-screen") as HTMLElement | null,
+    element.querySelector(".xterm-viewport") as HTMLElement | null,
+    element,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    const color = window.getComputedStyle(candidate).backgroundColor;
+    if (!isTransparentCssColor(color)) {
+      return color;
+    }
+  }
+
+  return "#000000";
+}
+
+function getScreenshotCaptureScale(width: number, height: number): number {
+  const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+  const cssPixels = Math.max(1, width * height);
+  const maxScale = Math.sqrt(MAX_SCREENSHOT_CAPTURE_DEVICE_PIXELS / cssPixels);
+  return Math.max(0.01, Math.min(devicePixelRatio, maxScale));
+}
+
+function captureCanvasScreenshot(
+  element: HTMLDivElement,
+  fallbackWidth: number,
+  fallbackHeight: number
+): string | null {
+  const canvases = Array.from(element.querySelectorAll("canvas")).filter((canvas) => {
+    const style = window.getComputedStyle(canvas);
+    return (
+      canvas.width > 0
+      && canvas.height > 0
+      && style.display !== "none"
+      && style.visibility !== "hidden"
+      && Number.parseFloat(style.opacity || "1") > 0
+    );
+  });
+  if (canvases.length === 0) {
+    return null;
+  }
+
+  const rootSize = getElementCaptureSize(element, fallbackWidth, fallbackHeight);
+  const width = rootSize.width;
+  const height = rootSize.height;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const captureScale = getScreenshotCaptureScale(width, height);
   const composite = document.createElement("canvas");
-  composite.width = width;
-  composite.height = height;
+  composite.width = Math.max(1, Math.round(width * captureScale));
+  composite.height = Math.max(1, Math.round(height * captureScale));
   const context = composite.getContext("2d");
   if (!context) {
     return null;
   }
 
-  for (const canvas of canvases) {
-    context.drawImage(canvas, 0, 0, width, height);
-  }
+  context.scale(captureScale, captureScale);
+  context.imageSmoothingEnabled = false;
+  context.fillStyle = getTerminalCanvasBackground(element);
+  context.fillRect(0, 0, width, height);
 
-  return composite.toDataURL("image/png");
+  const startedAt = performance.now();
+  try {
+    for (const canvas of canvases) {
+      const target = getCanvasCaptureRect(canvas, rootSize.rect);
+      if (!target) {
+        continue;
+      }
+
+      const opacity = Number.parseFloat(window.getComputedStyle(canvas).opacity || "1");
+      context.globalAlpha = Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1;
+      context.drawImage(
+        canvas,
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+        target.left,
+        target.top,
+        target.width,
+        target.height
+      );
+    }
+    context.globalAlpha = 1;
+    const dataUrl = composite.toDataURL("image/png");
+    const elapsedMs = performance.now() - startedAt;
+    if (elapsedMs > SLOW_SCREENSHOT_CAPTURE_MS) {
+      debugLog("terminal.screenshot", "slow canvas capture", {
+        elapsedMs: Math.round(elapsedMs),
+        canvasCount: canvases.length,
+        width,
+        height,
+        captureScale,
+        outputWidth: composite.width,
+        outputHeight: composite.height,
+        encodedBytes: dataUrl.length,
+      });
+    }
+    return dataUrl;
+  } catch (error) {
+    debugLog("terminal.screenshot", "canvas capture failed", {
+      error: error instanceof Error ? error.message : String(error),
+      canvasCount: canvases.length,
+      width,
+      height,
+      captureScale,
+      outputWidth: composite.width,
+      outputHeight: composite.height,
+    });
+    return null;
+  }
 }
 
 function renderTerminalBufferScreenshot(instance: TerminalInstance): string | null {
@@ -1030,8 +1206,10 @@ export function captureTerminalScreenshot(terminalId: string): string | null {
   }
 
   return (
-    renderTerminalBufferScreenshot(instance) ??
-    captureCanvasScreenshot(instance.element, instance.lastWidth, instance.lastHeight)
+    (isParkedTerminalInstance(instance)
+      ? null
+      : captureCanvasScreenshot(instance.element, instance.lastWidth, instance.lastHeight))
+    ?? renderTerminalBufferScreenshot(instance)
   );
 }
 

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import {
+  captureTerminalScreenshot,
   captureTerminalVisualSnapshot,
   hasTerminalFrontend,
 } from "./useTerminalBridge";
@@ -31,6 +32,7 @@ const FOCUS_VISUAL_SUPPRESSION_MS = SCREENSHOT_INTERVAL_MS + 2_500;
 const SCREENSHOT_ARTIFACT_INTERVAL_MS = 30_000;
 const MAX_VISUAL_TABS_PER_SAMPLE = 6;
 const MAX_SCREENSHOT_ARTIFACT_COMPONENTS = 4;
+const MAX_SCREENSHOT_IMAGE_CAPTURES_PER_SAMPLE = 1;
 const MAX_SCREENSHOT_ARTIFACT_LINES = 120;
 const MAX_SCREENSHOT_ARTIFACT_LINE_CHARS = 240;
 
@@ -146,6 +148,39 @@ function buildVisibleLinePreview(snapshot: TerminalVisualTextSnapshot) {
     row: startRow + index,
     text: previewDebugText(line, MAX_SCREENSHOT_ARTIFACT_LINE_CHARS),
   }));
+}
+
+function attachScreenshotImages(
+  samples: readonly ScreenshotSample[],
+  options: { maxImages: number }
+): ScreenshotSample[] {
+  let remainingImages = Math.max(0, options.maxImages);
+
+  return samples.map((sample) => {
+    if (remainingImages <= 0) {
+      return sample;
+    }
+
+    const screenshot = captureTerminalScreenshot(sample.terminalId);
+    if (!screenshot) {
+      return sample;
+    }
+
+    remainingImages -= 1;
+    return {
+      ...sample,
+      screenshot,
+    };
+  });
+}
+
+function getCompleteComponentImageDataUrls(samples: readonly ScreenshotSample[]): string[] | undefined {
+  const imageDataUrls = samples.map((sample) => sample.screenshot);
+  if (imageDataUrls.some((value) => !value)) {
+    return undefined;
+  }
+
+  return imageDataUrls as string[];
 }
 
 function getStatusDotSemantic(args: {
@@ -858,6 +893,10 @@ export function useTerminalScreenshotMonitor() {
             !isBaselineCapture
             && statusTransitioned
             && now - lastArtifactTime >= SCREENSHOT_ARTIFACT_INTERVAL_MS;
+          const shouldAttachScreenshotImages = shouldWriteScreenshotArtifact;
+          const screenshotsWithOptionalImages = shouldAttachScreenshotImages
+            ? attachScreenshotImages(screenshots, { maxImages: MAX_SCREENSHOT_IMAGE_CAPTURES_PER_SAMPLE })
+            : screenshots;
           if (shouldWriteScreenshotArtifact) {
             lastArtifactAt.set(tabRootTerminalId, now);
             void writeScreenshotDebugArtifacts({
@@ -866,7 +905,7 @@ export function useTerminalScreenshotMonitor() {
               activeTabRootTerminalId,
               terminalIds,
               statusTerminalIds,
-              screenshots,
+              screenshots: screenshotsWithOptionalImages,
               componentHashes,
               hash,
               previousHash,
@@ -932,6 +971,9 @@ export function useTerminalScreenshotMonitor() {
             terminalId: tabRootTerminalId,
             hash,
             previousHash,
+            imageDataUrl: screenshotsWithOptionalImages.length === 1
+              ? screenshotsWithOptionalImages[0].screenshot
+              : undefined,
             changed,
             changedForStatus: resolvedChangedForStatus,
             ignoreVisualChange,
@@ -949,6 +991,7 @@ export function useTerminalScreenshotMonitor() {
             isLongInactive: nextLongInactive,
             componentTerminalIds: terminalIds,
             componentHashes,
+            componentImageDataUrls: getCompleteComponentImageDataUrls(screenshotsWithOptionalImages),
           });
         }
       } finally {
