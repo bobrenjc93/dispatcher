@@ -563,6 +563,97 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("recaptures full tmux history on focus after an initially empty pane gains scrollback", async () => {
+    const transportTerminalId = "transport-history-refresh-after-empty";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "@1\thappy\t1\t*",
+        "%end 4 0",
+        "%begin 5 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren\t4\t7\t0\t88",
+        "%end 5 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+    handleTmuxTerminalFocus(paneTerminalId);
+
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -S -88 -t %1\n"
+    );
+    expect(writeTerminalMock).not.toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 6 0",
+        "%end 6 0",
+        "%begin 7 0",
+        "history row",
+        "current row",
+        "%end 7 0",
+        "%begin 8 0",
+        "%end 8 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\ncurrent row\u001b[?7h\u001b[0m\u001b[8;5H",
+      { recordActivity: false, allowParkedWrite: true }
+    );
+  });
+
+  it("recaptures fallback tmux history on focus after hidden pane output", async () => {
+    const transportTerminalId = "transport-hidden-output-history";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 hidden output\n");
+    handleTmuxTerminalFocus(paneTerminalId);
+
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -S -50000 -t %1\n"
+    );
+  });
+
   it("captures the active tmux pane history before lazy background panes", async () => {
     const transportTerminalId = "transport-lazy-history";
     seedTransportTerminal(transportTerminalId);

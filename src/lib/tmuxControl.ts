@@ -90,6 +90,9 @@ interface TmuxPaneState {
   alternateOn: boolean;
   historySize: number;
   initialContentCaptured: boolean;
+  lastHistoryCaptureSize: number;
+  historyCaptureInFlight: boolean;
+  missedOutputSinceHistoryCapture: boolean;
 }
 
 interface WindowProjectionResult {
@@ -232,6 +235,12 @@ function ensureInitialPaneCaptureState(session: TmuxControlSession) {
   session.pendingInitialPaneCaptures ??= [];
   session.initialPaneCaptureTimer ??= null;
   session.initialPaneCaptureActive ??= false;
+}
+
+function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
+  pane.lastHistoryCaptureSize ??= 0;
+  pane.historyCaptureInFlight ??= false;
+  pane.missedOutputSinceHistoryCapture ??= false;
 }
 
 function ensurePaneOutputActivitySuppressionState(session: TmuxControlSession) {
@@ -661,6 +670,9 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       alternateOn: false,
       historySize: 0,
       initialContentCaptured: false,
+      lastHistoryCaptureSize: 0,
+      historyCaptureInFlight: false,
+      missedOutputSinceHistoryCapture: false,
     });
     paneTerminalToSessionId.set(session.id, sessionId);
 
@@ -1427,6 +1439,9 @@ function upsertWindowProjection(
         alternateOn: paneSnapshot.alternateOn,
         historySize: paneSnapshot.historySize,
         initialContentCaptured: false,
+        lastHistoryCaptureSize: 0,
+        historyCaptureInFlight: false,
+        missedOutputSinceHistoryCapture: false,
       };
       session.panes.set(paneSnapshot.paneId, paneState);
       paneTerminalToSessionId.set(terminalId, session.id);
@@ -1473,6 +1488,7 @@ function upsertWindowProjection(
         }
       }
     }
+    ensurePaneHistoryCaptureState(paneState);
 
     if (
       existingPaneState
@@ -1488,6 +1504,7 @@ function upsertWindowProjection(
 
     syncTerminalFrontendSize(paneState.terminalId, paneSnapshot.width, paneSnapshot.height);
 
+    const previousHistorySize = paneState.historySize;
     paneState.left = paneSnapshot.left;
     paneState.top = paneSnapshot.top;
     paneState.width = paneSnapshot.width;
@@ -1498,6 +1515,21 @@ function upsertWindowProjection(
     paneState.cursorY = paneSnapshot.cursorY;
     paneState.alternateOn = paneSnapshot.alternateOn;
     paneState.historySize = paneSnapshot.historySize;
+    if (
+      paneState.initialContentCaptured
+      && paneState.historySize !== previousHistorySize
+      && shouldCaptureAuthoritativePaneHistory(paneState)
+    ) {
+      debugLog("tmux.capture", "pane history coverage stale after snapshot", {
+        sessionId: session.id,
+        paneId: paneState.paneId,
+        terminalId: paneState.terminalId,
+        previousHistorySize,
+        historySize: paneState.historySize,
+        lastHistoryCaptureSize: paneState.lastHistoryCaptureSize,
+        missedOutputSinceHistoryCapture: paneState.missedOutputSinceHistoryCapture,
+      });
+    }
 
     useTerminalStore.getState().patchSession(paneState.terminalId, {
       title: snapshot.title,
@@ -1624,6 +1656,64 @@ function setFocusedTmuxPane(
   useTerminalStore.getState().setActiveTerminal(pane.terminalId);
   focusTerminalInstance(pane.terminalId);
   return true;
+}
+
+function isPaneVisibleInActiveWindow(session: TmuxControlSession, pane: TmuxPaneState): boolean {
+  const activeTerminalId = useTerminalStore.getState().activeTerminalId;
+  if (!activeTerminalId) {
+    return false;
+  }
+
+  if (activeTerminalId === pane.terminalId) {
+    return true;
+  }
+
+  const window = session.windows.get(pane.windowId);
+  if (activeTerminalId === window?.terminalId) {
+    return true;
+  }
+
+  const activeSession = getTerminalSession(activeTerminalId);
+  return (
+    activeSession?.tmuxControlSessionId === session.id
+    && activeSession.tmuxWindowId === pane.windowId
+  );
+}
+
+function markPaneOutputMissedByHistoryCapture(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  bytes: number
+) {
+  ensurePaneHistoryCaptureState(pane);
+  if (isPaneVisibleInActiveWindow(session, pane)) {
+    return;
+  }
+
+  if (!pane.missedOutputSinceHistoryCapture) {
+    debugLog("tmux.capture", "mark pane history stale from hidden output", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+      historySize: pane.historySize,
+      lastHistoryCaptureSize: pane.lastHistoryCaptureSize,
+      bytes,
+    });
+  }
+  pane.missedOutputSinceHistoryCapture = true;
+}
+
+function shouldCaptureAuthoritativePaneHistory(pane: TmuxPaneState): boolean {
+  ensurePaneHistoryCaptureState(pane);
+  if (!pane.initialContentCaptured || pane.historyCaptureInFlight || pane.alternateOn) {
+    return false;
+  }
+
+  return (
+    pane.missedOutputSinceHistoryCapture
+    || (pane.lastHistoryCaptureSize === 0 && pane.historySize > 0)
+    || pane.historySize < pane.lastHistoryCaptureSize
+  );
 }
 
 async function sendCommand(session: TmuxControlSession, command: string): Promise<string[]> {
@@ -1822,21 +1912,50 @@ function queueHydratedInitialPaneCaptures(
   });
 }
 
-async function captureInitialPaneContent(session: TmuxControlSession, pane: TmuxPaneState) {
-  if (pane.initialContentCaptured) {
+async function capturePaneFullContent(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  options: {
+    initial?: boolean;
+    reason: string;
+    forceFallbackHistory?: boolean;
+  }
+) {
+  ensurePaneHistoryCaptureState(pane);
+  if (pane.historyCaptureInFlight) {
     return;
   }
 
-  pane.initialContentCaptured = true;
-  debugLog("tmux.capture", "initial pane content start", {
-    sessionId: session.id,
-    paneId: pane.paneId,
-    terminalId: pane.terminalId,
-    alternateOn: pane.alternateOn,
-    historySize: pane.historySize,
-    cursorX: pane.cursorX,
-    cursorY: pane.cursorY,
-  });
+  if (options.initial) {
+    if (pane.initialContentCaptured) {
+      return;
+    }
+    pane.initialContentCaptured = true;
+  }
+
+  pane.historyCaptureInFlight = true;
+  const useFallbackHistory =
+    options.forceFallbackHistory === true
+    && !pane.alternateOn
+    && pane.historySize <= pane.lastHistoryCaptureSize;
+  const requestedHistorySize = useFallbackHistory ? undefined : pane.historySize;
+  debugLog(
+    "tmux.capture",
+    options.initial ? "initial pane content start" : "pane history refresh start",
+    {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+      reason: options.reason,
+      alternateOn: pane.alternateOn,
+      historySize: pane.historySize,
+      requestedHistorySize: requestedHistorySize ?? null,
+      lastHistoryCaptureSize: pane.lastHistoryCaptureSize,
+      missedOutputSinceHistoryCapture: pane.missedOutputSinceHistoryCapture,
+      cursorX: pane.cursorX,
+      cursorY: pane.cursorY,
+    }
+  );
 
   try {
     const lines = await sendCommand(
@@ -1844,40 +1963,73 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
       buildTmuxPaneCaptureCommand({
         paneId: pane.paneId,
         alternateScreen: pane.alternateOn,
-        historySize: pane.historySize,
+        historySize: requestedHistorySize,
       })
     );
     const currentPane = session.panes.get(pane.paneId);
     const terminal = getTerminalSession(pane.terminalId);
     if (currentPane?.terminalId !== pane.terminalId || !terminal) {
-      debugLog("tmux.capture", "initial pane content skipped for stale pane", {
+      debugLog("tmux.capture", "pane full content skipped for stale pane", {
         sessionId: session.id,
         paneId: pane.paneId,
         terminalId: pane.terminalId,
+        reason: options.reason,
       });
       return;
     }
+    ensurePaneHistoryCaptureState(currentPane);
 
     ensureTerminalFrontend(pane.terminalId);
-    const cursorRow = Math.max(1, Math.floor(pane.cursorY) + 1);
-    const cursorCol = Math.max(1, Math.floor(pane.cursorX) + 1);
+    const cursorRow = Math.max(1, Math.floor(currentPane.cursorY) + 1);
+    const cursorCol = Math.max(1, Math.floor(currentPane.cursorX) + 1);
     const content = unescapeTmuxOutput(lines.join("\r\n"));
     queueTerminalOutput(
       pane.terminalId,
       `\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3J${content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`,
       { recordActivity: false, allowParkedWrite: true }
     );
-    debugLog("tmux.capture", "initial pane content complete", {
-      sessionId: session.id,
-      paneId: pane.paneId,
-      terminalId: pane.terminalId,
-      lines: lines.length,
-      includesHistory: !pane.alternateOn && pane.historySize > 0,
-    });
+    currentPane.initialContentCaptured = true;
+    currentPane.lastHistoryCaptureSize = currentPane.historySize;
+    currentPane.missedOutputSinceHistoryCapture = false;
+    debugLog(
+      "tmux.capture",
+      options.initial ? "initial pane content complete" : "pane history refresh complete",
+      {
+        sessionId: session.id,
+        paneId: pane.paneId,
+        terminalId: pane.terminalId,
+        reason: options.reason,
+        lines: lines.length,
+        includesHistory: !pane.alternateOn && (useFallbackHistory || pane.historySize > 0),
+        historySize: currentPane.historySize,
+        lastHistoryCaptureSize: currentPane.lastHistoryCaptureSize,
+      }
+    );
   } catch (error) {
-    pane.initialContentCaptured = false;
-    debugLogError("tmux.capture", "initial pane content failed", error);
+    if (options.initial) {
+      pane.initialContentCaptured = false;
+    }
+    debugLogError(
+      "tmux.capture",
+      options.initial ? "initial pane content failed" : "pane history refresh failed",
+      error
+    );
+  } finally {
+    const currentPane = session.panes.get(pane.paneId);
+    if (currentPane?.terminalId === pane.terminalId) {
+      ensurePaneHistoryCaptureState(currentPane);
+      currentPane.historyCaptureInFlight = false;
+    } else {
+      pane.historyCaptureInFlight = false;
+    }
   }
+}
+
+async function captureInitialPaneContent(session: TmuxControlSession, pane: TmuxPaneState) {
+  await capturePaneFullContent(session, pane, {
+    initial: true,
+    reason: "initial",
+  });
 }
 
 async function redrawVisiblePaneContent(
@@ -1931,6 +2083,33 @@ async function redrawVisiblePaneContent(
     reason,
     lines: lines.length,
   });
+}
+
+async function refreshPaneContentForDisplay(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  reason: string
+) {
+  ensurePaneHistoryCaptureState(pane);
+  if (pane.historyCaptureInFlight) {
+    debugLog("tmux.capture", "skip pane display refresh during history capture", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+      reason,
+    });
+    return;
+  }
+
+  if (shouldCaptureAuthoritativePaneHistory(pane)) {
+    await capturePaneFullContent(session, pane, {
+      reason,
+      forceFallbackHistory: pane.missedOutputSinceHistoryCapture,
+    });
+    return;
+  }
+
+  await redrawVisiblePaneContent(session, pane, reason);
 }
 
 async function refreshSingleWindow(session: TmuxControlSession, windowId: string) {
@@ -1996,7 +2175,7 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
   if (paneStatesToRedraw.length > 0) {
     const reason = shouldRedrawWindow ? "resize" : "layout-change";
     void Promise.all(
-      paneStatesToRedraw.map((pane) => redrawVisiblePaneContent(session, pane, reason))
+      paneStatesToRedraw.map((pane) => refreshPaneContentForDisplay(session, pane, reason))
     ).catch((error) => {
       debugLogError("tmux.capture", `${reason} pane redraw failed`, error);
     });
@@ -2401,6 +2580,7 @@ function handleNotification(session: TmuxControlSession, line: string) {
     }
 
     const output = unescapeTmuxOutput(parsed.value);
+    markPaneOutputMissedByHistoryCapture(session, pane, parsed.value.length);
     if (recordActivity) {
       queueTerminalOutput(pane.terminalId, output);
     } else {
@@ -3006,7 +3186,7 @@ export function handleTmuxTerminalFocus(terminalId: string) {
   if (pane) {
     suppressPaneOutputActivity(session, pane.paneId, "focus-pane-sync");
     if (pane.initialContentCaptured) {
-      void redrawVisiblePaneContent(session, pane, "focus").catch((error) => {
+      void refreshPaneContentForDisplay(session, pane, "focus").catch((error) => {
         debugLogError("tmux.capture", "focus pane redraw failed", error);
       });
     } else {
