@@ -289,6 +289,7 @@ function batchedWrite(
     options?.recordActivity !== false
     && data.length > 0
     && !isTransientFocusSequence(data)
+    && hasTerminalActivityOutput(data)
     && !writeStatusRecorded.has(terminalId);
   if (shouldRecordOutput) {
     writeStatusRecorded.add(terminalId);
@@ -411,6 +412,20 @@ function shouldSuppressTransientFocusSequence(terminalId: string, data: string):
 
 function isTransientFocusSequence(data: string): boolean {
   return data === "\u001b[I" || data === "\u001b[O";
+}
+
+function stripTerminalControlSequences(data: string): string {
+  return data
+    .replace(/\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001bP[\s\S]*?\u001b\\/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[()*+#%./-][ -~]?/g, "")
+    .replace(/\u001b[@-Z\\-_]/g, "")
+    .replace(/[\x00-\x1f\x7f]/g, "");
+}
+
+function hasTerminalActivityOutput(data: string): boolean {
+  return /[^\s]/.test(stripTerminalControlSequences(data));
 }
 
 // ---------------------------------------------------------------------------
@@ -802,6 +817,51 @@ function readTerminalVisualTextSnapshot(
 /** Focus the xterm instance for a given terminal (e.g. after renaming). */
 export function focusTerminalInstance(terminalId: string) {
   instances.get(terminalId)?.xterm.focus();
+}
+
+export function refreshAllTerminalFrontends(reason: string) {
+  const sessions = useTerminalStore.getState().sessions;
+  let attached = 0;
+  let parked = 0;
+  let fit = 0;
+  let refreshed = 0;
+
+  for (const [terminalId, instance] of instances) {
+    const mountPoint = instance.element.parentElement as HTMLElement | null;
+    const isParked = !mountPoint || mountPoint.id === PARKING_ROOT_ID;
+    if (isParked) {
+      parked += 1;
+    } else {
+      attached += 1;
+      const backendKind = sessions[terminalId]?.backendKind;
+      if (shouldFitFrontendToViewport(backendKind)) {
+        try {
+          instance.fitAddon.fit();
+          fit += 1;
+        } catch (error) {
+          debugLog("terminal.frontend", "wake fit failed", {
+            terminalId,
+            reason,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    if (instance.xterm.rows > 0) {
+      instance.xterm.refresh(0, instance.xterm.rows - 1);
+      refreshed += 1;
+    }
+  }
+
+  debugLog("terminal.frontend", "wake refresh", {
+    reason,
+    instances: instances.size,
+    attached,
+    parked,
+    fit,
+    refreshed,
+  });
 }
 
 function getTerminalMountContentSize(mountPoint: HTMLElement): { width: number; height: number } {

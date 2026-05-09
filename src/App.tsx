@@ -18,6 +18,7 @@ import { useAppStateBackup } from "./hooks/useAppStateBackup";
 import { useRecoveryBootstrap } from "./hooks/useRecoveryBootstrap";
 import { useStartupStoreNormalization } from "./hooks/useStartupStoreNormalization";
 import { useTerminalScreenshotMonitor } from "./hooks/useTerminalScreenshotMonitor";
+import { useWakeRecovery } from "./hooks/useWakeRecovery";
 import { debugLog } from "./lib/debugLog";
 import {
   closeTmuxTerminal,
@@ -85,6 +86,7 @@ export default function App() {
   useAppStateBackup();
   useRecoveryBootstrap();
   useTerminalScreenshotMonitor();
+  useWakeRecovery();
 
   useEffect(() => {
     const logStartupState = (phase: string) => {

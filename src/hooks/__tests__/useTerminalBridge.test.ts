@@ -221,12 +221,36 @@ describe("useTerminalBridge synthetic input", () => {
     });
 
     ensureTerminalScreenshotTarget("tmux-pane-test");
-    queueTerminalOutput("tmux-pane-test", "\u001b]11;?\u001b\\\u001b[6n");
+    queueTerminalOutput("tmux-pane-test", "real progress\n");
 
     expect(createdTerminals[0].write).not.toHaveBeenCalled();
     expect(useTerminalStore.getState().sessions["tmux-pane-test"].lastOutputAt).toBeGreaterThan(0);
 
     disposeTerminalInstance("tmux-pane-test");
+  });
+
+  it("does not record control-only output as activity", () => {
+    useTerminalStore.getState().addSession("tab-root", "A");
+    useTerminalStore.getState().addSession("pane", "A");
+    useLayoutStore.getState().initLayout("tab-root", "pane");
+
+    useTerminalStore.getState().setDetectedActivity("tab-root", true);
+    useTerminalStore.getState().setPossiblyDone("tab-root", true);
+    useTerminalStore.getState().setLongInactive("tab-root", true);
+    useTerminalStore.getState().setDetectedActivity("pane", true);
+    useTerminalStore.getState().setPossiblyDone("pane", true);
+    useTerminalStore.getState().setLongInactive("pane", true);
+
+    queueTerminalOutput(
+      "pane",
+      "\u001b]0;\u2802 Fix and restore PyTorch PR\u0007\u001b[?25l\u001b[?25h\u001b[6n\r"
+    );
+
+    expect(useTerminalStore.getState().sessions["tab-root"].isPossiblyDone).toBe(true);
+    expect(useTerminalStore.getState().sessions["tab-root"].isLongInactive).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].isPossiblyDone).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].isLongInactive).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].lastOutputAt).toBe(0);
   });
 
   it("clears brown tab status immediately for a tab-root session when a child pane gets input", () => {
