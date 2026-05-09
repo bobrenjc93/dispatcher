@@ -91,6 +91,8 @@ interface TmuxPaneState {
   historySize: number;
   initialContentCaptured: boolean;
   lastHistoryCaptureSize: number;
+  lastHistoryRefreshAt: number;
+  lastHistoryRefreshDeferredLogAt: number;
   historyCaptureInFlight: boolean;
   missedOutputSinceHistoryCapture: boolean;
 }
@@ -209,6 +211,8 @@ const TMUX_PENDING_PANE_OUTPUT_MAX_CHUNKS = 512;
 const TMUX_PENDING_PANE_OUTPUT_MAX_CHARS = 2_000_000;
 const TMUX_CLIENT_RESIZE_LAYOUT_SUPPRESSION_MS = 1_000;
 const TMUX_PANE_OUTPUT_ACTIVITY_SUPPRESSION_MS = 2_000;
+const TMUX_HISTORY_REFRESH_COOLDOWN_MS = 30_000;
+const TMUX_HISTORY_REFRESH_DEFER_LOG_INTERVAL_MS = 10_000;
 const TMUX_PASTE_BUFFER_CHUNK_SIZE = 8_000;
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
@@ -239,6 +243,8 @@ function ensureInitialPaneCaptureState(session: TmuxControlSession) {
 
 function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.lastHistoryCaptureSize ??= 0;
+  pane.lastHistoryRefreshAt ??= 0;
+  pane.lastHistoryRefreshDeferredLogAt ??= 0;
   pane.historyCaptureInFlight ??= false;
   pane.missedOutputSinceHistoryCapture ??= false;
 }
@@ -671,6 +677,8 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       historySize: 0,
       initialContentCaptured: false,
       lastHistoryCaptureSize: 0,
+      lastHistoryRefreshAt: 0,
+      lastHistoryRefreshDeferredLogAt: 0,
       historyCaptureInFlight: false,
       missedOutputSinceHistoryCapture: false,
     });
@@ -1440,6 +1448,8 @@ function upsertWindowProjection(
         historySize: paneSnapshot.historySize,
         initialContentCaptured: false,
         lastHistoryCaptureSize: 0,
+        lastHistoryRefreshAt: 0,
+        lastHistoryRefreshDeferredLogAt: 0,
         historyCaptureInFlight: false,
         missedOutputSinceHistoryCapture: false,
       };
@@ -1703,17 +1713,92 @@ function markPaneOutputMissedByHistoryCapture(
   pane.missedOutputSinceHistoryCapture = true;
 }
 
-function shouldCaptureAuthoritativePaneHistory(pane: TmuxPaneState): boolean {
+type PaneHistoryStaleReason =
+  | "hidden-output"
+  | "initial-history-growth"
+  | "history-shrank";
+
+function getPaneHistoryStaleReason(pane: TmuxPaneState): PaneHistoryStaleReason | null {
   ensurePaneHistoryCaptureState(pane);
   if (!pane.initialContentCaptured || pane.historyCaptureInFlight || pane.alternateOn) {
+    return null;
+  }
+
+  if (pane.lastHistoryCaptureSize === 0 && pane.historySize > 0) {
+    return "initial-history-growth";
+  }
+
+  if (pane.historySize < pane.lastHistoryCaptureSize) {
+    return "history-shrank";
+  }
+
+  if (pane.missedOutputSinceHistoryCapture) {
+    return "hidden-output";
+  }
+
+  return null;
+}
+
+function shouldCaptureAuthoritativePaneHistory(pane: TmuxPaneState): boolean {
+  return getPaneHistoryStaleReason(pane) !== null;
+}
+
+function canRefreshPaneHistoryForDisplay(
+  pane: TmuxPaneState,
+  displayReason: string,
+  staleReason: PaneHistoryStaleReason,
+  now: number
+): boolean {
+  if (displayReason !== "focus") {
     return false;
   }
 
+  if (staleReason === "initial-history-growth" || pane.lastHistoryRefreshAt <= 0) {
+    return true;
+  }
+
+  return now - pane.lastHistoryRefreshAt >= TMUX_HISTORY_REFRESH_COOLDOWN_MS;
+}
+
+function shouldUseFallbackHistoryCapture(
+  pane: TmuxPaneState,
+  staleReason: PaneHistoryStaleReason
+): boolean {
   return (
-    pane.missedOutputSinceHistoryCapture
-    || (pane.lastHistoryCaptureSize === 0 && pane.historySize > 0)
-    || pane.historySize < pane.lastHistoryCaptureSize
+    staleReason === "hidden-output"
+    && pane.historySize <= 0
+    && pane.lastHistoryCaptureSize <= 0
   );
+}
+
+function logDeferredPaneHistoryRefresh(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  displayReason: string,
+  staleReason: PaneHistoryStaleReason,
+  now: number
+) {
+  ensurePaneHistoryCaptureState(pane);
+  if (
+    pane.lastHistoryRefreshDeferredLogAt > 0
+    && now - pane.lastHistoryRefreshDeferredLogAt < TMUX_HISTORY_REFRESH_DEFER_LOG_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  pane.lastHistoryRefreshDeferredLogAt = now;
+  debugLog("tmux.capture", "defer pane history refresh", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    displayReason,
+    staleReason,
+    historySize: pane.historySize,
+    lastHistoryCaptureSize: pane.lastHistoryCaptureSize,
+    lastHistoryRefreshAt: pane.lastHistoryRefreshAt,
+    cooldownMs: TMUX_HISTORY_REFRESH_COOLDOWN_MS,
+    missedOutputSinceHistoryCapture: pane.missedOutputSinceHistoryCapture,
+  });
 }
 
 async function sendCommand(session: TmuxControlSession, command: string): Promise<string[]> {
@@ -1951,6 +2036,7 @@ async function capturePaneFullContent(
       historySize: pane.historySize,
       requestedHistorySize: requestedHistorySize ?? null,
       lastHistoryCaptureSize: pane.lastHistoryCaptureSize,
+      lastHistoryRefreshAt: pane.lastHistoryRefreshAt,
       missedOutputSinceHistoryCapture: pane.missedOutputSinceHistoryCapture,
       cursorX: pane.cursorX,
       cursorY: pane.cursorY,
@@ -1990,6 +2076,10 @@ async function capturePaneFullContent(
     );
     currentPane.initialContentCaptured = true;
     currentPane.lastHistoryCaptureSize = currentPane.historySize;
+    currentPane.lastHistoryRefreshDeferredLogAt = 0;
+    if (!options.initial) {
+      currentPane.lastHistoryRefreshAt = Date.now();
+    }
     currentPane.missedOutputSinceHistoryCapture = false;
     debugLog(
       "tmux.capture",
@@ -2003,6 +2093,7 @@ async function capturePaneFullContent(
         includesHistory: !pane.alternateOn && (useFallbackHistory || pane.historySize > 0),
         historySize: currentPane.historySize,
         lastHistoryCaptureSize: currentPane.lastHistoryCaptureSize,
+        lastHistoryRefreshAt: currentPane.lastHistoryRefreshAt,
       }
     );
   } catch (error) {
@@ -2101,10 +2192,18 @@ async function refreshPaneContentForDisplay(
     return;
   }
 
-  if (shouldCaptureAuthoritativePaneHistory(pane)) {
+  const staleReason = getPaneHistoryStaleReason(pane);
+  if (staleReason) {
+    const now = Date.now();
+    if (!canRefreshPaneHistoryForDisplay(pane, reason, staleReason, now)) {
+      logDeferredPaneHistoryRefresh(session, pane, reason, staleReason, now);
+      await redrawVisiblePaneContent(session, pane, reason);
+      return;
+    }
+
     await capturePaneFullContent(session, pane, {
       reason,
-      forceFallbackHistory: pane.missedOutputSinceHistoryCapture,
+      forceFallbackHistory: shouldUseFallbackHistoryCapture(pane, staleReason),
     });
     return;
   }
