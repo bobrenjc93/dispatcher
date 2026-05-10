@@ -9,7 +9,11 @@ import { useTerminalStore } from "./stores/useTerminalStore";
 import { useFontStore } from "./stores/useFontStore";
 import { useColorSchemeStore } from "./stores/useColorSchemeStore";
 import { applyUIColors } from "./lib/colorSchemes";
-import { shouldBypassAppShortcutsForTerminal } from "./lib/keyboardShortcuts";
+import {
+  isCloseTabShortcut,
+  isRepeatedCloseTabShortcut,
+  shouldBypassAppShortcutsForTerminal,
+} from "./lib/keyboardShortcuts";
 import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from "./lib/layoutUtils";
 import { closeTerminal, warmPool, refreshPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
@@ -759,10 +763,32 @@ export default function App() {
         handleSplitPane(activeTermId, "vertical");
       }
     }
-    if (isMeta && e.key === "w") {
+    // Browser/WebKit sends repeated keydown events while Cmd/Ctrl+W is held.
+    // Closing a tab also focuses the next tab, so treating repeats as fresh app
+    // shortcuts can cascade through every restored terminal. Consume repeats but
+    // only let the first non-repeat close request mutate the tab tree.
+    if (isRepeatedCloseTabShortcut(e, isMac)) {
+      e.preventDefault();
+      debugLog("app.shortcut", "ignored repeated close tab shortcut", {
+        key: e.key,
+        code: e.code,
+        repeat: e.repeat,
+        platform: navigator.platform,
+        activeTerminalId: useTerminalStore.getState().activeTerminalId,
+      });
+      return;
+    }
+    if (isCloseTabShortcut(e, isMac)) {
       e.preventDefault();
       const activeTermId = useTerminalStore.getState().activeTerminalId;
       if (activeTermId) {
+        debugLog("app.shortcut", "closing active terminal from shortcut", {
+          terminalId: activeTermId,
+          key: e.key,
+          code: e.code,
+          repeat: e.repeat,
+          platform: navigator.platform,
+        });
         handleClosePane(activeTermId);
       }
     }

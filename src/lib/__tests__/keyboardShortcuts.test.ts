@@ -3,8 +3,10 @@ import {
   getCtrlLetterControlCharacter,
   getMacDeleteSequence,
   getMacOptionMetaSequence,
+  isCloseTabShortcut,
   isEventInsideTerminal,
   isPlainCtrlLetterShortcut,
+  isRepeatedCloseTabShortcut,
   suppressMacCtrlChordTextInput,
   shouldBypassAppShortcutsForTerminal,
 } from "../keyboardShortcuts";
@@ -19,6 +21,26 @@ describe("keyboardShortcuts", () => {
     expect(isPlainCtrlLetterShortcut({ ctrlKey: true, metaKey: false, altKey: false, key: "]" })).toBe(false);
     expect(isPlainCtrlLetterShortcut({ ctrlKey: true, metaKey: false, altKey: true, key: "r" })).toBe(false);
     expect(isPlainCtrlLetterShortcut({ ctrlKey: false, metaKey: true, altKey: false, key: "r" })).toBe(false);
+  });
+
+  it("recognizes the app close-tab shortcut without treating key repeat as a separate command", () => {
+    const firstMacClose = {
+      altKey: false,
+      ctrlKey: false,
+      metaKey: true,
+      repeat: false,
+      shiftKey: false,
+      key: "w",
+    };
+    const repeatedMacClose = { ...firstMacClose, repeat: true };
+
+    expect(isCloseTabShortcut(firstMacClose, true)).toBe(true);
+    expect(isRepeatedCloseTabShortcut(firstMacClose, true)).toBe(false);
+    expect(isRepeatedCloseTabShortcut(repeatedMacClose, true)).toBe(true);
+
+    expect(isCloseTabShortcut({ ...firstMacClose, shiftKey: true, key: "W" }, true)).toBe(false);
+    expect(isCloseTabShortcut({ ...firstMacClose, metaKey: false, ctrlKey: true }, true)).toBe(false);
+    expect(isCloseTabShortcut({ ...firstMacClose, metaKey: false, ctrlKey: true }, false)).toBe(true);
   });
 
   it("maps Ctrl+letter key codes to terminal control characters", () => {

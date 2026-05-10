@@ -216,6 +216,48 @@ fn app_state_backup_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, P
     Ok(dir.join("dispatcher-state-backup.json"))
 }
 
+const APP_STATE_BACKUP_GENERATIONS: usize = 10;
+
+fn app_state_backup_generation_path(
+    path: &std::path::Path,
+    generation: usize,
+) -> std::path::PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("dispatcher-state-backup.json");
+    path.with_file_name(format!("{}.{}", file_name, generation))
+}
+
+fn rotate_existing_app_state_backups(path: &std::path::Path) -> Result<(), PtyError> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    // Keep a short local history because the frontend writes state after every
+    // tab-tree mutation. If a bad shortcut or renderer bug removes many tabs,
+    // the current backup can become bad before anyone has time to inspect it.
+    let oldest = app_state_backup_generation_path(path, APP_STATE_BACKUP_GENERATIONS);
+    match fs::remove_file(&oldest) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(PtyError::from(err)),
+    }
+
+    for generation in (1..APP_STATE_BACKUP_GENERATIONS).rev() {
+        let from = app_state_backup_generation_path(path, generation);
+        let to = app_state_backup_generation_path(path, generation + 1);
+        match fs::rename(&from, &to) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(PtyError::from(err)),
+        }
+    }
+
+    fs::copy(path, app_state_backup_generation_path(path, 1))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn read_app_state_backup(app_handle: AppHandle) -> Result<Option<String>, PtyError> {
     let path = app_state_backup_path(&app_handle)?;
@@ -232,6 +274,8 @@ pub fn write_app_state_backup(app_handle: AppHandle, content: String) -> Result<
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+
+    rotate_existing_app_state_backups(&path)?;
 
     let tmp_path = path.with_extension("json.tmp");
     fs::write(&tmp_path, content)?;

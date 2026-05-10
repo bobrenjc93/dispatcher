@@ -10,6 +10,20 @@ export function shouldBypassAppShortcutsForTerminal(event: Pick<KeyboardEvent, "
   return isPlainCtrlLetterShortcut(event) && isEventInsideTerminal(event.target);
 }
 
+type AppShortcutEvent = Pick<
+  KeyboardEvent,
+  "altKey" | "ctrlKey" | "metaKey" | "repeat" | "shiftKey" | "key"
+>;
+
+export function isCloseTabShortcut(event: AppShortcutEvent, isMac: boolean): boolean {
+  const isAppModifier = isMac ? event.metaKey : event.ctrlKey;
+  return isAppModifier && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "w";
+}
+
+export function isRepeatedCloseTabShortcut(event: AppShortcutEvent, isMac: boolean): boolean {
+  return event.repeat && isCloseTabShortcut(event, isMac);
+}
+
 export function getCtrlLetterControlCharacter(
   event: Pick<KeyboardEvent, "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "code">
 ): string | null {
