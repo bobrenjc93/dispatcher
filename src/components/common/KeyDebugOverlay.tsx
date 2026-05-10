@@ -90,6 +90,8 @@ function formatStatusDetail(entry: StatusDebugEntry): string {
   const timing = [
     entry.acknowledgedTime ? `ack=${formatMaybeTime(entry.acknowledgedTime)}` : null,
     entry.effectiveChangedAt ? `effective=${formatMaybeTime(entry.effectiveChangedAt)}` : null,
+    entry.staleStartedAt ? `stale=${formatMaybeTime(entry.staleStartedAt)}` : null,
+    entry.brownStartedAt ? `brown=${formatMaybeTime(entry.brownStartedAt)}` : null,
     entry.lastUserInputAt ? `input=${formatMaybeTime(entry.lastUserInputAt)}` : null,
     entry.lastOutputAt ? `output=${formatMaybeTime(entry.lastOutputAt)}` : null,
     focusSuppressionUntil ? `focusSuppressUntil=${focusSuppressionUntil}` : null,

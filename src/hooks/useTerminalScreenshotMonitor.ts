@@ -26,8 +26,14 @@ import { useTerminalStore } from "../stores/useTerminalStore";
 import type { TerminalSession } from "../types/terminal";
 
 const SCREENSHOT_INTERVAL_MS = 5_000;
+// A stable tab becomes stale after this window. Background stale tabs pulse
+// until the user looks at them; acknowledged stale tabs turn brown.
 const SCREENSHOT_INACTIVITY_MS = 10_000;
+// Long inactivity applies to brown tabs only. Unacknowledged stale tabs keep
+// pulsing because they still need the user's attention.
 const SCREENSHOT_LONG_INACTIVITY_MS = 60 * 60 * 1000;
+// Tmux focus can redraw panes without real agent progress. This short window
+// prevents those focus-only redraws from clearing pulse/brown state.
 const FOCUS_VISUAL_SUPPRESSION_MS = SCREENSHOT_INTERVAL_MS + 2_500;
 const SCREENSHOT_ARTIFACT_INTERVAL_MS = 30_000;
 const MAX_VISUAL_TABS_PER_SAMPLE = 6;
@@ -265,6 +271,8 @@ async function writeScreenshotDebugArtifacts(args: {
   effectiveChangedAt: number;
   acknowledgedTime: number;
   idleStartedAt: number;
+  staleStartedAt: number;
+  brownStartedAt: number | null;
   nextNeedsAttention: boolean;
   nextPossiblyDone: boolean;
   nextLongInactive: boolean;
@@ -309,6 +317,8 @@ async function writeScreenshotDebugArtifacts(args: {
     effectiveChangedAt: args.effectiveChangedAt,
     acknowledgedTime: args.acknowledgedTime,
     idleStartedAt: args.idleStartedAt,
+    staleStartedAt: args.staleStartedAt,
+    brownStartedAt: args.brownStartedAt,
     nextNeedsAttention: args.nextNeedsAttention,
     nextPossiblyDone: args.nextPossiblyDone,
     nextLongInactive: args.nextLongInactive,
@@ -457,6 +467,8 @@ export function useTerminalScreenshotMonitor() {
       const {
         hasAcknowledgedCurrentOutput,
         idleStartedAt,
+        staleStartedAt,
+        brownStartedAt,
         changedForStatus,
         shouldKeepAttentionUntilFocus,
         shouldKeepBrownUntilInput,
@@ -513,6 +525,8 @@ export function useTerminalScreenshotMonitor() {
         effectiveChangedAt,
         acknowledgedTime,
         idleStartedAt,
+        staleStartedAt,
+        brownStartedAt,
         exactChanged: false,
         repeatingHashOscillation: false,
         hasThreeSamples: false,
@@ -566,6 +580,11 @@ export function useTerminalScreenshotMonitor() {
         .map((terminalId) => store.sessions[terminalId])
         .filter((session): session is TerminalSession => session !== undefined);
       const previousAcknowledgedAt = acknowledgedAt.get(tabRootTerminalId) ?? 0;
+      // Acknowledgement is intentionally separate from activity. Focusing a
+      // pulsing tab means "the user has seen this stale output"; it must clear
+      // the pulse and let the next monitor pass mark it brown if nothing real
+      // changed. It must not move the output's idle baseline forward, because
+      // that would force a second inactivity window after focus.
       acknowledgedAt.set(tabRootTerminalId, now);
       const focusSuppression =
         reason === "active-terminal-changed" && statusSessions.some(isTmuxStatusSession)
@@ -798,6 +817,8 @@ export function useTerminalScreenshotMonitor() {
           const {
             hasAcknowledgedCurrentOutput,
             idleStartedAt,
+            staleStartedAt,
+            brownStartedAt,
             changedForStatus: resolvedChangedForStatus,
             shouldKeepAttentionUntilFocus,
             shouldKeepBrownUntilInput,
@@ -854,6 +875,8 @@ export function useTerminalScreenshotMonitor() {
             effectiveChangedAt,
             acknowledgedTime,
             idleStartedAt,
+            staleStartedAt,
+            brownStartedAt,
             exactChanged: visualChange.exactChanged,
             repeatingHashOscillation: visualChange.repeatingHashOscillation,
             hasThreeSamples: visualChange.hasThreeSamples,
@@ -921,6 +944,8 @@ export function useTerminalScreenshotMonitor() {
               effectiveChangedAt,
               acknowledgedTime,
               idleStartedAt,
+              staleStartedAt,
+              brownStartedAt,
               nextNeedsAttention,
               nextPossiblyDone,
               nextLongInactive,

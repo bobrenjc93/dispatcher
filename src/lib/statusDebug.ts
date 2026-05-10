@@ -27,6 +27,8 @@ export interface StatusDebugEntry {
   lastOutputAt?: number;
   effectiveChangedAt?: number;
   idleStartedAt?: number;
+  staleStartedAt?: number;
+  brownStartedAt?: number | null;
   exactChanged?: boolean;
   repeatingHashOscillation?: boolean;
   hasThreeSamples?: boolean;

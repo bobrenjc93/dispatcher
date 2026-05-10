@@ -9,7 +9,7 @@ A desktop terminal multiplexer built with Tauri, React, and xterm.js. Organize s
 - **Project-based organization** — group tabs by project with a tree sidebar and drag-and-drop reordering
 - **Split panes** — horizontal and vertical splits with resizable dividers
 - **Per-tab notes** — keep notes attached to the tab you are actually working in
-- **Activity status dots** — green for active work, pulsing green for unseen background output, brown for acknowledged idle tabs
+- **Activity status dots** — green for active work, pulsing green for stale unseen work, brown for acknowledged stale work, gray for long-idle acknowledged work
 - **Fast local terminals** — PTY pooling keeps new local tabs feeling immediate
 - **tmux `-CC` integration** — run `tmux -CC` locally or over SSH and map tmux windows to Dispatcher tabs and tmux panes to Dispatcher splits
 - **tmux-aware shortcuts** — `Cmd+T`, split, close, focus, and rename route to tmux when the active tab is backed by a live control-mode session
@@ -99,6 +99,25 @@ tmux -CC a
 ```
 
 Dispatcher will reconnect and hydrate the saved tmux tabs in place.
+
+## Status Dots
+
+Dispatcher's status dots are intentionally a small state machine, not raw PTY
+output indicators:
+
+- **Green** means the agent appears active: Dispatcher is seeing accepted
+  progress, or the tab has not yet crossed the stale threshold.
+- **Pulsing green** means the tab was green, then became stale while it was in
+  the background. It needs the user's attention because the current output has
+  not been acknowledged.
+- **Brown** means stale output has been acknowledged. The common flow is:
+  a background tab pulses, the user views it, and no real progress or user input
+  follows. Focusing the pulsing tab must not restart the inactivity timer.
+- **Gray** means a brown tab stayed unchanged for the long-inactivity window.
+
+Tmux tabs can redraw on focus or resize without real agent progress. Dispatcher
+suppresses those focus-only redraws briefly so tmux churn does not incorrectly
+clear pulsing or brown state.
 
 ## Releasing
 

@@ -9,6 +9,9 @@ export function StatusDot({ terminalId }: { terminalId: string }) {
   const isNeedsAttention = useTerminalStore((state) => state.sessions[terminalId]?.isNeedsAttention ?? false);
   const isPossiblyDone = useTerminalStore((state) => state.sessions[terminalId]?.isPossiblyDone ?? false);
   const isLongInactive = useTerminalStore((state) => state.sessions[terminalId]?.isLongInactive ?? false);
+  // Color meaning is owned by terminalScreenshotStatus.ts. Keep this component
+  // as a dumb renderer so future changes do not split the state machine across
+  // UI and monitor code.
   const backgroundColor = !hasDetectedActivity
       ? GRAY
       : isNeedsAttention
