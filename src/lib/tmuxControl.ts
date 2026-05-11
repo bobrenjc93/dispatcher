@@ -96,6 +96,7 @@ interface TmuxPaneState {
   lastHistoryRefreshDeferredLogAt: number;
   historyCaptureInFlight: boolean;
   missedOutputSinceHistoryCapture: boolean;
+  contentClearGeneration: number;
 }
 
 interface WindowProjectionResult {
@@ -258,6 +259,7 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.lastHistoryRefreshDeferredLogAt ??= 0;
   pane.historyCaptureInFlight ??= false;
   pane.missedOutputSinceHistoryCapture ??= false;
+  pane.contentClearGeneration ??= 0;
 }
 
 function ensurePaneOutputActivitySuppressionState(session: TmuxControlSession) {
@@ -744,6 +746,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       lastHistoryRefreshDeferredLogAt: 0,
       historyCaptureInFlight: false,
       missedOutputSinceHistoryCapture: false,
+      contentClearGeneration: 0,
     });
     paneTerminalToSessionId.set(session.id, sessionId);
 
@@ -1543,6 +1546,7 @@ function upsertWindowProjection(
         lastHistoryRefreshDeferredLogAt: 0,
         historyCaptureInFlight: false,
         missedOutputSinceHistoryCapture: false,
+        contentClearGeneration: 0,
       };
       session.panes.set(paneSnapshot.paneId, paneState);
       paneTerminalToSessionId.set(terminalId, session.id);
@@ -2110,6 +2114,7 @@ async function capturePaneFullContent(
   }
 
   pane.historyCaptureInFlight = true;
+  const captureGeneration = pane.contentClearGeneration;
   const useFallbackHistory =
     options.forceFallbackHistory === true
     && !pane.alternateOn
@@ -2155,6 +2160,17 @@ async function capturePaneFullContent(
       return;
     }
     ensurePaneHistoryCaptureState(currentPane);
+    if (currentPane.contentClearGeneration !== captureGeneration) {
+      debugLog("tmux.capture", "skip stale pane full content after clear", {
+        sessionId: session.id,
+        paneId: pane.paneId,
+        terminalId: pane.terminalId,
+        reason: options.reason,
+        captureGeneration,
+        currentGeneration: currentPane.contentClearGeneration,
+      });
+      return;
+    }
 
     ensureTerminalFrontend(pane.terminalId);
     const cursorRow = Math.max(1, Math.floor(currentPane.cursorY) + 1);
@@ -2219,6 +2235,8 @@ async function redrawVisiblePaneContent(
   pane: TmuxPaneState,
   reason: string
 ) {
+  ensurePaneHistoryCaptureState(pane);
+  const captureGeneration = pane.contentClearGeneration;
   debugLog("tmux.capture", "visible pane redraw start", {
     sessionId: session.id,
     paneId: pane.paneId,
@@ -2245,6 +2263,18 @@ async function redrawVisiblePaneContent(
       paneId: pane.paneId,
       terminalId: pane.terminalId,
       reason,
+    });
+    return;
+  }
+  ensurePaneHistoryCaptureState(currentPane);
+  if (currentPane.contentClearGeneration !== captureGeneration) {
+    debugLog("tmux.capture", "skip stale pane redraw after clear", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+      reason,
+      captureGeneration,
+      currentGeneration: currentPane.contentClearGeneration,
     });
     return;
   }
@@ -3221,6 +3251,40 @@ export function resolvePreferredTerminalFocus(terminalId: string): string {
   }
 
   return controlSession.panes.get(windowState.activePaneId)?.terminalId ?? terminalId;
+}
+
+export async function clearTmuxTerminal(terminalId: string): Promise<boolean> {
+  const preferredTerminalId = resolvePreferredTerminalFocus(terminalId);
+  const pane = getTmuxPaneStateByTerminal(preferredTerminalId);
+  const session = pane ? getControlSessionForTerminal(preferredTerminalId) : null;
+  if (!pane || !session) {
+    return false;
+  }
+
+  ensurePaneHistoryCaptureState(pane);
+  pane.contentClearGeneration += 1;
+  pane.initialContentCaptured = true;
+  pane.historySize = 0;
+  pane.lastHistoryCaptureSize = 0;
+  pane.lastHistoryRefreshAt = Date.now();
+  pane.lastHistoryRefreshDeferredLogAt = 0;
+  pane.missedOutputSinceHistoryCapture = false;
+  ensureInitialPaneCaptureState(session);
+  session.pendingInitialPaneCaptures = session.pendingInitialPaneCaptures.filter(
+    (paneId) => paneId !== pane.paneId
+  );
+  suppressPaneOutputActivity(session, pane.paneId, "clear-history");
+  debugLog("tmux.action", "clear pane history", {
+    terminalId,
+    preferredTerminalId,
+    sessionId: session.id,
+    paneId: pane.paneId,
+    generation: pane.contentClearGeneration,
+  });
+
+  await sendCommand(session, `clear-history -t ${pane.paneId}`);
+  await sendCommand(session, `send-keys -t ${pane.paneId} C-l`);
+  return true;
 }
 
 function getBracketedPastePayload(data: string): string | null {

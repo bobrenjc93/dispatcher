@@ -25,7 +25,12 @@ import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
 import { debugLog } from "../lib/debugLog";
 import { isLinkOpenModifierPressed } from "../lib/terminalMouse";
-import { routeTmuxTransportOutput, sendInputToTmuxTerminal, sendPasteToTmuxTerminal } from "../lib/tmuxControl";
+import {
+  clearTmuxTerminal,
+  routeTmuxTransportOutput,
+  sendInputToTmuxTerminal,
+  sendPasteToTmuxTerminal,
+} from "../lib/tmuxControl";
 
 // ---------------------------------------------------------------------------
 // Persistent terminal instances — survive React remounts caused by layout
@@ -868,6 +873,12 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
     if (e.metaKey && e.key === "k") {
       e.preventDefault();
       xterm.clear();
+      void clearTmuxTerminal(terminalId).catch((error) => {
+        debugLog("terminal.shortcut", "tmux clear failed", {
+          terminalId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
       return false;
     }
 

@@ -32,6 +32,7 @@ import { useTerminalStore } from "../../stores/useTerminalStore";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
 import {
   beginTmuxPaneResizeByTerminal,
+  clearTmuxTerminal,
   createTmuxWindowForTerminal,
   handleTmuxTerminalFocus,
   resizeTmuxPaneByTerminal,
@@ -417,6 +418,106 @@ describe("tmuxControl", () => {
     completeTmuxCommand(transportTerminalId, 21);
 
     await expect(pastePromise).resolves.toBe(true);
+  });
+
+  it("clears tmux pane history for Cmd+K", async () => {
+    const transportTerminalId = "transport-clear-history";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+
+    const clearPromise = clearTmuxTerminal(paneTerminalId);
+    await Promise.resolve();
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "clear-history -t %1\n"
+    );
+
+    completeTmuxCommand(transportTerminalId, 30);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "send-keys -t %1 C-l\n"
+    );
+
+    completeTmuxCommand(transportTerminalId, 31);
+    await expect(clearPromise).resolves.toBe(true);
+    await expect(clearTmuxTerminal("not-tmux")).resolves.toBe(false);
+  });
+
+  it("does not let an in-flight tmux history capture repaint Cmd+K-cleared scrollback", async () => {
+    const transportTerminalId = "transport-clear-skips-stale-capture";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "@1\thappy\t1\t*",
+        "%end 4 0",
+        "%begin 5 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren\t4\t7\t0\t88",
+        "%end 5 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+    handleTmuxTerminalFocus(paneTerminalId);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -S -88 -t %1\n"
+    );
+
+    const clearPromise = clearTmuxTerminal(paneTerminalId);
+    await Promise.resolve();
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 6 0",
+        "%end 6 0",
+        "%begin 7 0",
+        "old history that should stay cleared",
+        "old current row",
+        "%end 7 0",
+        "%begin 8 0",
+        "%end 8 0",
+        "%begin 9 0",
+        "%end 9 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("old history that should stay cleared"),
+      expect.anything()
+    );
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 10 0",
+        "%end 10 0",
+        "",
+      ].join("\n")
+    );
+    await expect(clearPromise).resolves.toBe(true);
   });
 
   it("keeps hydrated tmux windows as disconnected placeholders when control mode exits", async () => {
