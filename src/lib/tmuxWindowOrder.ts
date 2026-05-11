@@ -21,6 +21,49 @@ export function buildPreferredTmuxWindowOrder(options: {
   return [...preservedOrder, ...appended];
 }
 
+export function resolveAdjacentTmuxWindowAfterClose(options: {
+  windowOrder: readonly string[];
+  closingWindowId: string;
+  availableWindowIds: ReadonlySet<string>;
+}): string | null {
+  const orderedWindowIds: string[] = [];
+  const seenWindowIds = new Set<string>();
+
+  for (const windowId of options.windowOrder) {
+    if (seenWindowIds.has(windowId)) {
+      continue;
+    }
+
+    if (windowId === options.closingWindowId || options.availableWindowIds.has(windowId)) {
+      orderedWindowIds.push(windowId);
+      seenWindowIds.add(windowId);
+    }
+  }
+
+  const closingIndex = orderedWindowIds.indexOf(options.closingWindowId);
+  if (closingIndex === -1) {
+    return orderedWindowIds.find((windowId) => options.availableWindowIds.has(windowId)) ?? null;
+  }
+
+  // Match Dispatcher sidebar close behavior: closing an active tab focuses the
+  // next tab down, and closing the last tab falls back to the previous one.
+  for (let index = closingIndex + 1; index < orderedWindowIds.length; index += 1) {
+    const windowId = orderedWindowIds[index];
+    if (options.availableWindowIds.has(windowId)) {
+      return windowId;
+    }
+  }
+
+  for (let index = closingIndex - 1; index >= 0; index -= 1) {
+    const windowId = orderedWindowIds[index];
+    if (options.availableWindowIds.has(windowId)) {
+      return windowId;
+    }
+  }
+
+  return null;
+}
+
 export function mergeTmuxWindowNodesIntoChildren(options: {
   currentChildren: readonly string[];
   transportNodeId: string;

@@ -24,6 +24,7 @@ import {
 import {
   buildPreferredTmuxWindowOrder,
   reconcileTmuxWindowNodePlacements,
+  resolveAdjacentTmuxWindowAfterClose,
 } from "./tmuxWindowOrder";
 import { findLayoutKeyForTerminal, findTerminalIds } from "./layoutUtils";
 import {
@@ -1225,6 +1226,21 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
   const paneTerminalIds = [...session.panes.values()]
     .filter((pane) => pane.windowId === windowId)
     .map((pane) => pane.terminalId);
+  const activeTerminalIdBeforeRemoval = useTerminalStore.getState().activeTerminalId;
+  const shouldFocusAfterRemoval = Boolean(
+    activeTerminalIdBeforeRemoval
+    && (activeTerminalIdBeforeRemoval === window.terminalId || paneTerminalIds.includes(activeTerminalIdBeforeRemoval))
+  );
+  const windowOrderBeforeRemoval = [...session.windowOrder];
+  const availableWindowIdsAfterRemoval = new Set(session.windows.keys());
+  availableWindowIdsAfterRemoval.delete(windowId);
+  const fallbackWindowId = shouldFocusAfterRemoval
+    ? resolveAdjacentTmuxWindowAfterClose({
+        windowOrder: windowOrderBeforeRemoval,
+        closingWindowId: windowId,
+        availableWindowIds: availableWindowIdsAfterRemoval,
+      })
+    : null;
 
   for (const pane of [...session.panes.values()]) {
     if (pane.windowId === windowId) {
@@ -1249,14 +1265,27 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
   session.pendingWindowRedraws.delete(windowId);
   session.userPaneResizeLocks.delete(windowId);
 
-  const activeTerminalId = useTerminalStore.getState().activeTerminalId;
-  if (activeTerminalId && (activeTerminalId === window.terminalId || paneTerminalIds.includes(activeTerminalId))) {
-    const fallbackWindowId = session.windowOrder[0];
+  if (shouldFocusAfterRemoval) {
     const fallbackWindow = fallbackWindowId ? session.windows.get(fallbackWindowId) : null;
     const fallbackPaneTerminal = fallbackWindow?.activePaneId
       ? session.panes.get(fallbackWindow.activePaneId)?.terminalId
       : null;
-    useTerminalStore.getState().setActiveTerminal(fallbackPaneTerminal ?? session.transportTerminalId);
+    const fallbackTerminalId = fallbackPaneTerminal ?? fallbackWindow?.terminalId ?? session.transportTerminalId;
+    if (fallbackWindow) {
+      const placement = getWindowPlacement(session, fallbackWindow);
+      useProjectStore.getState().setActiveProject(placement.projectId);
+    }
+    debugLog("tmux.focus", "focus adjacent window after close", {
+      sessionId: session.id,
+      closedWindowId: windowId,
+      activeTerminalIdBeforeRemoval,
+      fallbackWindowId,
+      fallbackTerminalId,
+      windowOrderBeforeRemoval,
+      windowOrderAfterRemoval: session.windowOrder,
+    });
+    useTerminalStore.getState().setActiveTerminal(fallbackTerminalId);
+    focusTerminalInstance(fallbackTerminalId);
   }
 }
 

@@ -3,6 +3,7 @@ import {
   buildPreferredTmuxWindowOrder,
   mergeTmuxWindowNodesIntoChildren,
   reconcileTmuxWindowNodePlacements,
+  resolveAdjacentTmuxWindowAfterClose,
 } from "../tmuxWindowOrder";
 
 describe("tmuxWindowOrder", () => {
@@ -16,6 +17,28 @@ describe("tmuxWindowOrder", () => {
       ],
       snapshotWindowOrder: ["@1", "@2", "@3"],
     })).toEqual(["@2", "@1", "@3"]);
+  });
+
+  it("resolves close focus to the next tmux window, then the previous one", () => {
+    expect(resolveAdjacentTmuxWindowAfterClose({
+      windowOrder: ["@1", "@2", "@3"],
+      closingWindowId: "@2",
+      availableWindowIds: new Set(["@1", "@3"]),
+    })).toBe("@3");
+
+    expect(resolveAdjacentTmuxWindowAfterClose({
+      windowOrder: ["@1", "@2", "@3"],
+      closingWindowId: "@3",
+      availableWindowIds: new Set(["@1", "@2"]),
+    })).toBe("@2");
+  });
+
+  it("skips stale window-order entries when resolving close focus", () => {
+    expect(resolveAdjacentTmuxWindowAfterClose({
+      windowOrder: ["@1", "@2", "@3", "@4"],
+      closingWindowId: "@2",
+      availableWindowIds: new Set(["@1", "@4"]),
+    })).toBe("@4");
   });
 
   it("keeps existing window nodes in place and appends only missing ones", () => {

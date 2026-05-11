@@ -255,6 +255,46 @@ async function hydrateSplitWindow(transportTerminalId: string) {
   await Promise.resolve();
 }
 
+async function hydrateThreeWindows(transportTerminalId: string) {
+  routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+  await vi.runOnlyPendingTimersAsync();
+  await vi.runOnlyPendingTimersAsync();
+
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
+      "%begin 1 0",
+      "@1\tone\t1\t*",
+      "@2\ttwo\t0\t-",
+      "@3\tthree\t0\t-",
+      "%end 1 0",
+      "%begin 2 0",
+      "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren/one\t4\t7\t0",
+      "@2\t%2\t0\t0\t80\t24\t1\t/Users/bobren/two\t1\t2\t0",
+      "@3\t%3\t0\t0\t80\t24\t1\t/Users/bobren/three\t0\t0\t0",
+      "%end 2 0",
+      "",
+    ].join("\n")
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+
+  for (const commandId of [3, 4, 5]) {
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        `%begin ${commandId} 0`,
+        "",
+        `%end ${commandId} 0`,
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+}
+
 function getHydratedTmuxIds() {
   const sessions = useTerminalStore.getState().sessions;
   const windowEntry = Object.entries(sessions).find(([, session]) => session.backendKind === "tmux-window");
@@ -1464,5 +1504,37 @@ describe("tmuxControl", () => {
     expect(terminalState.sessions[paneTerminalId]).toBeUndefined();
     expect(useLayoutStore.getState().layouts[windowTerminalId]).toBeUndefined();
     expect(Object.values(useProjectStore.getState().nodes).some((node) => node.terminalId === windowTerminalId)).toBe(false);
+  });
+
+  it("focuses the next tmux window when the active tmux window closes", async () => {
+    const transportTerminalId = "transport-close-focus-next";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateThreeWindows(transportTerminalId);
+    const secondPaneTerminalId = getPaneTerminalIdByPaneId("%2");
+    const thirdPaneTerminalId = getPaneTerminalIdByPaneId("%3");
+    useTerminalStore.getState().setActiveTerminal(secondPaneTerminalId);
+    focusTerminalInstanceMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%window-close @2\n");
+
+    expect(useTerminalStore.getState().activeTerminalId).toBe(thirdPaneTerminalId);
+    expect(focusTerminalInstanceMock).toHaveBeenCalledWith(thirdPaneTerminalId);
+  });
+
+  it("focuses the previous tmux window when the last active tmux window closes", async () => {
+    const transportTerminalId = "transport-close-focus-previous";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateThreeWindows(transportTerminalId);
+    const secondPaneTerminalId = getPaneTerminalIdByPaneId("%2");
+    const thirdPaneTerminalId = getPaneTerminalIdByPaneId("%3");
+    useTerminalStore.getState().setActiveTerminal(thirdPaneTerminalId);
+    focusTerminalInstanceMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%window-close @3\n");
+
+    expect(useTerminalStore.getState().activeTerminalId).toBe(secondPaneTerminalId);
+    expect(focusTerminalInstanceMock).toHaveBeenCalledWith(secondPaneTerminalId);
   });
 });
