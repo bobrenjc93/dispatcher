@@ -24,8 +24,12 @@ let callbacks: DragCallbacks | null = null;
 
 let lastIndicatorEl: HTMLElement | null = null;
 let lastDragOverEl: HTMLElement | null = null;
+let previousBodyUserSelect: string | null = null;
+let previousBodyWebkitUserSelect: string | null = null;
+let suppressingTextSelection = false;
 
 const THRESHOLD = 5;
+const INTERACTIVE_DRAG_START_SELECTOR = "button,input,textarea,select,a,[contenteditable='true'],[contenteditable='']";
 
 export function registerDragCallbacks(cb: DragCallbacks) {
   callbacks = cb;
@@ -33,6 +37,56 @@ export function registerDragCallbacks(cb: DragCallbacks) {
 
 export function getDragInfo(): DragInfo | null {
   return info;
+}
+
+export function shouldIgnoreDragStartTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(INTERACTIVE_DRAG_START_SELECTOR) !== null;
+}
+
+function preventDocumentSelection(e: Event) {
+  if (!info) {
+    return;
+  }
+  e.preventDefault();
+}
+
+function clearDocumentSelection() {
+  window.getSelection()?.removeAllRanges();
+}
+
+function setTextSelectionSuppressed() {
+  if (suppressingTextSelection) {
+    return;
+  }
+
+  const bodyStyle = document.body.style as CSSStyleDeclaration & {
+    webkitUserSelect?: string;
+  };
+  previousBodyUserSelect = bodyStyle.userSelect;
+  previousBodyWebkitUserSelect = bodyStyle.webkitUserSelect ?? "";
+  bodyStyle.userSelect = "none";
+  bodyStyle.webkitUserSelect = "none";
+  document.body.classList.add("sidebar-dragging");
+  document.addEventListener("selectstart", preventDocumentSelection, true);
+  suppressingTextSelection = true;
+  clearDocumentSelection();
+}
+
+function restoreTextSelection() {
+  if (!suppressingTextSelection) {
+    return;
+  }
+
+  const bodyStyle = document.body.style as CSSStyleDeclaration & {
+    webkitUserSelect?: string;
+  };
+  bodyStyle.userSelect = previousBodyUserSelect ?? "";
+  bodyStyle.webkitUserSelect = previousBodyWebkitUserSelect ?? "";
+  previousBodyUserSelect = null;
+  previousBodyWebkitUserSelect = null;
+  document.body.classList.remove("sidebar-dragging");
+  document.removeEventListener("selectstart", preventDocumentSelection, true);
+  suppressingTextSelection = false;
 }
 
 function clearIndicators() {
@@ -58,6 +112,7 @@ function handlePointerMove(e: PointerEvent) {
     if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > THRESHOLD) {
       active = true;
       draggedEl?.classList.add("is-dragging");
+      clearDocumentSelection();
     } else {
       return;
     }
@@ -163,6 +218,10 @@ function handlePointerUp(e: PointerEvent) {
   end();
 }
 
+function handlePointerCancel() {
+  end();
+}
+
 function preventClick(e: MouseEvent) {
   e.stopPropagation();
   e.preventDefault();
@@ -177,6 +236,8 @@ function end() {
   }
   document.removeEventListener("pointermove", handlePointerMove);
   document.removeEventListener("pointerup", handlePointerUp);
+  document.removeEventListener("pointercancel", handlePointerCancel);
+  restoreTextSelection();
   info = null;
   active = false;
   draggedEl = null;
@@ -188,6 +249,8 @@ export function startDrag(dragInfo: DragInfo, x: number, y: number, element: HTM
   startY = y;
   active = false;
   draggedEl = element;
+  setTextSelectionSuppressed();
   document.addEventListener("pointermove", handlePointerMove);
   document.addEventListener("pointerup", handlePointerUp);
+  document.addEventListener("pointercancel", handlePointerCancel);
 }

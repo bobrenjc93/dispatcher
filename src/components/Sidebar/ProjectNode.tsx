@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { SidebarTreeNode } from "./SidebarTreeNode";
 import { ContextMenu } from "../common/ContextMenu";
-import { startDrag } from "../../lib/dragState";
+import { shouldIgnoreDragStartTarget, startDrag } from "../../lib/dragState";
 import type { Project } from "../../types/project";
 
 interface ProjectNodeProps {
@@ -59,6 +59,7 @@ export function ProjectNode({
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    if (shouldIgnoreDragStartTarget(e.target)) return;
     startDrag({ type: "project", projectId: project.id }, e.clientX, e.clientY, e.currentTarget as HTMLElement);
   };
 

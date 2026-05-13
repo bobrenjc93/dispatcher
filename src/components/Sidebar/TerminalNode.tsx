@@ -3,7 +3,7 @@ import { StatusDot } from "../common/StatusDot";
 import { ContextMenu } from "../common/ContextMenu";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useProjectStore } from "../../stores/useProjectStore";
-import { startDrag } from "../../lib/dragState";
+import { shouldIgnoreDragStartTarget, startDrag } from "../../lib/dragState";
 import { focusTerminalInstance } from "../../hooks/useTerminalBridge";
 import { renameTmuxTerminal } from "../../lib/tmuxControl";
 
@@ -76,6 +76,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    if (shouldIgnoreDragStartTarget(e.target)) return;
     startDrag({ type: "terminal", terminalId, projectId, nodeId }, e.clientX, e.clientY, e.currentTarget as HTMLElement);
   };
 

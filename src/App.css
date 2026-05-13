@@ -326,6 +326,7 @@ html, body, #root {
   padding: 6px 16px;
   cursor: pointer;
   user-select: none;
+  -webkit-user-select: none;
   position: relative;
 }
 
@@ -417,6 +418,12 @@ html, body, #root {
   pointer-events: none;
 }
 
+body.sidebar-dragging,
+body.sidebar-dragging * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
 /* Delete buttons on hover */
 .sidebar-delete-btn {
   opacity: 0;
@@ -495,6 +502,7 @@ html, body, #root {
   padding: 4px 8px;
   cursor: pointer;
   user-select: none;
+  -webkit-user-select: none;
 }
 
 .sidebar-group-header:hover {
@@ -522,6 +530,7 @@ html, body, #root {
   cursor: pointer;
   border-radius: 6px;
   user-select: none;
+  -webkit-user-select: none;
   margin: 0 8px;
   transition: background 0.1s;
 }
