@@ -11,6 +11,7 @@ import { useColorSchemeStore } from "./stores/useColorSchemeStore";
 import { applyUIColors } from "./lib/colorSchemes";
 import {
   isCloseTabShortcut,
+  isRenameTerminalShortcut,
   isRepeatedCloseTabShortcut,
   shouldBypassAppShortcutsForTerminal,
 } from "./lib/keyboardShortcuts";
@@ -792,9 +793,9 @@ export default function App() {
         handleClosePane(activeTermId);
       }
     }
-    // Rename active tab: Cmd+R only.
-    // Keep bare Ctrl+R reserved for terminal reverse search.
-    if (e.metaKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "r") {
+    // Rename active tab: Cmd+L, matching browser location focus. Cmd+R stays
+    // as a compatibility alias; bare Ctrl+R remains terminal reverse search.
+    if (isRenameTerminalShortcut(e)) {
       e.preventDefault();
       const activeTermId = useTerminalStore.getState().activeTerminalId;
       if (activeTermId) {

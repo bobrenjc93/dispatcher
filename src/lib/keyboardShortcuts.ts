@@ -24,6 +24,15 @@ export function isRepeatedCloseTabShortcut(event: AppShortcutEvent, isMac: boole
   return event.repeat && isCloseTabShortcut(event, isMac);
 }
 
+export function isRenameTerminalShortcut(event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey" | "key">): boolean {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
+    return false;
+  }
+
+  const key = event.key.toLowerCase();
+  return key === "l" || key === "r";
+}
+
 export function getCtrlLetterControlCharacter(
   event: Pick<KeyboardEvent, "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "code">
 ): string | null {

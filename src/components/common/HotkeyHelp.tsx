@@ -10,7 +10,7 @@ const shortcuts = [
   { keys: "⌘W", description: "Close pane" },
   { keys: "⌘D", description: "Split right" },
   { keys: "⇧⌘D", description: "Split down" },
-  { keys: "⌘R", description: "Rename terminal" },
+  { keys: "⌘L", description: "Rename terminal" },
   { keys: "⌘U", description: "Move to top" },
   { keys: "⌘B", description: "Move to bottom" },
   { keys: "⌘]", description: "Next project" },

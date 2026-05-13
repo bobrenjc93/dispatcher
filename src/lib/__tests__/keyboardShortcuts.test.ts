@@ -6,6 +6,7 @@ import {
   isCloseTabShortcut,
   isEventInsideTerminal,
   isPlainCtrlLetterShortcut,
+  isRenameTerminalShortcut,
   isRepeatedCloseTabShortcut,
   suppressMacCtrlChordTextInput,
   shouldBypassAppShortcutsForTerminal,
@@ -41,6 +42,23 @@ describe("keyboardShortcuts", () => {
     expect(isCloseTabShortcut({ ...firstMacClose, shiftKey: true, key: "W" }, true)).toBe(false);
     expect(isCloseTabShortcut({ ...firstMacClose, metaKey: false, ctrlKey: true }, true)).toBe(false);
     expect(isCloseTabShortcut({ ...firstMacClose, metaKey: false, ctrlKey: true }, false)).toBe(true);
+  });
+
+  it("recognizes Cmd+L as the rename shortcut while keeping Cmd+R as an alias", () => {
+    const base = {
+      altKey: false,
+      ctrlKey: false,
+      metaKey: true,
+      shiftKey: false,
+    };
+
+    expect(isRenameTerminalShortcut({ ...base, key: "l" })).toBe(true);
+    expect(isRenameTerminalShortcut({ ...base, key: "L" })).toBe(true);
+    expect(isRenameTerminalShortcut({ ...base, key: "r" })).toBe(true);
+    expect(isRenameTerminalShortcut({ ...base, key: "R" })).toBe(true);
+    expect(isRenameTerminalShortcut({ ...base, key: "l", shiftKey: true })).toBe(false);
+    expect(isRenameTerminalShortcut({ ...base, key: "l", ctrlKey: true })).toBe(false);
+    expect(isRenameTerminalShortcut({ ...base, key: "r", metaKey: false, ctrlKey: true })).toBe(false);
   });
 
   it("maps Ctrl+letter key codes to terminal control characters", () => {
