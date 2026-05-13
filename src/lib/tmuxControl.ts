@@ -101,6 +101,8 @@ interface TmuxPaneState {
 
 interface WindowProjectionResult {
   changedPaneIds: Set<string>;
+  layoutNeedsSettlement: boolean;
+  paneIdsNeedingInitialContent: string[];
 }
 
 interface TmuxControlSession {
@@ -871,6 +873,86 @@ function setLayout(layoutId: string, layout: LayoutNode) {
   }));
 }
 
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((value, index) => value === right[index]);
+}
+
+function waitForFrontendLayoutSettlement(): Promise<void> {
+  if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    // tmux geometry changes can replace the React split tree entirely, for
+    // example when two panes collapse into one. xterm must not be resized or
+    // repainted while its DOM node is still mounted in the old split slot: a
+    // full-height tmux capture written into a stale short viewport leaves old
+    // cells visible and looks like clear-screen sequences were ignored.
+    //
+    // Two frames gives React time to commit the layout store update, run the
+    // TerminalPane passive mount/unmount effects that park/re-attach xterm,
+    // and let the browser expose the new container metrics.
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
+async function settleTmuxFrontendLayoutIfNeeded(
+  session: TmuxControlSession,
+  windowId: string,
+  projection: WindowProjectionResult | null,
+  reason: string
+) {
+  if (!projection?.layoutNeedsSettlement) {
+    return;
+  }
+
+  debugLog("tmux.layout", "wait for frontend layout settlement", {
+    sessionId: session.id,
+    windowId,
+    reason,
+    changedPaneIds: [...projection.changedPaneIds],
+    initialPaneIds: projection.paneIdsNeedingInitialContent,
+  });
+  await waitForFrontendLayoutSettlement();
+}
+
+function syncProjectedPaneFrontendSizes(
+  session: TmuxControlSession,
+  paneSnapshots: readonly TmuxPaneSnapshot[]
+) {
+  for (const paneSnapshot of paneSnapshots) {
+    const paneState = session.panes.get(paneSnapshot.paneId);
+    if (!paneState) {
+      continue;
+    }
+    syncTerminalFrontendSize(paneState.terminalId, paneSnapshot.width, paneSnapshot.height);
+  }
+}
+
+function queueProjectedInitialPaneCaptures(
+  session: TmuxControlSession,
+  projection: WindowProjectionResult | null
+) {
+  if (!projection) {
+    return;
+  }
+
+  for (const paneId of projection.paneIdsNeedingInitialContent) {
+    const pane = session.panes.get(paneId);
+    if (!pane || pane.initialContentCaptured) {
+      continue;
+    }
+    queueInitialPaneContentCapture(session, pane, {
+      reason: "window-projection",
+    });
+  }
+}
+
 function lockTmuxWindowForUserPaneResize(
   session: TmuxControlSession,
   windowId: string,
@@ -1520,6 +1602,7 @@ function upsertWindowProjection(
 
   const layoutPanes: TmuxPaneLayoutRecord[] = [];
   const changedPaneIds = new Set<string>();
+  const paneIdsNeedingInitialContent: string[] = [];
   for (const paneSnapshot of panes) {
     let paneState = session.panes.get(paneSnapshot.paneId);
     const existingPaneState = paneState;
@@ -1607,8 +1690,6 @@ function upsertWindowProjection(
       changedPaneIds.add(paneSnapshot.paneId);
     }
 
-    syncTerminalFrontendSize(paneState.terminalId, paneSnapshot.width, paneSnapshot.height);
-
     const previousHistorySize = paneState.historySize;
     paneState.left = paneSnapshot.left;
     paneState.top = paneSnapshot.top;
@@ -1659,9 +1740,7 @@ function upsertWindowProjection(
     }
 
     if (!paneState.initialContentCaptured && options?.captureInitialContent !== false) {
-      queueInitialPaneContentCapture(session, paneState, {
-        reason: "window-projection",
-      });
+      paneIdsNeedingInitialContent.push(paneState.paneId);
     }
   }
 
@@ -1700,11 +1779,19 @@ function upsertWindowProjection(
       terminalId: windowState.terminalId,
       panes: layoutPanes.length,
     });
-    return { changedPaneIds: new Set() };
+    return {
+      changedPaneIds: new Set(),
+      layoutNeedsSettlement: false,
+      paneIdsNeedingInitialContent,
+    };
   }
 
-  setLayout(windowState.terminalId, buildLayoutFromTmuxPanes(layoutPanes));
-  return { changedPaneIds };
+  const nextLayout = buildLayoutFromTmuxPanes(layoutPanes);
+  const nextLayoutTerminalIds = findTerminalIds(nextLayout);
+  const layoutNeedsSettlement =
+    changedPaneIds.size > 0 || !sameStringArray(previousLayoutTerminalIds, nextLayoutTerminalIds);
+  setLayout(windowState.terminalId, nextLayout);
+  return { changedPaneIds, layoutNeedsSettlement, paneIdsNeedingInitialContent };
 }
 
 function setFocusedTmuxPane(
@@ -2384,23 +2471,6 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
   });
   syncWindowNodeOrder(session);
 
-  const shouldRedrawWindow = session.pendingWindowRedraws.delete(snapshot.windowId);
-  const paneStates = paneSnapshots
-    .map((paneSnapshot) => session.panes.get(paneSnapshot.paneId))
-    .filter((pane): pane is TmuxPaneState => Boolean(pane));
-  const paneStatesToRedraw = shouldRedrawWindow
-    ? paneStates
-    : paneStates.filter((pane) => projection?.changedPaneIds.has(pane.paneId));
-
-  if (paneStatesToRedraw.length > 0) {
-    const reason = shouldRedrawWindow ? "resize" : "layout-change";
-    void Promise.all(
-      paneStatesToRedraw.map((pane) => refreshPaneContentForDisplay(session, pane, reason))
-    ).catch((error) => {
-      debugLogError("tmux.capture", `${reason} pane redraw failed`, error);
-    });
-  }
-
   const pendingActivationAnchorWindowId = session.pendingNewWindowActivations.get(snapshot.windowId) ?? null;
   const shouldActivateNewWindow = pendingActivationAnchorWindowId !== null;
   if (snapshot.isActive || shouldActivateNewWindow) {
@@ -2429,6 +2499,27 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
         session.pendingNewWindowActivations.delete(snapshot.windowId);
       }
     }
+  }
+
+  await settleTmuxFrontendLayoutIfNeeded(session, snapshot.windowId, projection, "refresh-window");
+  syncProjectedPaneFrontendSizes(session, paneSnapshots);
+  queueProjectedInitialPaneCaptures(session, projection);
+
+  const shouldRedrawWindow = session.pendingWindowRedraws.delete(snapshot.windowId);
+  const paneStates = paneSnapshots
+    .map((paneSnapshot) => session.panes.get(paneSnapshot.paneId))
+    .filter((pane): pane is TmuxPaneState => Boolean(pane));
+  const paneStatesToRedraw = shouldRedrawWindow
+    ? paneStates
+    : paneStates.filter((pane) => projection?.changedPaneIds.has(pane.paneId));
+
+  if (paneStatesToRedraw.length > 0) {
+    const reason = shouldRedrawWindow ? "resize" : "layout-change";
+    void Promise.all(
+      paneStatesToRedraw.map((pane) => refreshPaneContentForDisplay(session, pane, reason))
+    ).catch((error) => {
+      debugLogError("tmux.capture", `${reason} pane redraw failed`, error);
+    });
   }
 
   debugLog("tmux.refresh", "refresh window complete", {
@@ -2505,10 +2596,14 @@ async function hydrateControlSession(session: TmuxControlSession) {
       }
     }
 
+    const hydratedPaneSnapshots: Array<readonly TmuxPaneSnapshot[]> = [];
+
     for (const snapshot of windowSnapshots) {
-      upsertWindowProjection(session, snapshot, panesByWindowId.get(snapshot.windowId) ?? [], {
+      const windowPaneSnapshots = panesByWindowId.get(snapshot.windowId) ?? [];
+      upsertWindowProjection(session, snapshot, windowPaneSnapshots, {
         captureInitialContent: false,
       });
+      hydratedPaneSnapshots.push(windowPaneSnapshots);
     }
 
     const parentChildren = useProjectStore.getState().nodes[session.parentNodeId]?.children ?? [];
@@ -2522,6 +2617,10 @@ async function hydrateControlSession(session: TmuxControlSession) {
     });
 
     syncWindowNodeOrder(session, { preserveExistingSidebarOrder });
+
+    for (const windowPaneSnapshots of hydratedPaneSnapshots) {
+      syncProjectedPaneFrontendSizes(session, windowPaneSnapshots);
+    }
 
     const activeWindow = windowSnapshots.find((snapshot) => snapshot.isActive) ?? windowSnapshots[0];
     const activePane = activeWindow

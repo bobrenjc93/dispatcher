@@ -3,10 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const {
   focusTerminalInstanceMock,
   queueTerminalOutputMock,
+  syncTerminalFrontendSizeMock,
   writeTerminalMock,
 } = vi.hoisted(() => ({
   focusTerminalInstanceMock: vi.fn(),
   queueTerminalOutputMock: vi.fn(),
+  syncTerminalFrontendSizeMock: vi.fn(),
   writeTerminalMock: vi.fn(async () => {}),
 }));
 
@@ -22,7 +24,7 @@ vi.mock("../../hooks/useTerminalBridge", () => ({
   getTerminalCellSize: vi.fn(() => ({ width: 8, height: 16 })),
   getTerminalViewportSize: vi.fn(() => ({ width: 640, height: 384 })),
   queueTerminalOutput: queueTerminalOutputMock,
-  syncTerminalFrontendSize: vi.fn(),
+  syncTerminalFrontendSize: syncTerminalFrontendSizeMock,
 }));
 
 import type { TerminalSession } from "../../types/terminal";
@@ -349,12 +351,22 @@ function getWrittenTmuxCommand(index: number): string {
   return call![1];
 }
 
+async function settleFrontendLayoutTimers() {
+  await Promise.resolve();
+  await Promise.resolve();
+  await vi.runOnlyPendingTimersAsync();
+  await vi.runOnlyPendingTimersAsync();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe("tmuxControl", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     writeTerminalMock.mockClear();
     focusTerminalInstanceMock.mockClear();
     queueTerminalOutputMock.mockClear();
+    syncTerminalFrontendSizeMock.mockReset();
     resetTmuxRuntime();
   });
 
@@ -1034,6 +1046,7 @@ describe("tmuxControl", () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
+    await settleFrontendLayoutTimers();
     expect(writeTerminalMock).toHaveBeenLastCalledWith(
       transportTerminalId,
       "capture-pane -p -e -C -t %1\n"
@@ -1169,6 +1182,7 @@ describe("tmuxControl", () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
+    await settleFrontendLayoutTimers();
 
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,
@@ -1208,6 +1222,89 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("settles the React pane layout before resizing and redrawing a collapsed tmux split", async () => {
+    const transportTerminalId = "transport-collapse-settles-layout";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSplitWindow(transportTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+    syncTerminalFrontendSizeMock.mockClear();
+
+    const windowTerminalId = getWindowTerminalIdByWindowId("@1");
+    const rightPaneTerminalId = getPaneTerminalIdByPaneId("%2");
+    let layoutDuringSync = useLayoutStore.getState().layouts[windowTerminalId];
+    syncTerminalFrontendSizeMock.mockImplementation(() => {
+      layoutDuringSync = useLayoutStore.getState().layouts[windowTerminalId];
+    });
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 5 0",
+        "@1\thappy\t1\t*",
+        "%end 5 0",
+        "%begin 6 0",
+        "@1\t%2\t0\t0\t80\t24\t1\t/Users/bobren/right\t1\t2\t0\t0",
+        "%end 6 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useLayoutStore.getState().layouts[windowTerminalId]).toEqual({
+      type: "terminal",
+      id: expect.any(String),
+      terminalId: rightPaneTerminalId,
+    });
+    expect(syncTerminalFrontendSizeMock).not.toHaveBeenCalled();
+
+    await settleFrontendLayoutTimers();
+
+    expect(layoutDuringSync).toEqual({
+      type: "terminal",
+      id: expect.any(String),
+      terminalId: rightPaneTerminalId,
+    });
+    expect(syncTerminalFrontendSizeMock).toHaveBeenCalledWith(
+      rightPaneTerminalId,
+      80,
+      24
+    );
+
+    const syncOrder = syncTerminalFrontendSizeMock.mock.invocationCallOrder[0];
+    const captureCallIndex = (writeTerminalMock.mock.calls as unknown as Array<[string, string]>).findIndex(
+      ([, command]) => command === "capture-pane -p -e -C -t %2\n"
+    );
+    expect(captureCallIndex).toBeGreaterThanOrEqual(0);
+    expect(syncOrder).toBeLessThan(
+      writeTerminalMock.mock.invocationCallOrder[captureCallIndex]
+    );
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 7 0",
+        "right full height",
+        "%end 7 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      rightPaneTerminalId,
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jright full height\u001b[?7h\u001b[0m\u001b[3;2H",
+      { recordActivity: false }
+    );
+  });
+
   it("does not repair full pane history during a layout refresh", async () => {
     const transportTerminalId = "transport-layout-redraw-stale-history";
     seedTransportTerminal(transportTerminalId);
@@ -1233,6 +1330,7 @@ describe("tmuxControl", () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
+    await settleFrontendLayoutTimers();
 
     const writes = (writeTerminalMock.mock.calls as unknown as Array<[string, string]>)
       .map(([, data]) => data);

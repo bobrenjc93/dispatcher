@@ -26,6 +26,11 @@ import { useTerminalScreenshotMonitor } from "./hooks/useTerminalScreenshotMonit
 import { useWakeRecovery } from "./hooks/useWakeRecovery";
 import { debugLog } from "./lib/debugLog";
 import {
+  resolveTerminalCloseFocusTarget,
+  type SidebarTerminalRef,
+  type TerminalCloseFocusTarget,
+} from "./lib/terminalCloseFocus";
+import {
   closeTmuxTerminal,
   createTmuxWindowForTerminal,
   handleTransportTerminalExit,
@@ -56,11 +61,6 @@ type DialogMode =
   | { type: "new-terminal"; projectId: string }
   | { type: "new-project-with-terminal" }
   | null;
-
-interface SidebarTerminalRef {
-  terminalId: string;
-  projectId: string;
-}
 
 export default function App() {
   const [showKeyDebug, setShowKeyDebug] = useState(() => {
@@ -154,15 +154,27 @@ export default function App() {
     return allTerminals;
   }, []);
 
-  const findAdjacentSidebarTerminal = useCallback(
-    (terminalId: string): SidebarTerminalRef | null => {
-      const allTerminals = buildSidebarTerminalList();
-      const idx = allTerminals.findIndex((t) => t.terminalId === terminalId);
-      if (idx === -1) return null;
-      return allTerminals[idx + 1] ?? allTerminals[idx - 1] ?? null;
-    },
+  const resolveCloseFocusTarget = useCallback(
+    (terminalId: string): TerminalCloseFocusTarget | null => resolveTerminalCloseFocusTarget({
+      closingTerminalId: terminalId,
+      activeTerminalId: useTerminalStore.getState().activeTerminalId,
+      layouts: useLayoutStore.getState().layouts,
+      sidebarTerminals: buildSidebarTerminalList(),
+      resolvePreferredTerminalFocus,
+    }),
     [buildSidebarTerminalList]
   );
+
+  const applyCloseFocusTarget = useCallback((target: TerminalCloseFocusTarget | null) => {
+    if (!target) {
+      return;
+    }
+    if (target.projectId) {
+      useProjectStore.getState().setActiveProject(target.projectId);
+    }
+    useTerminalStore.getState().setActiveTerminal(target.terminalId);
+    handleTmuxTerminalFocus(target.terminalId);
+  }, []);
 
   const [dialog, setDialog] = useState<DialogMode>(null);
   const [sidebarWidth, setSidebarWidth] = useState(240);
@@ -532,6 +544,14 @@ export default function App() {
 
   const handleClosePane = useCallback(
     (terminalId: string) => {
+      const terminal = useTerminalStore.getState().sessions[terminalId];
+      const shouldPrefocusTmuxClose =
+        terminal?.backendKind === "tmux-window" || terminal?.backendKind === "tmux-pane";
+      const tmuxCloseFocusTarget = shouldPrefocusTmuxClose
+        ? resolveCloseFocusTarget(terminalId)
+        : null;
+      applyCloseFocusTarget(tmuxCloseFocusTarget);
+
       void closeTmuxTerminal(terminalId).then((handled) => {
         if (handled) {
           return;
@@ -557,18 +577,7 @@ export default function App() {
       const isSolePane = !layout || layout.type === "terminal";
 
       if (isSolePane) {
-        const activeTermId = terminalState.activeTerminalId;
-        const activeTabRootTerminalId = activeTermId
-          ? findLayoutKeyForTerminal(allLayouts, activeTermId) ?? activeTermId
-          : null;
-        const nextSidebarTerminal =
-          activeTabRootTerminalId === layoutKey ? findAdjacentSidebarTerminal(layoutKey) : null;
-        if (nextSidebarTerminal) {
-          const preferredTerminalId = resolvePreferredTerminalFocus(nextSidebarTerminal.terminalId);
-          useProjectStore.getState().setActiveProject(nextSidebarTerminal.projectId);
-          useTerminalStore.getState().setActiveTerminal(preferredTerminalId);
-          handleTmuxTerminalFocus(preferredTerminalId);
-        }
+        applyCloseFocusTarget(resolveCloseFocusTarget(terminalId));
 
         removeLayout(layoutKey);
         for (const id of new Set([layoutKey, ...findTerminalIds(layout ?? { type: "terminal", id: layoutKey, terminalId })])) {
@@ -647,7 +656,8 @@ export default function App() {
       });
     },
     [
-      findAdjacentSidebarTerminal,
+      applyCloseFocusTarget,
+      resolveCloseFocusTarget,
       removeTerminalFromLayout,
       removeLayout,
       removeSession,
