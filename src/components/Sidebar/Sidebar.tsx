@@ -52,14 +52,11 @@ export function Sidebar({
 
   const callbacksRef = useRef({ reorderProject, onMoveTerminal, reorderChild });
   callbacksRef.current = { reorderProject, onMoveTerminal, reorderChild };
-
-  useEffect(() => {
-    registerDragCallbacks({
-      onReorderProject: (...args) => callbacksRef.current.reorderProject(...args),
-      onMoveTerminal: (...args) => callbacksRef.current.onMoveTerminal(...args),
-      onReorderChild: (...args) => callbacksRef.current.reorderChild(...args),
-    });
-  }, []);
+  registerDragCallbacks({
+    onReorderProject: (...args) => callbacksRef.current.reorderProject(...args),
+    onMoveTerminal: (...args) => callbacksRef.current.onMoveTerminal(...args),
+    onReorderChild: (...args) => callbacksRef.current.reorderChild(...args),
+  });
 
   const [bgMenu, setBgMenu] = useState<{ x: number; y: number } | null>(null);
   const [showHelp, setShowHelp] = useState(false);

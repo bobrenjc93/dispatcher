@@ -15,12 +15,30 @@ interface DragCallbacks {
   onReorderChild: (parentNodeId: string, childId: string, targetChildId: string, position: "before" | "after") => void;
 }
 
+interface DragRuntimeState {
+  callbacks: DragCallbacks | null;
+}
+
+declare global {
+  // Keep drag callbacks across Vite/Tauri dev hot reloads. The Sidebar effect
+  // can stay mounted while this module is replaced, and if callbacks live only
+  // in module scope drops become no-ops until the app is fully reloaded.
+  // eslint-disable-next-line no-var
+  var __dispatcherDragRuntimeState: DragRuntimeState | undefined;
+}
+
+function getDragRuntimeState(): DragRuntimeState {
+  if (!globalThis.__dispatcherDragRuntimeState) {
+    globalThis.__dispatcherDragRuntimeState = { callbacks: null };
+  }
+  return globalThis.__dispatcherDragRuntimeState;
+}
+
 let info: DragInfo | null = null;
 let active = false;
 let startX = 0;
 let startY = 0;
 let draggedEl: HTMLElement | null = null;
-let callbacks: DragCallbacks | null = null;
 
 let lastIndicatorEl: HTMLElement | null = null;
 let lastDragOverEl: HTMLElement | null = null;
@@ -30,9 +48,10 @@ let suppressingTextSelection = false;
 
 const THRESHOLD = 5;
 const INTERACTIVE_DRAG_START_SELECTOR = "button,input,textarea,select,a,[contenteditable='true'],[contenteditable='']";
+const dragRuntime = getDragRuntimeState();
 
 export function registerDragCallbacks(cb: DragCallbacks) {
-  callbacks = cb;
+  dragRuntime.callbacks = cb;
 }
 
 export function getDragInfo(): DragInfo | null {
@@ -105,7 +124,7 @@ function getMidY(el: HTMLElement): number {
   return rect.top + rect.height / 2;
 }
 
-function handlePointerMove(e: PointerEvent) {
+function handleDragMove(e: PointerEvent | MouseEvent) {
   if (!info) return;
 
   if (!active) {
@@ -159,7 +178,15 @@ function handlePointerMove(e: PointerEvent) {
   }
 }
 
-function handlePointerUp(e: PointerEvent) {
+function handlePointerMove(e: PointerEvent) {
+  handleDragMove(e);
+}
+
+function handleMouseMove(e: MouseEvent) {
+  handleDragMove(e);
+}
+
+function handleDragEnd(e: PointerEvent | MouseEvent) {
   if (!info || !active) {
     end();
     return;
@@ -167,6 +194,7 @@ function handlePointerUp(e: PointerEvent) {
 
   const el = document.elementFromPoint(e.clientX, e.clientY);
 
+  const callbacks = dragRuntime.callbacks;
   if (el && callbacks) {
     if (info.type === "project") {
       const projectNode = el.closest<HTMLElement>("[data-project-id]");
@@ -219,8 +247,18 @@ function handlePointerUp(e: PointerEvent) {
   end();
 }
 
+function handlePointerUp(e: PointerEvent) {
+  handleDragEnd(e);
+}
+
+function handleMouseUp(e: MouseEvent) {
+  handleDragEnd(e);
+}
+
 function handlePointerCancel() {
-  end();
+  if (!active) {
+    end();
+  }
 }
 
 function preventClick(e: MouseEvent) {
@@ -238,6 +276,8 @@ function end() {
   document.removeEventListener("pointermove", handlePointerMove);
   document.removeEventListener("pointerup", handlePointerUp);
   document.removeEventListener("pointercancel", handlePointerCancel);
+  document.removeEventListener("mousemove", handleMouseMove);
+  document.removeEventListener("mouseup", handleMouseUp);
   restoreTextSelection();
   info = null;
   active = false;
@@ -253,4 +293,6 @@ export function startDrag(dragInfo: DragInfo, x: number, y: number, element: HTM
   document.addEventListener("pointermove", handlePointerMove);
   document.addEventListener("pointerup", handlePointerUp);
   document.addEventListener("pointercancel", handlePointerCancel);
+  document.addEventListener("mousemove", handleMouseMove);
+  document.addEventListener("mouseup", handleMouseUp);
 }

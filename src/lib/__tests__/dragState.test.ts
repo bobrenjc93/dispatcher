@@ -123,4 +123,77 @@ describe("dragState", () => {
 
     expect(onReorderChild).toHaveBeenCalledWith("root", "dragged-node", "target-node", "after");
   });
+
+  it("completes an active drag from the mouseup fallback after pointercancel", () => {
+    const dragged = document.createElement("div");
+    dragged.dataset.nodeId = "dragged-node";
+    dragged.dataset.projectId = "project";
+    dragged.dataset.parentNodeId = "root";
+    const target = document.createElement("div");
+    target.dataset.nodeId = "target-node";
+    target.dataset.projectId = "project";
+    target.dataset.parentNodeId = "root";
+    document.body.append(dragged, target);
+    mockRect(target, 100, 20);
+
+    const onReorderChild = vi.fn();
+    registerDragCallbacks({
+      onMoveTerminal: vi.fn(),
+      onReorderChild,
+      onReorderProject: vi.fn(),
+    });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => target),
+    });
+
+    startDrag({
+      type: "terminal",
+      terminalId: "terminal",
+      projectId: "project",
+      nodeId: "dragged-node",
+    }, 0, 0, dragged);
+    document.dispatchEvent(pointerEvent("pointermove", 0, 120));
+    document.dispatchEvent(pointerEvent("pointercancel", 0, 120));
+    document.dispatchEvent(pointerEvent("mouseup", 0, 120));
+
+    expect(onReorderChild).toHaveBeenCalledWith("root", "dragged-node", "target-node", "after");
+  });
+
+  it("keeps registered callbacks available after the drag module is reloaded", async () => {
+    const dragged = document.createElement("div");
+    dragged.dataset.nodeId = "dragged-node";
+    dragged.dataset.projectId = "project";
+    dragged.dataset.parentNodeId = "root";
+    const target = document.createElement("div");
+    target.dataset.nodeId = "target-node";
+    target.dataset.projectId = "project";
+    target.dataset.parentNodeId = "root";
+    document.body.append(dragged, target);
+    mockRect(target, 100, 20);
+
+    const onReorderChild = vi.fn();
+    registerDragCallbacks({
+      onMoveTerminal: vi.fn(),
+      onReorderChild,
+      onReorderProject: vi.fn(),
+    });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => target),
+    });
+
+    vi.resetModules();
+    const reloadedDragState = await import("../dragState");
+    reloadedDragState.startDrag({
+      type: "terminal",
+      terminalId: "terminal",
+      projectId: "project",
+      nodeId: "dragged-node",
+    }, 0, 0, dragged);
+    document.dispatchEvent(pointerEvent("pointermove", 0, 120));
+    document.dispatchEvent(pointerEvent("pointerup", 0, 120));
+
+    expect(onReorderChild).toHaveBeenCalledWith("root", "dragged-node", "target-node", "after");
+  });
 });
