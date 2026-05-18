@@ -94,13 +94,27 @@ interface TmuxPaneState {
   // #{cursor_x}/#{cursor_y} values from the last pane snapshot are unsafe for
   // capture replays until we refresh them explicitly.
   cursorStaleSinceOutput: boolean;
+  // Authoritative tmux pane mode from #{alternate_on} and live output. This is
+  // the pane's server-side state, not necessarily what our local xterm is
+  // currently displaying: hidden pane output is intentionally dropped instead
+  // of being written into parked frontends.
   alternateOn: boolean;
+  // Last alternate-screen state we know we synchronized into the local xterm.
+  // Keep this separate from alternateOn so normal-buffer replays do not send
+  // ESC[?1049l unless the local xterm actually needs to leave the alternate
+  // buffer. xterm treats that sequence as a buffer restore, and sending it
+  // unconditionally while already in the normal buffer can disturb scrollback.
+  displayedAlternateOn: boolean;
   historySize: number;
   initialContentCaptured: boolean;
   lastHistoryCaptureSize: number;
   lastHistoryRefreshAt: number;
   lastHistoryRefreshDeferredLogAt: number;
   historyCaptureInFlight: boolean;
+  historyRefreshRetryTimer: number | null;
+  historyRefreshRetryAttempts: number;
+  visibleRedrawTimer: number | null;
+  visibleRedrawRaceCount: number;
   missedOutputSinceHistoryCapture: boolean;
   contentClearGeneration: number;
   outputGeneration: number;
@@ -247,6 +261,11 @@ const TMUX_PANE_OUTPUT_ACTIVITY_SUPPRESSION_MS = 2_000;
 const TMUX_SUPPRESSED_ACTIVITY_SUMMARY_INTERVAL_MS = 5_000;
 const TMUX_HISTORY_REFRESH_COOLDOWN_MS = 30_000;
 const TMUX_HISTORY_REFRESH_DEFER_LOG_INTERVAL_MS = 10_000;
+const TMUX_HISTORY_RACE_RETRY_BASE_MS = 300;
+const TMUX_HISTORY_RACE_RETRY_MAX_MS = 2_500;
+const TMUX_VISIBLE_REDRAW_SETTLE_MS = 180;
+const TMUX_VISIBLE_REDRAW_RETRY_MS = 300;
+const TMUX_VISIBLE_REDRAW_FORCE_AFTER_RACES = 3;
 const TMUX_PASTE_BUFFER_CHUNK_SIZE = 8_000;
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
@@ -280,10 +299,15 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.lastHistoryRefreshAt ??= 0;
   pane.lastHistoryRefreshDeferredLogAt ??= 0;
   pane.historyCaptureInFlight ??= false;
+  pane.historyRefreshRetryTimer ??= null;
+  pane.historyRefreshRetryAttempts ??= 0;
+  pane.visibleRedrawTimer ??= null;
+  pane.visibleRedrawRaceCount ??= 0;
   pane.missedOutputSinceHistoryCapture ??= false;
   pane.contentClearGeneration ??= 0;
   pane.outputGeneration ??= 0;
   pane.cursorStaleSinceOutput ??= false;
+  pane.displayedAlternateOn ??= false;
 }
 
 function ensurePaneOutputActivitySuppressionState(session: TmuxControlSession) {
@@ -764,12 +788,17 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       cursorY: 0,
       cursorStaleSinceOutput: false,
       alternateOn: false,
+      displayedAlternateOn: false,
       historySize: 0,
       initialContentCaptured: false,
       lastHistoryCaptureSize: 0,
       lastHistoryRefreshAt: 0,
       lastHistoryRefreshDeferredLogAt: 0,
       historyCaptureInFlight: false,
+      historyRefreshRetryTimer: null,
+      historyRefreshRetryAttempts: 0,
+      visibleRedrawTimer: null,
+      visibleRedrawRaceCount: 0,
       missedOutputSinceHistoryCapture: false,
       contentClearGeneration: 0,
       outputGeneration: 0,
@@ -1353,6 +1382,7 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
 
   for (const pane of [...session.panes.values()]) {
     if (pane.windowId === windowId) {
+      clearPaneRenderingTimers(pane);
       session.panes.delete(pane.paneId);
       disposePaneTerminal(pane.terminalId, {
         sessionId: session.id,
@@ -1427,6 +1457,7 @@ function detachControlSessionProjections(session: TmuxControlSession, reason: st
   session.userPaneResizeLocks.clear();
 
   for (const pane of session.panes.values()) {
+    clearPaneRenderingTimers(pane);
     paneTerminalToSessionId.delete(pane.terminalId);
     useTerminalStore.getState().patchSession(pane.terminalId, {
       backendKind: "tmux-pane",
@@ -1619,6 +1650,7 @@ function upsertWindowProjection(
   const paneIds = new Set(panes.map((pane) => pane.paneId));
   for (const pane of [...session.panes.values()]) {
     if (pane.windowId === snapshot.windowId && !paneIds.has(pane.paneId)) {
+      clearPaneRenderingTimers(pane);
       session.panes.delete(pane.paneId);
       disposePaneTerminal(pane.terminalId);
     }
@@ -1647,12 +1679,17 @@ function upsertWindowProjection(
         cursorY: paneSnapshot.cursorY,
         cursorStaleSinceOutput: false,
         alternateOn: paneSnapshot.alternateOn,
+        displayedAlternateOn: false,
         historySize: paneSnapshot.historySize,
         initialContentCaptured: false,
         lastHistoryCaptureSize: 0,
         lastHistoryRefreshAt: 0,
         lastHistoryRefreshDeferredLogAt: 0,
         historyCaptureInFlight: false,
+        historyRefreshRetryTimer: null,
+        historyRefreshRetryAttempts: 0,
+        visibleRedrawTimer: null,
+        visibleRedrawRaceCount: 0,
         missedOutputSinceHistoryCapture: false,
         contentClearGeneration: 0,
         outputGeneration: 0,
@@ -1927,9 +1964,16 @@ type PaneHistoryStaleReason =
   | "initial-history-growth"
   | "history-shrank";
 
-function getPaneHistoryStaleReason(pane: TmuxPaneState): PaneHistoryStaleReason | null {
+function getPaneHistoryStaleReason(
+  pane: TmuxPaneState,
+  options?: { ignoreCaptureInFlight?: boolean }
+): PaneHistoryStaleReason | null {
   ensurePaneHistoryCaptureState(pane);
-  if (!pane.initialContentCaptured || pane.historyCaptureInFlight || pane.alternateOn) {
+  if (
+    !pane.initialContentCaptured
+    || (!options?.ignoreCaptureInFlight && pane.historyCaptureInFlight)
+    || pane.alternateOn
+  ) {
     return null;
   }
 
@@ -2010,6 +2054,229 @@ function logDeferredPaneHistoryRefresh(
   });
 }
 
+function getPaneHistoryRetryDelayMs(pane: TmuxPaneState): number {
+  const exponent = Math.min(Math.max(0, pane.historyRefreshRetryAttempts), 4);
+  return Math.min(
+    TMUX_HISTORY_RACE_RETRY_BASE_MS * 2 ** exponent,
+    TMUX_HISTORY_RACE_RETRY_MAX_MS
+  );
+}
+
+function clearPaneHistoryRefreshRetry(pane: TmuxPaneState) {
+  ensurePaneHistoryCaptureState(pane);
+  if (pane.historyRefreshRetryTimer !== null) {
+    window.clearTimeout(pane.historyRefreshRetryTimer);
+    pane.historyRefreshRetryTimer = null;
+  }
+}
+
+function clearPaneVisibleRedraw(pane: TmuxPaneState) {
+  ensurePaneHistoryCaptureState(pane);
+  if (pane.visibleRedrawTimer !== null) {
+    window.clearTimeout(pane.visibleRedrawTimer);
+    pane.visibleRedrawTimer = null;
+  }
+}
+
+function clearPaneRenderingTimers(pane: TmuxPaneState) {
+  clearPaneHistoryRefreshRetry(pane);
+  clearPaneVisibleRedraw(pane);
+}
+
+function resetPaneHistoryRefreshRetry(pane: TmuxPaneState) {
+  clearPaneHistoryRefreshRetry(pane);
+  pane.historyRefreshRetryAttempts = 0;
+}
+
+function schedulePaneHistoryRefreshRetry(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  reason: string
+) {
+  ensurePaneHistoryCaptureState(pane);
+  if (
+    !session.controlModeActive
+    || pane.alternateOn
+    || !isPaneVisibleInActiveWindow(session, pane)
+  ) {
+    return;
+  }
+
+  const staleReason = getPaneHistoryStaleReason(pane, { ignoreCaptureInFlight: true });
+  if (!staleReason) {
+    resetPaneHistoryRefreshRetry(pane);
+    return;
+  }
+
+  const wasAlreadyScheduled = pane.historyRefreshRetryTimer !== null;
+  if (pane.historyRefreshRetryTimer !== null) {
+    window.clearTimeout(pane.historyRefreshRetryTimer);
+    pane.historyRefreshRetryTimer = null;
+  }
+
+  const paneId = pane.paneId;
+  const terminalId = pane.terminalId;
+  const delayMs = getPaneHistoryRetryDelayMs(pane);
+  if (!wasAlreadyScheduled) {
+    debugLog("tmux.capture", "schedule pane history refresh retry", {
+      sessionId: session.id,
+      paneId,
+      terminalId,
+      reason,
+      staleReason,
+      delayMs,
+      retryAttempts: pane.historyRefreshRetryAttempts,
+      historySize: pane.historySize,
+      lastHistoryCaptureSize: pane.lastHistoryCaptureSize,
+      missedOutputSinceHistoryCapture: pane.missedOutputSinceHistoryCapture,
+    });
+  }
+
+  pane.historyRefreshRetryTimer = window.setTimeout(() => {
+    const currentPane = session.panes.get(paneId);
+    if (!currentPane || currentPane.terminalId !== terminalId) {
+      return;
+    }
+
+    ensurePaneHistoryCaptureState(currentPane);
+    currentPane.historyRefreshRetryTimer = null;
+    if (
+      !session.controlModeActive
+      || currentPane.historyCaptureInFlight
+      || currentPane.alternateOn
+      || !isPaneVisibleInActiveWindow(session, currentPane)
+    ) {
+      return;
+    }
+
+    const currentStaleReason = getPaneHistoryStaleReason(currentPane);
+    if (!currentStaleReason) {
+      currentPane.historyRefreshRetryAttempts = 0;
+      return;
+    }
+
+    debugLog("tmux.capture", "retry pane history refresh", {
+      sessionId: session.id,
+      paneId,
+      terminalId,
+      reason,
+      staleReason: currentStaleReason,
+      retryAttempts: currentPane.historyRefreshRetryAttempts,
+      historySize: currentPane.historySize,
+      lastHistoryCaptureSize: currentPane.lastHistoryCaptureSize,
+      missedOutputSinceHistoryCapture: currentPane.missedOutputSinceHistoryCapture,
+    });
+    void capturePaneFullContent(session, currentPane, {
+      reason: `${reason}-retry`,
+      forceFallbackHistory: shouldUseFallbackHistoryCapture(currentPane, currentStaleReason),
+    });
+  }, delayMs);
+}
+
+function schedulePaneHistoryRefreshRetryAfterRace(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  reason: string
+) {
+  ensurePaneHistoryCaptureState(pane);
+  pane.historyRefreshRetryAttempts += 1;
+  schedulePaneHistoryRefreshRetry(session, pane, reason);
+}
+
+function isTmuxOutputLikelyToNeedAuthoritativeRedraw(output: string): boolean {
+  // Claude Code and many TUIs repaint by jumping the cursor around and clearing
+  // individual rows. If one such burst races with focus, resize, or a previous
+  // capture replay, xterm can be left with stale cells even though tmux's pane
+  // grid is correct. Plain shell output should stay purely live-rendered.
+  return (
+    /\x1b\[[0-9;?]*[HfABCDGJK]/.test(output)
+    || /\x1b\[\?2026[hl]/.test(output)
+    || /\r(?!\n)/.test(output)
+  );
+}
+
+function shouldRetryVisibleRedraw(reason: string): boolean {
+  return (
+    reason.includes("output-settle")
+    || reason.includes("raced-output")
+    || reason.includes("history-in-flight")
+  );
+}
+
+function shouldForceVisibleRedrawAfterRace(
+  pane: TmuxPaneState,
+  reason: string
+): boolean {
+  if (!shouldRetryVisibleRedraw(reason)) {
+    return false;
+  }
+
+  // Visible redraws are a repair path for TUIs that repaint by jumping around
+  // the screen. We prefer a quiet capture so we do not replay an older frame
+  // over newer live output. Claude Code can keep emitting small repaint bursts
+  // for long enough that a strictly quiet capture never happens, leaving stale
+  // xterm cells on screen. After a few raced captures, force one authoritative
+  // tmux snapshot as a bounded rebaseline, then let future output schedule the
+  // next repair if the pane keeps changing.
+  pane.visibleRedrawRaceCount += 1;
+  return pane.visibleRedrawRaceCount >= TMUX_VISIBLE_REDRAW_FORCE_AFTER_RACES;
+}
+
+function schedulePaneVisibleRedraw(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  reason: string,
+  delayMs: number = TMUX_VISIBLE_REDRAW_SETTLE_MS
+) {
+  ensurePaneHistoryCaptureState(pane);
+  if (!session.controlModeActive || !isPaneVisibleInActiveWindow(session, pane)) {
+    clearPaneVisibleRedraw(pane);
+    return;
+  }
+
+  if (pane.visibleRedrawTimer !== null) {
+    window.clearTimeout(pane.visibleRedrawTimer);
+    pane.visibleRedrawTimer = null;
+  }
+
+  const paneId = pane.paneId;
+  const terminalId = pane.terminalId;
+  pane.visibleRedrawTimer = window.setTimeout(() => {
+    const currentPane = session.panes.get(paneId);
+    if (!currentPane || currentPane.terminalId !== terminalId) {
+      return;
+    }
+
+    ensurePaneHistoryCaptureState(currentPane);
+    currentPane.visibleRedrawTimer = null;
+    if (!session.controlModeActive || !isPaneVisibleInActiveWindow(session, currentPane)) {
+      return;
+    }
+
+    if (currentPane.historyCaptureInFlight) {
+      schedulePaneVisibleRedraw(
+        session,
+        currentPane,
+        `${reason}-history-in-flight`,
+        TMUX_VISIBLE_REDRAW_RETRY_MS
+      );
+      return;
+    }
+
+    debugLog("tmux.capture", "repair visible pane after settled output", {
+      sessionId: session.id,
+      paneId,
+      terminalId,
+      reason,
+      outputGeneration: currentPane.outputGeneration,
+      alternateOn: currentPane.alternateOn,
+    });
+    void redrawVisiblePaneContent(session, currentPane, reason).catch((error) => {
+      debugLogError("tmux.capture", "settled pane redraw failed", error);
+    });
+  }, delayMs);
+}
+
 async function sendCommand(session: TmuxControlSession, command: string): Promise<string[]> {
   debugLog("tmux.command", "queue", {
     sessionId: session.id,
@@ -2086,7 +2353,11 @@ function buildPaneReplayOutput(options: {
   cursorY: number;
   clearScrollback: boolean;
 }): string {
-  const screenModePrefix = options.pane.alternateOn ? "\u001b[?1049h" : "\u001b[?1049l";
+  const screenModePrefix = options.pane.alternateOn === options.pane.displayedAlternateOn
+    ? ""
+    : options.pane.alternateOn
+      ? "\u001b[?1049h"
+      : "\u001b[?1049l";
   const clearScrollbackSequence = options.clearScrollback ? "\u001b[3J" : "";
   const cursorRow = Math.max(1, Math.floor(options.cursorY) + 1);
   const cursorCol = Math.max(1, Math.floor(options.cursorX) + 1);
@@ -2097,7 +2368,11 @@ async function resolvePaneCursorForCapture(
   session: TmuxControlSession,
   pane: TmuxPaneState,
   outputGeneration: number,
-  reason: string
+  reason: string,
+  options?: {
+    outputRaceRepair?: "history" | "visible";
+    allowOutputRace?: boolean;
+  }
 ): Promise<{ cursorX: number; cursorY: number } | null> {
   ensurePaneHistoryCaptureState(pane);
   if (!pane.cursorStaleSinceOutput) {
@@ -2130,15 +2405,40 @@ async function resolvePaneCursorForCapture(
   }
   ensurePaneHistoryCaptureState(currentPane);
   if (currentPane.outputGeneration !== outputGeneration) {
-    debugLog("tmux.capture", "skip pane replay after raced output during cursor refresh", {
+    const forceVisibleReplay =
+      !options?.allowOutputRace
+      && options?.outputRaceRepair === "visible"
+      && shouldForceVisibleRedrawAfterRace(currentPane, reason);
+    debugLog("tmux.capture", "pane replay cursor refresh raced output", {
       sessionId: session.id,
       paneId: pane.paneId,
       terminalId: pane.terminalId,
       reason,
       outputGeneration,
       currentOutputGeneration: currentPane.outputGeneration,
+      allowOutputRace: options?.allowOutputRace === true,
+      forceVisibleReplay,
+      visibleRedrawRaceCount: currentPane.visibleRedrawRaceCount,
+      forceAfterRaces: TMUX_VISIBLE_REDRAW_FORCE_AFTER_RACES,
     });
-    return null;
+    if (!options?.allowOutputRace && !forceVisibleReplay) {
+      if (options?.outputRaceRepair === "history") {
+        currentPane.missedOutputSinceHistoryCapture = true;
+        schedulePaneHistoryRefreshRetryAfterRace(
+          session,
+          currentPane,
+          `${reason}-cursor-raced-output`
+        );
+      } else if (options?.outputRaceRepair === "visible") {
+        schedulePaneVisibleRedraw(
+          session,
+          currentPane,
+          `${reason}-cursor-raced-output`,
+          TMUX_VISIBLE_REDRAW_RETRY_MS
+        );
+      }
+      return null;
+    }
   }
 
   const parsed = parsePaneCursorLine(lines[0] ?? "");
@@ -2426,6 +2726,11 @@ async function capturePaneFullContent(
         outputGeneration,
         currentOutputGeneration: currentPane.outputGeneration,
       });
+      schedulePaneHistoryRefreshRetryAfterRace(
+        session,
+        currentPane,
+        `${options.reason}-raced-output`
+      );
       return;
     }
 
@@ -2433,7 +2738,8 @@ async function capturePaneFullContent(
       session,
       currentPane,
       outputGeneration,
-      options.reason
+      options.reason,
+      { outputRaceRepair: "history" }
     );
     if (!cursor) {
       return;
@@ -2441,7 +2747,7 @@ async function capturePaneFullContent(
 
     ensureTerminalFrontend(pane.terminalId);
     const content = unescapeTmuxOutput(lines.join("\r\n"));
-    queueTerminalOutput(
+    const queued = queueTerminalOutput(
       pane.terminalId,
       buildPaneReplayOutput({
         pane: currentPane,
@@ -2457,6 +2763,10 @@ async function capturePaneFullContent(
         clearScrollbackBeforeWrite: true,
       }
     );
+    if (queued) {
+      currentPane.displayedAlternateOn = currentPane.alternateOn;
+      currentPane.visibleRedrawRaceCount = 0;
+    }
     currentPane.initialContentCaptured = true;
     currentPane.lastHistoryCaptureSize = currentPane.historySize;
     currentPane.lastHistoryRefreshDeferredLogAt = 0;
@@ -2464,6 +2774,7 @@ async function capturePaneFullContent(
       currentPane.lastHistoryRefreshAt = Date.now();
     }
     currentPane.missedOutputSinceHistoryCapture = false;
+    resetPaneHistoryRefreshRetry(currentPane);
     debugLog(
       "tmux.capture",
       options.initial ? "initial pane content complete" : "pane history refresh complete",
@@ -2555,23 +2866,51 @@ async function redrawVisiblePaneContent(
     });
     return;
   }
+  let cursorOutputGeneration = outputGeneration;
+  let allowCursorOutputRace = false;
   if (currentPane.outputGeneration !== outputGeneration) {
-    debugLog("tmux.capture", "skip visible pane redraw after raced output", {
-      sessionId: session.id,
-      paneId: pane.paneId,
-      terminalId: pane.terminalId,
-      reason,
-      outputGeneration,
-      currentOutputGeneration: currentPane.outputGeneration,
-    });
-    return;
+    const forceRedraw = shouldForceVisibleRedrawAfterRace(currentPane, reason);
+    debugLog(
+      "tmux.capture",
+      forceRedraw
+        ? "force visible pane redraw after repeated races"
+        : "skip visible pane redraw after raced output",
+      {
+        sessionId: session.id,
+        paneId: pane.paneId,
+        terminalId: pane.terminalId,
+        reason,
+        outputGeneration,
+        currentOutputGeneration: currentPane.outputGeneration,
+        visibleRedrawRaceCount: currentPane.visibleRedrawRaceCount,
+        forceAfterRaces: TMUX_VISIBLE_REDRAW_FORCE_AFTER_RACES,
+      }
+    );
+    if (!forceRedraw) {
+      if (shouldRetryVisibleRedraw(reason)) {
+        schedulePaneVisibleRedraw(
+          session,
+          currentPane,
+          `${reason}-raced-output`,
+          TMUX_VISIBLE_REDRAW_RETRY_MS
+        );
+      }
+      return;
+    }
+
+    cursorOutputGeneration = currentPane.outputGeneration;
+    allowCursorOutputRace = true;
   }
 
   const cursor = await resolvePaneCursorForCapture(
     session,
     currentPane,
-    outputGeneration,
-    reason
+    cursorOutputGeneration,
+    reason,
+    {
+      outputRaceRepair: "visible",
+      allowOutputRace: allowCursorOutputRace,
+    }
   );
   if (!cursor) {
     return;
@@ -2579,7 +2918,7 @@ async function redrawVisiblePaneContent(
 
   ensureTerminalFrontend(pane.terminalId);
   const content = unescapeTmuxOutput(lines.join("\r\n"));
-  queueTerminalOutput(
+  const queued = queueTerminalOutput(
     pane.terminalId,
     buildPaneReplayOutput({
       pane: currentPane,
@@ -2590,6 +2929,10 @@ async function redrawVisiblePaneContent(
     }),
     { recordActivity: false, replaceBufferedOutput: true }
   );
+  if (queued) {
+    currentPane.displayedAlternateOn = currentPane.alternateOn;
+    currentPane.visibleRedrawRaceCount = 0;
+  }
   debugLog("tmux.capture", "visible pane redraw complete", {
     sessionId: session.id,
     paneId: pane.paneId,
@@ -3124,13 +3467,28 @@ function handleNotification(session: TmuxControlSession, line: string) {
     ensurePaneHistoryCaptureState(pane);
     pane.outputGeneration += 1;
     pane.cursorStaleSinceOutput = true;
+    const paneWasVisible = isPaneVisibleInActiveWindow(session, pane);
     updatePaneAlternateScreenFromOutput(session, pane, output);
     markPaneOutputMissedByHistoryCapture(session, pane, parsed.value.length);
+    let queued: boolean;
     if (recordActivity) {
-      queueTerminalOutput(pane.terminalId, output);
+      queued = queueTerminalOutput(pane.terminalId, output);
     } else {
       recordSuppressedPaneOutputActivity(session, pane, parsed.value);
-      queueTerminalOutput(pane.terminalId, output, { recordActivity: false });
+      queued = queueTerminalOutput(pane.terminalId, output, { recordActivity: false });
+    }
+    if (queued && paneWasVisible) {
+      pane.displayedAlternateOn = pane.alternateOn;
+    }
+    if (pane.historyRefreshRetryTimer !== null) {
+      schedulePaneHistoryRefreshRetry(session, pane, "output-debounce");
+    }
+    if (
+      queued
+      && paneWasVisible
+      && isTmuxOutputLikelyToNeedAuthoritativeRedraw(output)
+    ) {
+      schedulePaneVisibleRedraw(session, pane, "output-settle");
     }
     return;
   }

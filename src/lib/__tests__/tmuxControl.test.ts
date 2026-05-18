@@ -381,7 +381,8 @@ describe("tmuxControl", () => {
     vi.useFakeTimers();
     writeTerminalMock.mockClear();
     focusTerminalInstanceMock.mockClear();
-    queueTerminalOutputMock.mockClear();
+    queueTerminalOutputMock.mockReset();
+    queueTerminalOutputMock.mockReturnValue(true);
     syncTerminalFrontendSizeMock.mockReset();
     resetTmuxRuntime();
   });
@@ -830,6 +831,252 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("repairs cursor-addressed visible tmux output after it settles", async () => {
+    const transportTerminalId = "transport-visible-redraw-repair";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Klive tui frame\n");
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "\u001b[31;2H\u001b[Klive tui frame"
+    );
+    expect(writeTerminalMock).not.toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    await vi.advanceTimersByTimeAsync(180);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "authoritative frame",
+        "%end 4 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
+    );
+
+    completeTmuxCommandWithLines(transportTerminalId, 5, ["4\t7"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jauthoritative frame\u001b[?7h\u001b[0m\u001b[8;5H",
+      { recordActivity: false, replaceBufferedOutput: true }
+    );
+  });
+
+  it("does not schedule authoritative redraws for plain tmux output", async () => {
+    const transportTerminalId = "transport-visible-redraw-plain-output";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 plain output\n");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(writeTerminalMock).not.toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+  });
+
+  it("retries settled visible redraws when pane output races the capture", async () => {
+    const transportTerminalId = "transport-visible-redraw-retry";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfirst tui frame\n");
+    await vi.advanceTimersByTimeAsync(180);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Knewer tui frame\n");
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "stale authoritative frame",
+        "%end 4 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("stale authoritative frame"),
+      expect.anything()
+    );
+
+    writeTerminalMock.mockClear();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+  });
+
+  it("forces a visible redraw rebaseline after repeated capture races", async () => {
+    const transportTerminalId = "transport-visible-redraw-force-after-races";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfirst tui frame\n");
+    await vi.advanceTimersByTimeAsync(180);
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Ksecond tui frame\n");
+    completeTmuxCommandWithLines(transportTerminalId, 4, ["stale authoritative frame 1"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("stale authoritative frame 1"),
+      expect.anything()
+    );
+
+    await vi.advanceTimersByTimeAsync(300);
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kthird tui frame\n");
+    completeTmuxCommandWithLines(transportTerminalId, 5, ["stale authoritative frame 2"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("stale authoritative frame 2"),
+      expect.anything()
+    );
+
+    await vi.advanceTimersByTimeAsync(300);
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfourth tui frame\n");
+    completeTmuxCommandWithLines(transportTerminalId, 6, ["forced authoritative frame"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
+    );
+
+    completeTmuxCommandWithLines(transportTerminalId, 7, ["4\t7"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("forced authoritative frame"),
+      { recordActivity: false, replaceBufferedOutput: true }
+    );
+  });
+
+  it("forces a visible redraw rebaseline after repeated cursor refresh races", async () => {
+    const transportTerminalId = "transport-visible-redraw-force-after-cursor-races";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfirst tui frame\n");
+    await vi.advanceTimersByTimeAsync(180);
+    completeTmuxCommandWithLines(transportTerminalId, 4, ["cursor-raced frame 1"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Ksecond tui frame\n");
+    completeTmuxCommandWithLines(transportTerminalId, 5, ["4\t7"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("cursor-raced frame 1"),
+      expect.anything()
+    );
+
+    await vi.advanceTimersByTimeAsync(300);
+    completeTmuxCommandWithLines(transportTerminalId, 6, ["cursor-raced frame 2"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kthird tui frame\n");
+    completeTmuxCommandWithLines(transportTerminalId, 7, ["4\t7"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("cursor-raced frame 2"),
+      expect.anything()
+    );
+
+    await vi.advanceTimersByTimeAsync(300);
+    completeTmuxCommandWithLines(transportTerminalId, 8, ["forced cursor-raced frame"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfourth tui frame\n");
+    completeTmuxCommandWithLines(transportTerminalId, 9, ["4\t7"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("forced cursor-raced frame"),
+      { recordActivity: false, replaceBufferedOutput: true }
+    );
+  });
+
   it("hydrates tmux control output when the DCS start marker is missing", async () => {
     const transportTerminalId = "transport-bare-control";
     seedTransportTerminal(transportTerminalId);
@@ -939,7 +1186,7 @@ describe("tmuxControl", () => {
     const paneTerminalId = getPaneTerminalIdByPaneId("%1");
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
-      "\u001b[?1049l\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\nfull screen row\u001b[?7h\u001b[0m\u001b[4;3H",
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\nfull screen row\u001b[?7h\u001b[0m\u001b[4;3H",
       {
         recordActivity: false,
         allowParkedWrite: true,
@@ -1010,7 +1257,7 @@ describe("tmuxControl", () => {
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
-      "\u001b[?1049l\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\ncurrent row\u001b[?7h\u001b[0m\u001b[8;5H",
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jhistory row\r\ncurrent row\u001b[?7h\u001b[0m\u001b[8;5H",
       {
         recordActivity: false,
         allowParkedWrite: true,
@@ -1099,7 +1346,7 @@ describe("tmuxControl", () => {
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
-      "\u001b[?1049l\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jfresh captured screen\u001b[?7h\u001b[0m\u001b[16;13H",
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jfresh captured screen\u001b[?7h\u001b[0m\u001b[16;13H",
       {
         recordActivity: false,
         allowParkedWrite: true,
@@ -1164,6 +1411,112 @@ describe("tmuxControl", () => {
       paneTerminalId,
       expect.stringContaining("stale full history"),
       expect.anything()
+    );
+  });
+
+  it("retries a focused full-history capture after live output races the first replay", async () => {
+    const transportTerminalId = "transport-history-race-retry";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.setState({ activeTerminalId: paneTerminalId });
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "@1\thappy\t1\t*",
+        "%end 4 0",
+        "%begin 5 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren\t4\t7\t0\t12",
+        "%end 5 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+    handleTmuxTerminalFocus(paneTerminalId);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -S -12 -t %1\n"
+    );
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 live after focus\n");
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 6 0",
+        "%end 6 0",
+        "%begin 7 0",
+        "stale full history",
+        "%end 7 0",
+        "%begin 8 0",
+        "%end 8 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "live after focus",
+      { recordActivity: false }
+    );
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("stale full history"),
+      expect.anything()
+    );
+
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+    await vi.advanceTimersByTimeAsync(700);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -S -12 -t %1\n"
+    );
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 9 0",
+        "fresh full history",
+        "%end 9 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
+    );
+
+    completeTmuxCommandWithLines(transportTerminalId, 10, ["4\t7"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jfresh full history\u001b[?7h\u001b[0m\u001b[8;5H",
+      {
+        recordActivity: false,
+        allowParkedWrite: true,
+        replaceBufferedOutput: true,
+        clearScrollbackBeforeWrite: true,
+      }
     );
   });
 
@@ -1437,7 +1790,7 @@ describe("tmuxControl", () => {
     await Promise.resolve();
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
-      "\u001b[?1049l\u001b[0m\u001b[?7l\u001b[H\u001b[2Jclean screen\u001b[?7h\u001b[0m\u001b[8;5H",
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jclean screen\u001b[?7h\u001b[0m\u001b[8;5H",
       { recordActivity: false, replaceBufferedOutput: true }
     );
 
@@ -1583,12 +1936,12 @@ describe("tmuxControl", () => {
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       leftPaneTerminalId,
-      "\u001b[?1049l\u001b[0m\u001b[?7l\u001b[H\u001b[2Jleft clean\u001b[?7h\u001b[0m\u001b[8;5H",
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jleft clean\u001b[?7h\u001b[0m\u001b[8;5H",
       { recordActivity: false, replaceBufferedOutput: true }
     );
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       rightPaneTerminalId,
-      "\u001b[?1049l\u001b[0m\u001b[?7l\u001b[H\u001b[2Jright clean\u001b[?7h\u001b[0m\u001b[3;2H",
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jright clean\u001b[?7h\u001b[0m\u001b[3;2H",
       { recordActivity: false, replaceBufferedOutput: true }
     );
   });
@@ -1671,7 +2024,7 @@ describe("tmuxControl", () => {
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       rightPaneTerminalId,
-      "\u001b[?1049l\u001b[0m\u001b[?7l\u001b[H\u001b[2Jright full height\u001b[?7h\u001b[0m\u001b[3;2H",
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jright full height\u001b[?7h\u001b[0m\u001b[3;2H",
       { recordActivity: false, replaceBufferedOutput: true }
     );
   });

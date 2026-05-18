@@ -583,7 +583,7 @@ function batchedWrite(
   terminalId: string,
   data: string,
   options?: QueuedTerminalOutputOptions
-) {
+): boolean {
   if (!options?.allowParkedWrite) {
     const skippedTmuxWriteReason = getSkippedTmuxWriteReason(
       terminalId,
@@ -592,7 +592,7 @@ function batchedWrite(
     if (skippedTmuxWriteReason) {
       maybeRecordDroppedParkedTmuxActivity(terminalId, data, options);
       recordParkedTmuxWriteDrop(terminalId, data, skippedTmuxWriteReason);
-      return;
+      return false;
     }
   }
 
@@ -623,18 +623,19 @@ function batchedWrite(
 
   if (data.includes("\u001b") && containsTerminalResponseQuery(buffer.join(""))) {
     flushBufferedWrite(terminalId);
-    return;
+    return true;
   }
 
   scheduleBufferedWrite(terminalId);
+  return true;
 }
 
 export function queueTerminalOutput(
   terminalId: string,
   data: string,
   options?: QueuedTerminalOutputOptions
-) {
-  batchedWrite(terminalId, data, options);
+): boolean {
+  return batchedWrite(terminalId, data, options);
 }
 
 export function reflectImmediateTabActivity(terminalId: string) {
