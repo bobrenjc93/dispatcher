@@ -2492,6 +2492,7 @@ function queueInitialPaneContentCapture(
   options?: {
     priority?: boolean;
     reason?: string;
+    delayMs?: number;
   }
 ) {
   ensureInitialPaneCaptureState(session);
@@ -2519,13 +2520,30 @@ function queueInitialPaneContentCapture(
     terminalId: pane.terminalId,
     priority: Boolean(options?.priority),
     reason: options?.reason ?? null,
+    delayMs: options?.delayMs ?? null,
     queuedPanes: session.pendingInitialPaneCaptures.length,
   });
 
   scheduleInitialPaneCaptureFlush(
     session,
-    options?.priority ? 0 : TMUX_INITIAL_CAPTURE_BACKGROUND_DELAY_MS
+    options?.delayMs
+      ?? (options?.priority ? 0 : TMUX_INITIAL_CAPTURE_BACKGROUND_DELAY_MS)
   );
+}
+
+function scheduleInitialPaneContentCaptureRetryAfterRace(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  reason: string
+) {
+  ensurePaneHistoryCaptureState(pane);
+  pane.historyRefreshRetryAttempts += 1;
+  const delayMs = getPaneHistoryRetryDelayMs(pane);
+  queueInitialPaneContentCapture(session, pane, {
+    priority: isPaneVisibleInActiveWindow(session, pane),
+    reason,
+    delayMs,
+  });
 }
 
 function flushInitialPaneCaptureQueue(session: TmuxControlSession) {
@@ -2726,11 +2744,19 @@ async function capturePaneFullContent(
         outputGeneration,
         currentOutputGeneration: currentPane.outputGeneration,
       });
-      schedulePaneHistoryRefreshRetryAfterRace(
-        session,
-        currentPane,
-        `${options.reason}-raced-output`
-      );
+      if (options.initial) {
+        scheduleInitialPaneContentCaptureRetryAfterRace(
+          session,
+          currentPane,
+          `${options.reason}-raced-output`
+        );
+      } else {
+        schedulePaneHistoryRefreshRetryAfterRace(
+          session,
+          currentPane,
+          `${options.reason}-raced-output`
+        );
+      }
       return;
     }
 

@@ -1414,6 +1414,73 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("retries an initial full-history capture after live output races the first replay", async () => {
+    const transportTerminalId = "transport-initial-history-race-retry";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId, { captureInitialContent: false });
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.setState({ activeTerminalId: paneTerminalId });
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    await vi.runOnlyPendingTimersAsync();
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 live before initial replay\n");
+    completeTmuxCommandWithLines(transportTerminalId, 3, ["stale initial history"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "live before initial replay"
+    );
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("stale initial history"),
+      expect.anything()
+    );
+
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+    await vi.advanceTimersByTimeAsync(700);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    completeTmuxCommandWithLines(transportTerminalId, 4, ["fresh initial history"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
+    );
+
+    completeTmuxCommandWithLines(transportTerminalId, 5, ["4\t7"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2J\u001b[3Jfresh initial history\u001b[?7h\u001b[0m\u001b[8;5H",
+      {
+        recordActivity: false,
+        allowParkedWrite: true,
+        replaceBufferedOutput: true,
+        clearScrollbackBeforeWrite: true,
+      }
+    );
+  });
+
   it("retries a focused full-history capture after live output races the first replay", async () => {
     const transportTerminalId = "transport-history-race-retry";
     seedTransportTerminal(transportTerminalId);

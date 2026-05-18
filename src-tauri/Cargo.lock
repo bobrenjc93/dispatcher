@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "dispatcher"
-version = "0.3.109"
+version = "0.3.110"
 dependencies = [
  "anyhow",
  "libc",
