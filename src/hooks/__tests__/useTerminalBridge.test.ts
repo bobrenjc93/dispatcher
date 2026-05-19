@@ -151,10 +151,12 @@ import {
   captureTerminalScreenshot,
   disposeTerminalInstance,
   ensureTerminalScreenshotTarget,
+  handleTerminalInputData,
   hasTerminalFrontend,
   queueTerminalOutput,
   reflectImmediateTabActivity,
   sendSyntheticTerminalInput,
+  stripGeneratedTerminalResponseSequences,
   syncTerminalFrontendSize,
 } from "../useTerminalBridge";
 import { useLayoutStore } from "../../stores/useLayoutStore";
@@ -183,6 +185,8 @@ describe("useTerminalBridge synthetic input", () => {
     disposeTerminalInstance("tmux-pane-test");
     disposeTerminalInstance("tmux-pane-no-frontend");
     disposeTerminalInstance("term-query-test");
+    disposeTerminalInstance("term-local-response-test");
+    disposeTerminalInstance("tmux-response-test");
     globalThis.__dispatcherTmuxTransportOutputRouter = undefined;
     disposeTerminalInstance("tab-root");
     disposeTerminalInstance("pane");
@@ -601,5 +605,53 @@ describe("useTerminalBridge synthetic input", () => {
       "\u001b]11;?\u001b\\\u001b[6n",
       expect.any(Function)
     );
+  });
+
+  it("strips generated terminal responses while preserving real input sequences", () => {
+    const generatedResponses =
+      "\u001b]11;rgb:0a0a/0a0a/0a0a\u001b\\\u001b[4;1R\u001b[>0;276;0c";
+
+    expect(stripGeneratedTerminalResponseSequences(generatedResponses)).toEqual({
+      data: "",
+      strippedBytes: generatedResponses.length,
+      strippedCount: 3,
+    });
+    expect(stripGeneratedTerminalResponseSequences(`x${generatedResponses}\r`)).toEqual({
+      data: "x\r",
+      strippedBytes: generatedResponses.length,
+      strippedCount: 3,
+    });
+    expect(stripGeneratedTerminalResponseSequences("\u001b[D")).toEqual({
+      data: "\u001b[D",
+      strippedBytes: 0,
+      strippedCount: 0,
+    });
+  });
+
+  it("does not count generated terminal responses from tmux panes as user input", () => {
+    useTerminalStore.getState().addSession("tmux-response-test", "A");
+    useTerminalStore.getState().patchSession("tmux-response-test", {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+
+    handleTerminalInputData(
+      "tmux-response-test",
+      "\u001b]11;rgb:0a0a/0a0a/0a0a\u001b\\\u001b[4;1R"
+    );
+
+    const session = useTerminalStore.getState().sessions["tmux-response-test"];
+    expect(session.hasDetectedActivity).toBe(false);
+    expect(session.lastUserInputAt).toBe(0);
+    expect(writeTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps local terminal responses on the local PTY path", () => {
+    const generatedResponse = "\u001b]11;rgb:0a0a/0a0a/0a0a\u001b\\";
+    handleTerminalInputData("term-local-response-test", generatedResponse);
+
+    expect(writeTerminalMock).toHaveBeenCalledWith("term-local-response-test", generatedResponse);
   });
 });

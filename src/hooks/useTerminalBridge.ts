@@ -119,9 +119,13 @@ export interface TerminalPasteProgress {
   updatedAt: number;
 }
 
+type TerminalInputRouter = (terminalId: string, data: string) => void;
+
 declare global {
   // eslint-disable-next-line no-var
   var __dispatcherTerminalBridgeRuntimeState: TerminalBridgeRuntimeState | undefined;
+  // eslint-disable-next-line no-var
+  var __dispatcherTerminalInputRouter: TerminalInputRouter | undefined;
 }
 
 function getTerminalBridgeRuntimeState(): TerminalBridgeRuntimeState {
@@ -201,6 +205,15 @@ const pasteProgressByTerminal = terminalBridgeRuntime.pasteProgressByTerminal;
 const TERMINAL_PASTE_PROGRESS_EVENT = "dispatcher:terminal-paste-progress";
 const TERMINAL_RESPONSE_QUERY_PATTERN =
   /\x1b(?:\[(?:\??6n|>c|c)|\](?:(?:1[0-2])|4;\d+);\?(?:\x07|\x1b\\))/;
+// xterm.js reports terminal-generated answers through onData, the same channel
+// it uses for real keystrokes. For a direct local PTY that is correct: programs
+// like vim can ask ESC[6n and receive a cursor-position reply. A tmux control
+// pane is different. Our xterm instance is a passive renderer of tmux %output
+// and capture replays, so feeding these renderer answers back through tmux
+// send-keys can inject stale OSC/DSR bytes into whatever app is foregrounded.
+// Keep this allowlist narrow: strip only well-known replies xterm itself emits.
+const TERMINAL_RESPONSE_SEQUENCE_PATTERN =
+  /\x1b(?:\](?:(?:1[0-2])|4;\d+);[^\x07\x1b]*(?:\x07|\x1b\\)|\[\d+;\d+R|\[\?\d+(?:;\d+)*c|\[>\d+(?:;\d+)*c)/g;
 const HIDDEN_WRITE_FALLBACK_MS = 50;
 const PARKED_TMUX_DROP_SUMMARY_INTERVAL_MS = 5_000;
 const PARKED_TMUX_ACTIVITY_THROTTLE_MS = 1_000;
@@ -208,6 +221,10 @@ const LARGE_WRITE_DRAIN_BYTES = 1_000_000;
 const SLOW_WRITE_DRAIN_MS = 100;
 
 const WEBGL_OPT_IN_STORAGE_KEY = "dispatcher.webgl.enabled";
+
+function getCurrentTerminalInputRouter(): TerminalInputRouter {
+  return globalThis.__dispatcherTerminalInputRouter ?? handleTerminalInputData;
+}
 
 function readWebglEnabledPreference(): boolean {
   if (typeof window === "undefined") return false;
@@ -373,6 +390,28 @@ function persistWebglEnabled(enabled: boolean) {
 
 function containsTerminalResponseQuery(data: string): boolean {
   return TERMINAL_RESPONSE_QUERY_PATTERN.test(data);
+}
+
+export function stripGeneratedTerminalResponseSequences(data: string): {
+  data: string;
+  strippedBytes: number;
+  strippedCount: number;
+} {
+  let strippedBytes = 0;
+  let strippedCount = 0;
+  TERMINAL_RESPONSE_SEQUENCE_PATTERN.lastIndex = 0;
+  const sanitized = data.replace(TERMINAL_RESPONSE_SEQUENCE_PATTERN, (match) => {
+    strippedBytes += match.length;
+    strippedCount += 1;
+    return "";
+  });
+  TERMINAL_RESPONSE_SEQUENCE_PATTERN.lastIndex = 0;
+
+  return {
+    data: sanitized,
+    strippedBytes,
+    strippedCount,
+  };
 }
 
 function clearBufferedWriteTimeout(terminalId: string) {
@@ -753,6 +792,58 @@ function shouldSuppressTransientFocusSequence(terminalId: string, data: string):
 function isTransientFocusSequence(data: string): boolean {
   return data === "\u001b[I" || data === "\u001b[O";
 }
+
+export function handleTerminalInputData(terminalId: string, data: string) {
+  pushKeyDebug(`xterm.onData:${terminalId}`, describeTerminalData(data));
+  const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+  let inputData = data;
+  if (backendKind === "tmux-pane") {
+    const sanitized = stripGeneratedTerminalResponseSequences(inputData);
+    if (sanitized.strippedCount > 0) {
+      debugLog("terminal.input", "suppress generated terminal response for tmux pane", {
+        terminalId,
+        strippedBytes: sanitized.strippedBytes,
+        strippedCount: sanitized.strippedCount,
+        forwardedBytes: sanitized.data.length,
+        rawPreview: describeTerminalData(data),
+        forwardedPreview: sanitized.data.length > 0 ? describeTerminalData(sanitized.data) : "",
+      });
+      pushKeyDebug(
+        `xterm.terminal-response-suppressed:${terminalId}`,
+        describeTerminalData(data)
+      );
+      inputData = sanitized.data;
+      if (inputData.length === 0) {
+        return;
+      }
+      pushKeyDebug(`xterm.onData-sanitized:${terminalId}`, describeTerminalData(inputData));
+    }
+  }
+  if (shouldSuppressSyntheticEcho(terminalId, inputData)) {
+    pushKeyDebug(`xterm.synthetic-echo-suppressed:${terminalId}`, describeTerminalData(inputData));
+    return;
+  }
+  if (shouldSuppressTransientFocusSequence(terminalId, inputData)) {
+    pushKeyDebug(`xterm.focus-sequence-suppressed:${terminalId}`, describeTerminalData(inputData));
+    return;
+  }
+  // Any submitted command may change cwd; force a fresh lookup on next spawn.
+  if (inputData.includes("\r")) {
+    useTerminalStore.getState().updateCwd(terminalId, undefined);
+  }
+  if (!isTransientFocusSequence(inputData)) {
+    useTerminalStore.getState().markTerminalActivity(terminalId);
+    reflectImmediateTabActivity(terminalId);
+  }
+  pushKeyDebug(`pty.write-request:${terminalId}`, describeTerminalData(inputData));
+  if (backendKind === "tmux-pane") {
+    sendInputToTmuxTerminal(terminalId, inputData).catch(() => {});
+  } else {
+    writeTerminal(terminalId, inputData).catch(() => {});
+  }
+}
+
+globalThis.__dispatcherTerminalInputRouter = handleTerminalInputData;
 
 function stripTerminalControlSequences(data: string): string {
   return data
@@ -1797,30 +1888,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
     // Forward user input to PTY.
     const dataDisposable = inst.xterm.onData((data) => {
-      pushKeyDebug(`xterm.onData:${terminalId}`, describeTerminalData(data));
-      if (shouldSuppressSyntheticEcho(terminalId, data)) {
-        pushKeyDebug(`xterm.synthetic-echo-suppressed:${terminalId}`, describeTerminalData(data));
-        return;
-      }
-      if (shouldSuppressTransientFocusSequence(terminalId, data)) {
-        pushKeyDebug(`xterm.focus-sequence-suppressed:${terminalId}`, describeTerminalData(data));
-        return;
-      }
-      // Any submitted command may change cwd; force a fresh lookup on next spawn.
-      if (data.includes("\r")) {
-        useTerminalStore.getState().updateCwd(terminalId, undefined);
-      }
-      if (!isTransientFocusSequence(data)) {
-        useTerminalStore.getState().markTerminalActivity(terminalId);
-        reflectImmediateTabActivity(terminalId);
-      }
-      pushKeyDebug(`pty.write-request:${terminalId}`, describeTerminalData(data));
-      const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
-      if (backendKind === "tmux-pane") {
-        sendInputToTmuxTerminal(terminalId, data).catch(() => {});
-      } else {
-        writeTerminal(terminalId, data).catch(() => {});
-      }
+      getCurrentTerminalInputRouter()(terminalId, data);
     });
 
     // Handle resize
