@@ -2,11 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   focusTerminalInstanceMock,
+  getTerminalCellSizeMock,
+  getTerminalViewportSizeMock,
   queueTerminalOutputMock,
   syncTerminalFrontendSizeMock,
   writeTerminalMock,
 } = vi.hoisted(() => ({
   focusTerminalInstanceMock: vi.fn(),
+  getTerminalCellSizeMock: vi.fn(() => ({ width: 8, height: 16 })),
+  getTerminalViewportSizeMock: vi.fn(() => ({ width: 640, height: 384 })),
   queueTerminalOutputMock: vi.fn(),
   syncTerminalFrontendSizeMock: vi.fn(),
   writeTerminalMock: vi.fn(async () => {}),
@@ -21,8 +25,8 @@ vi.mock("../../hooks/useTerminalBridge", () => ({
   disposeTerminalInstance: vi.fn(),
   ensureTerminalFrontend: vi.fn(),
   focusTerminalInstance: focusTerminalInstanceMock,
-  getTerminalCellSize: vi.fn(() => ({ width: 8, height: 16 })),
-  getTerminalViewportSize: vi.fn(() => ({ width: 640, height: 384 })),
+  getTerminalCellSize: getTerminalCellSizeMock,
+  getTerminalViewportSize: getTerminalViewportSizeMock,
   queueTerminalOutput: queueTerminalOutputMock,
   syncTerminalFrontendSize: syncTerminalFrontendSizeMock,
 }));
@@ -381,6 +385,10 @@ describe("tmuxControl", () => {
     vi.useFakeTimers();
     writeTerminalMock.mockClear();
     focusTerminalInstanceMock.mockClear();
+    getTerminalCellSizeMock.mockReset();
+    getTerminalCellSizeMock.mockReturnValue({ width: 8, height: 16 });
+    getTerminalViewportSizeMock.mockReset();
+    getTerminalViewportSizeMock.mockReturnValue({ width: 640, height: 384 });
     queueTerminalOutputMock.mockReset();
     queueTerminalOutputMock.mockReturnValue(true);
     syncTerminalFrontendSizeMock.mockReset();
@@ -1906,6 +1914,71 @@ describe("tmuxControl", () => {
     );
 
     expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(false);
+  });
+
+  it("resends tmux client size when a single pane snapshot is stale", async () => {
+    const transportTerminalId = "transport-stale-pane-grid-resize";
+    seedTransportTerminal(transportTerminalId);
+    getTerminalViewportSizeMock.mockReturnValue({ width: 640, height: 480 });
+
+    await hydrateSingleWindow(transportTerminalId);
+    writeTerminalMock.mockClear();
+    syncTerminalFrontendSizeMock.mockClear();
+
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(true);
+    expect(syncTerminalFrontendSizeMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      80,
+      30
+    );
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "refresh-client -C 80x30\n"
+    );
+
+    writeTerminalMock.mockClear();
+    syncTerminalFrontendSizeMock.mockClear();
+
+    // No layout-change has arrived yet, so tmux still says the pane is 80x24.
+    // The old code trusted the cached 80x30 client size and stopped here,
+    // leaving xterm and tmux free to disagree until another split/layout event.
+    expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(true);
+    expect(syncTerminalFrontendSizeMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      80,
+      30
+    );
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "refresh-client -C 80x30\n"
+    );
+  });
+
+  it("reconciles a single pane frontend even when the tmux client size is unchanged", async () => {
+    const transportTerminalId = "transport-stale-frontend-grid-resize";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(true);
+
+    writeTerminalMock.mockClear();
+    syncTerminalFrontendSizeMock.mockClear();
+
+    // tmux and the viewport agree, but the local xterm can still be stale after
+    // a sleep/wake or missed ResizeObserver event. Reassert the pane size even
+    // when no refresh-client command is needed.
+    expect(syncTmuxWindowSizeFromPaneTerminal(paneTerminalId)).toBe(false);
+    expect(syncTerminalFrontendSizeMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      80,
+      24
+    );
+    expect(writeTerminalMock).not.toHaveBeenCalledWith(
+      transportTerminalId,
+      "refresh-client -C 80x24\n"
+    );
   });
 
   it("syncs tmux window size from the root canvas instead of stale pane ratios", async () => {

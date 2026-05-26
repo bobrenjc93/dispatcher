@@ -4390,7 +4390,11 @@ function applyTmuxWindowSize(
   windowState: TmuxWindowState,
   cols: number,
   rows: number,
-  details: Record<string, unknown>
+  details: Record<string, unknown>,
+  options: {
+    forceRefresh?: boolean;
+    forceReason?: string;
+  } = {}
 ): boolean {
   const nextCols = Math.max(2, Math.floor(cols));
   const nextRows = Math.max(1, Math.floor(rows));
@@ -4400,11 +4404,13 @@ function applyTmuxWindowSize(
 
   const nextSize = `${nextCols}x${nextRows}`;
   ensureTmuxClientSizeState(session);
-  if (session.windowSizes.get(windowState.windowId) === nextSize) {
+  const cachedWindowSize = session.windowSizes.get(windowState.windowId) ?? null;
+  const forceRefresh = options.forceRefresh === true;
+  if (cachedWindowSize === nextSize && !forceRefresh) {
     return false;
   }
 
-  if (session.clientSize === nextSize) {
+  if (session.clientSize === nextSize && !forceRefresh) {
     session.windowSizes.set(windowState.windowId, nextSize);
     debugLog("tmux.size", "skip client resize for already-applied size", {
       sessionId: session.id,
@@ -4419,11 +4425,14 @@ function applyTmuxWindowSize(
   markTmuxClientSize(session, nextSize);
   beginTmuxClientResizeLayoutSuppression(session, windowState.windowId);
   session.pendingWindowRedraws.add(windowState.windowId);
-  debugLog("tmux.size", "sync window size", {
+  debugLog("tmux.size", forceRefresh ? "force window size refresh" : "sync window size", {
     sessionId: session.id,
     windowId: windowState.windowId,
     ...details,
     size: nextSize,
+    cachedWindowSize,
+    forceRefresh,
+    forceReason: options.forceReason ?? null,
   });
   void sendCommand(session, `refresh-client -C ${nextSize}`)
     .then(() => {
@@ -4485,9 +4494,21 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
 
   const activePane = session.panes.get(windowState.activePaneId) ?? null;
   const totalWindowGrid = getTmuxWindowGridSize(session, windowState.windowId);
+  const paneCount = [...session.panes.values()].filter(
+    (candidate) => candidate.windowId === windowState.windowId
+  ).length;
   const viewportSize = getTerminalViewportSize(activePaneTerminalId);
   const cols = Math.max(2, Math.floor(widthPx / cellSize.width));
   const rows = Math.max(1, Math.floor(heightPx / cellSize.height));
+  const windowGridStale = totalWindowGrid.cols !== cols || totalWindowGrid.rows !== rows;
+  if (windowGridStale && paneCount === 1) {
+    // If the React canvas resized while tmux still reports the old grid, our
+    // cached client size can look "already applied" even though the pane model
+    // and xterm are stale. Re-send refresh-client so tmux emits a fresh layout.
+    if (activePane) {
+      syncTerminalFrontendSize(activePaneTerminalId, cols, rows);
+    }
+  }
   return applyTmuxWindowSize(session, windowState, cols, rows, {
     layoutId,
     activePaneTerminalId,
@@ -4499,9 +4520,14 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
     viewportHeightPx: viewportSize?.height ?? null,
     activePaneCols: activePane?.width ?? null,
     activePaneRows: activePane?.height ?? null,
+    paneCount,
     totalWindowCols: totalWindowGrid.cols,
     totalWindowRows: totalWindowGrid.rows,
     source: "outer-canvas",
+    windowGridStale,
+  }, {
+    forceRefresh: windowGridStale,
+    forceReason: windowGridStale ? "window-grid-stale" : undefined,
   });
 }
 
@@ -4571,6 +4597,17 @@ export function syncTmuxWindowSizeFromPaneTerminal(terminalId: string): boolean 
     return false;
   }
 
+  const paneGridStale =
+    pane.width !== inferredWindowSize.cols || pane.height !== inferredWindowSize.rows;
+  // Keep the local xterm grid tied to the visible viewport even before tmux's
+  // layout-change arrives. A stale xterm row count is what makes cursor-addressed
+  // redraws from Claude/vim paint over the wrong part of the screen.
+  syncTerminalFrontendSize(
+    terminalId,
+    paneGridStale ? inferredWindowSize.cols : pane.width,
+    paneGridStale ? inferredWindowSize.rows : pane.height
+  );
+
   return applyTmuxWindowSize(session, windowState, inferredWindowSize.cols, inferredWindowSize.rows, {
     terminalId,
     paneId: pane.paneId,
@@ -4583,6 +4620,10 @@ export function syncTmuxWindowSizeFromPaneTerminal(terminalId: string): boolean 
     totalWindowCols: totalWindowGrid.cols,
     totalWindowRows: totalWindowGrid.rows,
     source: "pane-resize-observer",
+    paneGridStale,
+  }, {
+    forceRefresh: paneGridStale,
+    forceReason: paneGridStale ? "pane-grid-stale" : undefined,
   });
 }
 

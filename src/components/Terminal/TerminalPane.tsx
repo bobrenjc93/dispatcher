@@ -78,7 +78,7 @@ export function TerminalPane({
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const handleResize = useCallback(() => {
+  const syncTmuxPaneViewport = useCallback(() => {
     fit();
     if (syncTmuxWindowSizeFromPaneTerminal(terminalId)) {
       return;
@@ -88,23 +88,27 @@ export function TerminalPane({
     });
   }, [fit, terminalId]);
 
+  const handleResize = useCallback(() => {
+    syncTmuxPaneViewport();
+  }, [syncTmuxPaneViewport]);
+
   const resizeRef = useResizeObserver(handleResize);
 
   // Re-fit on window resize (e.g. maximising/restoring the window).
   useEffect(() => {
-    const onResize = () => fit();
+    const onResize = () => syncTmuxPaneViewport();
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [fit]);
+  }, [syncTmuxPaneViewport]);
 
   // Opening/closing the search bar changes the terminal viewport height.
   // Trigger a fit so rows/cols stay in sync with the actual visible area.
   useEffect(() => {
     const rafId = requestAnimationFrame(() => {
-      fit();
+      syncTmuxPaneViewport();
     });
     return () => cancelAnimationFrame(rafId);
-  }, [searchOpen, fit]);
+  }, [searchOpen, syncTmuxPaneViewport]);
 
   const openSearch = useCallback(() => {
     setSearchOpen(true);
