@@ -1,6 +1,6 @@
 [package]
 name = "dispatcher"
-version = "0.3.114"
+version = "0.3.115"
 edition = "2021"
 
 [[bin]]
