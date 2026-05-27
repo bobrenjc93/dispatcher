@@ -6,6 +6,7 @@ import {
   shouldUseTimestampOnlyStatus,
   shouldWriteScreenshotDebugArtifact,
 } from "../useTerminalScreenshotMonitor";
+import { shouldIgnoreStatusResizeChange } from "../../lib/statusResizeSuppression";
 import type { TerminalSession } from "../../types/terminal";
 
 function session(patch: Partial<TerminalSession> = {}): TerminalSession {
@@ -46,6 +47,36 @@ describe("shouldIgnoreTmuxFocusVisualChange", () => {
       lastUserInputAt: 1_000,
       lastOutputAt: 2_001,
       suppressionStartedAt: 2_000,
+    })).toBe(false);
+  });
+});
+
+describe("shouldIgnoreStatusResizeChange", () => {
+  it("ignores visual changes that only reflect recent resize", () => {
+    expect(shouldIgnoreStatusResizeChange({
+      changed: true,
+      suppression: {
+        terminalId: "pane",
+        startedAt: 2_000,
+        until: 7_000,
+        reason: "test-resize",
+      },
+      lastUserInputAt: 1_000,
+      lastOutputAt: 1_000,
+    })).toBe(true);
+  });
+
+  it("does not ignore visual changes after output arrives post-resize", () => {
+    expect(shouldIgnoreStatusResizeChange({
+      changed: true,
+      suppression: {
+        terminalId: "pane",
+        startedAt: 2_000,
+        until: 7_000,
+        reason: "test-resize",
+      },
+      lastUserInputAt: 1_000,
+      lastOutputAt: 2_001,
     })).toBe(false);
   });
 });

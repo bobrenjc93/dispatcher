@@ -51,6 +51,7 @@ import {
   resolveRecoveredTmuxSessionPlacement,
   resolveTmuxWindowPlacementFromPlaceholder,
 } from "./tmuxSessionPlacement";
+import { markStatusResizeSuppression } from "./statusResizeSuppression";
 
 interface PendingCommand {
   command: string;
@@ -115,6 +116,19 @@ interface TmuxPaneState {
   historyRefreshRetryAttempts: number;
   visibleRedrawTimer: number | null;
   visibleRedrawRaceCount: number;
+  // Wall-clock time of the last tmux %output chunk for this pane. Visible
+  // replay repairs wait for a quiet period so they do not fight fast TUI
+  // redraw loops that are still moving the cursor.
+  lastTmuxOutputAt: number;
+  // While tmux and xterm are being resized/replayed, cursor-relative live
+  // output can be interpreted against the old local grid. A short barrier lets
+  // the authoritative capture win instead of layering those transient frames
+  // onto a half-resized terminal.
+  layoutRedrawBarrierUntil: number;
+  layoutRedrawBarrierReason: string | null;
+  layoutRedrawSuppressedChunks: number;
+  layoutRedrawSuppressedBytes: number;
+  layoutRedrawSuppressionLastLoggedAt: number;
   missedOutputSinceHistoryCapture: boolean;
   contentClearGeneration: number;
   outputGeneration: number;
@@ -271,6 +285,10 @@ const TMUX_HISTORY_RACE_RETRY_BASE_MS = 300;
 const TMUX_HISTORY_RACE_RETRY_MAX_MS = 2_500;
 const TMUX_VISIBLE_REDRAW_SETTLE_MS = 180;
 const TMUX_VISIBLE_REDRAW_RETRY_MS = 300;
+const TMUX_VISIBLE_REDRAW_QUIET_MS = 1_200;
+const TMUX_VISIBLE_REDRAW_RETRY_MAX_MS = 3_000;
+const TMUX_LAYOUT_REDRAW_BARRIER_MS = 1_500;
+const TMUX_LAYOUT_REDRAW_SUPPRESSION_SUMMARY_INTERVAL_MS = 1_000;
 const TMUX_PASTE_BUFFER_CHUNK_SIZE = 8_000;
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
@@ -308,6 +326,12 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.historyRefreshRetryAttempts ??= 0;
   pane.visibleRedrawTimer ??= null;
   pane.visibleRedrawRaceCount ??= 0;
+  pane.lastTmuxOutputAt ??= 0;
+  pane.layoutRedrawBarrierUntil ??= 0;
+  pane.layoutRedrawBarrierReason ??= null;
+  pane.layoutRedrawSuppressedChunks ??= 0;
+  pane.layoutRedrawSuppressedBytes ??= 0;
+  pane.layoutRedrawSuppressionLastLoggedAt ??= 0;
   pane.missedOutputSinceHistoryCapture ??= false;
   pane.contentClearGeneration ??= 0;
   pane.outputGeneration ??= 0;
@@ -806,6 +830,12 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       historyRefreshRetryAttempts: 0,
       visibleRedrawTimer: null,
       visibleRedrawRaceCount: 0,
+      lastTmuxOutputAt: 0,
+      layoutRedrawBarrierUntil: 0,
+      layoutRedrawBarrierReason: null,
+      layoutRedrawSuppressedChunks: 0,
+      layoutRedrawSuppressedBytes: 0,
+      layoutRedrawSuppressionLastLoggedAt: 0,
       missedOutputSinceHistoryCapture: false,
       contentClearGeneration: 0,
       outputGeneration: 0,
@@ -1703,6 +1733,12 @@ function upsertWindowProjection(
         historyRefreshRetryAttempts: 0,
         visibleRedrawTimer: null,
         visibleRedrawRaceCount: 0,
+        lastTmuxOutputAt: 0,
+        layoutRedrawBarrierUntil: 0,
+        layoutRedrawBarrierReason: null,
+        layoutRedrawSuppressedChunks: 0,
+        layoutRedrawSuppressedBytes: 0,
+        layoutRedrawSuppressionLastLoggedAt: 0,
         missedOutputSinceHistoryCapture: false,
         contentClearGeneration: 0,
         outputGeneration: 0,
@@ -2093,6 +2129,173 @@ function clearPaneVisibleRedraw(pane: TmuxPaneState) {
   }
 }
 
+function getVisibleRedrawRetryDelayMs(pane: TmuxPaneState, requestedDelayMs: number): number {
+  ensurePaneHistoryCaptureState(pane);
+  if (pane.visibleRedrawRaceCount <= 0) {
+    return requestedDelayMs;
+  }
+
+  const exponent = Math.min(Math.max(0, pane.visibleRedrawRaceCount - 1), 4);
+  return Math.max(
+    requestedDelayMs,
+    Math.min(TMUX_VISIBLE_REDRAW_RETRY_MS * 2 ** exponent, TMUX_VISIBLE_REDRAW_RETRY_MAX_MS)
+  );
+}
+
+function shouldRequireQuietPaneOutputForVisibleRedraw(reason: string): boolean {
+  return (
+    reason.includes("output-settle")
+    || reason.includes("raced-output")
+    || reason.includes("history-in-flight")
+    || reason.includes("layout-redraw-barrier")
+  );
+}
+
+function getVisibleRedrawQuietDelayMs(pane: TmuxPaneState, reason: string, now: number): number {
+  ensurePaneHistoryCaptureState(pane);
+  if (
+    !shouldRequireQuietPaneOutputForVisibleRedraw(reason)
+    || pane.lastTmuxOutputAt <= 0
+  ) {
+    return 0;
+  }
+
+  const quietForMs = now - pane.lastTmuxOutputAt;
+  return quietForMs >= TMUX_VISIBLE_REDRAW_QUIET_MS
+    ? 0
+    : TMUX_VISIBLE_REDRAW_QUIET_MS - quietForMs;
+}
+
+function flushPaneLayoutRedrawSuppressionSummary(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  reason: string
+) {
+  ensurePaneHistoryCaptureState(pane);
+  if (pane.layoutRedrawSuppressedChunks <= 0) {
+    return;
+  }
+
+  debugLog("tmux.capture", "layout redraw output suppression summary", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    reason,
+    barrierReason: pane.layoutRedrawBarrierReason,
+    chunks: pane.layoutRedrawSuppressedChunks,
+    bytes: pane.layoutRedrawSuppressedBytes,
+  });
+  pane.layoutRedrawSuppressedChunks = 0;
+  pane.layoutRedrawSuppressedBytes = 0;
+  pane.layoutRedrawSuppressionLastLoggedAt = Date.now();
+}
+
+function beginPaneLayoutRedrawBarrier(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  reason: string
+) {
+  ensurePaneHistoryCaptureState(pane);
+  const now = Date.now();
+  const nextUntil = now + TMUX_LAYOUT_REDRAW_BARRIER_MS;
+  if (
+    pane.layoutRedrawBarrierUntil >= nextUntil
+    && pane.layoutRedrawBarrierReason === reason
+  ) {
+    return;
+  }
+
+  pane.layoutRedrawBarrierUntil = Math.max(pane.layoutRedrawBarrierUntil, nextUntil);
+  pane.layoutRedrawBarrierReason = reason;
+  debugLog("tmux.capture", "begin layout redraw barrier", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    reason,
+    expiresInMs: pane.layoutRedrawBarrierUntil - now,
+    outputGeneration: pane.outputGeneration,
+  });
+}
+
+function beginWindowLayoutRedrawBarrier(
+  session: TmuxControlSession,
+  windowId: string,
+  reason: string
+) {
+  // The failure mode this protects against is subtle: tmux sends output as
+  // cursor-relative byte streams, while Dispatcher resizes xterm and then
+  // replays an absolute capture. If those streams are written during the
+  // resize/replay window, later relative moves can land on the wrong local row.
+  // We only fence panes that are actually visible; parked panes already drop
+  // live output and will be restored from capture when focused.
+  for (const pane of session.panes.values()) {
+    if (pane.windowId === windowId && isPaneVisibleInActiveWindow(session, pane)) {
+      beginPaneLayoutRedrawBarrier(session, pane, reason);
+    }
+  }
+}
+
+function clearPaneLayoutRedrawBarrier(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  reason: string
+) {
+  ensurePaneHistoryCaptureState(pane);
+  if (pane.layoutRedrawBarrierUntil <= 0 && pane.layoutRedrawSuppressedChunks <= 0) {
+    return;
+  }
+
+  flushPaneLayoutRedrawSuppressionSummary(session, pane, reason);
+  debugLog("tmux.capture", "clear layout redraw barrier", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    reason,
+    barrierReason: pane.layoutRedrawBarrierReason,
+  });
+  pane.layoutRedrawBarrierUntil = 0;
+  pane.layoutRedrawBarrierReason = null;
+}
+
+function shouldSuppressPaneOutputDuringLayoutRedraw(pane: TmuxPaneState, now: number): boolean {
+  ensurePaneHistoryCaptureState(pane);
+  if (pane.layoutRedrawBarrierUntil <= 0) {
+    return false;
+  }
+
+  if (now <= pane.layoutRedrawBarrierUntil) {
+    return true;
+  }
+
+  pane.layoutRedrawBarrierUntil = 0;
+  pane.layoutRedrawBarrierReason = null;
+  return false;
+}
+
+function recordLayoutRedrawSuppressedOutput(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  bytes: number,
+  now: number
+) {
+  ensurePaneHistoryCaptureState(pane);
+  pane.layoutRedrawSuppressedChunks += 1;
+  pane.layoutRedrawSuppressedBytes += bytes;
+
+  if (
+    pane.layoutRedrawSuppressedChunks > 1
+    && now - pane.layoutRedrawSuppressionLastLoggedAt < TMUX_LAYOUT_REDRAW_SUPPRESSION_SUMMARY_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  flushPaneLayoutRedrawSuppressionSummary(
+    session,
+    pane,
+    pane.layoutRedrawBarrierReason ?? "layout-redraw-barrier"
+  );
+}
+
 function clearPaneRenderingTimers(pane: TmuxPaneState) {
   clearPaneHistoryRefreshRetry(pane);
   clearPaneVisibleRedraw(pane);
@@ -2231,6 +2434,9 @@ function shouldRetryVisibleRedraw(reason: string): boolean {
     reason.includes("output-settle")
     || reason.includes("raced-output")
     || reason.includes("history-in-flight")
+    || reason.includes("layout-change")
+    || reason.includes("resize")
+    || reason.includes("layout-redraw-barrier")
   );
 }
 
@@ -2253,6 +2459,7 @@ function schedulePaneVisibleRedraw(
 
   const paneId = pane.paneId;
   const terminalId = pane.terminalId;
+  const nextDelayMs = getVisibleRedrawRetryDelayMs(pane, delayMs);
   pane.visibleRedrawTimer = window.setTimeout(() => {
     const currentPane = session.panes.get(paneId);
     if (!currentPane || currentPane.terminalId !== terminalId) {
@@ -2262,6 +2469,12 @@ function schedulePaneVisibleRedraw(
     ensurePaneHistoryCaptureState(currentPane);
     currentPane.visibleRedrawTimer = null;
     if (!session.controlModeActive || !isPaneVisibleInActiveWindow(session, currentPane)) {
+      return;
+    }
+
+    const quietDelayMs = getVisibleRedrawQuietDelayMs(currentPane, reason, Date.now());
+    if (quietDelayMs > 0) {
+      schedulePaneVisibleRedraw(session, currentPane, reason, quietDelayMs);
       return;
     }
 
@@ -2288,7 +2501,7 @@ function schedulePaneVisibleRedraw(
     void redrawVisiblePaneContent(session, currentPane, reason).catch((error) => {
       debugLogError("tmux.capture", "settled pane redraw failed", error);
     });
-  }, delayMs);
+  }, nextDelayMs);
 }
 
 async function sendCommand(session: TmuxControlSession, command: string): Promise<string[]> {
@@ -2817,6 +3030,8 @@ async function capturePaneFullContent(
     if (queued) {
       currentPane.displayedAlternateOn = currentPane.alternateOn;
       currentPane.visibleRedrawRaceCount = 0;
+      clearPaneVisibleRedraw(currentPane);
+      clearPaneLayoutRedrawBarrier(session, currentPane, options.reason);
     }
     currentPane.initialContentCaptured = true;
     currentPane.lastHistoryCaptureSize = currentPane.historySize;
@@ -3026,6 +3241,8 @@ async function redrawVisiblePaneContent(
   if (queued) {
     currentPane.displayedAlternateOn = currentPane.alternateOn;
     currentPane.visibleRedrawRaceCount = 0;
+    clearPaneVisibleRedraw(currentPane);
+    clearPaneLayoutRedrawBarrier(session, currentPane, reason);
   }
   debugLog("tmux.capture", "visible pane redraw complete", {
     sessionId: session.id,
@@ -3167,11 +3384,18 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
 
   if (paneStatesToRedraw.length > 0) {
     const reason = shouldRedrawWindow ? "resize" : "layout-change";
+    for (const pane of paneStatesToRedraw) {
+      beginPaneLayoutRedrawBarrier(session, pane, reason);
+    }
     void Promise.all(
       paneStatesToRedraw.map((pane) => refreshPaneContentForDisplay(session, pane, reason))
     ).catch((error) => {
       debugLogError("tmux.capture", `${reason} pane redraw failed`, error);
     });
+  } else {
+    for (const pane of paneStates) {
+      clearPaneLayoutRedrawBarrier(session, pane, "refresh-window-no-redraw");
+    }
   }
 
   debugLog("tmux.refresh", "refresh window complete", {
@@ -3559,13 +3783,25 @@ function handleNotification(session: TmuxControlSession, line: string) {
 
     const output = unescapeTmuxOutput(parsed.value);
     ensurePaneHistoryCaptureState(pane);
+    const now = Date.now();
     pane.outputGeneration += 1;
+    pane.lastTmuxOutputAt = now;
     pane.cursorStaleSinceOutput = true;
     const paneWasVisible = isPaneVisibleInActiveWindow(session, pane);
     updatePaneAlternateScreenFromOutput(session, pane, output);
     markPaneOutputMissedByHistoryCapture(session, pane, parsed.value.length);
     let queued: boolean;
-    if (recordActivity) {
+    const suppressLiveOutput = paneWasVisible && shouldSuppressPaneOutputDuringLayoutRedraw(pane, now);
+    if (suppressLiveOutput) {
+      recordLayoutRedrawSuppressedOutput(session, pane, parsed.value.length, now);
+      schedulePaneVisibleRedraw(
+        session,
+        pane,
+        `${pane.layoutRedrawBarrierReason ?? "layout-redraw-barrier"}-suppressed-output`,
+        TMUX_VISIBLE_REDRAW_SETTLE_MS
+      );
+      queued = false;
+    } else if (recordActivity) {
       queued = queueTerminalOutput(pane.terminalId, output);
     } else {
       recordSuppressedPaneOutputActivity(session, pane, parsed.value);
@@ -3641,6 +3877,7 @@ function handleNotification(session: TmuxControlSession, line: string) {
       if (shouldSuppressTmuxLayoutChange(session, windowId)) {
         return;
       }
+      beginWindowLayoutRedrawBarrier(session, windowId, "layout-change-event");
       scheduleRefresh(session, windowId);
     }
     return;
@@ -4425,6 +4662,16 @@ function applyTmuxWindowSize(
   markTmuxClientSize(session, nextSize);
   beginTmuxClientResizeLayoutSuppression(session, windowState.windowId);
   session.pendingWindowRedraws.add(windowState.windowId);
+  markStatusResizeSuppression(
+    [
+      windowState.terminalId,
+      ...[...session.panes.values()]
+        .filter((pane) => pane.windowId === windowState.windowId)
+        .map((pane) => pane.terminalId),
+    ],
+    options.forceReason ?? "tmux-client-resize"
+  );
+  beginWindowLayoutRedrawBarrier(session, windowState.windowId, options.forceReason ?? "client-resize");
   debugLog("tmux.size", forceRefresh ? "force window size refresh" : "sync window size", {
     sessionId: session.id,
     windowId: windowState.windowId,

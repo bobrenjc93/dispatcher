@@ -26,6 +26,10 @@ import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../li
 import { debugLog } from "../lib/debugLog";
 import { isLinkOpenModifierPressed } from "../lib/terminalMouse";
 import {
+  getActiveStatusResizeSuppression,
+  markStatusResizeSuppression,
+} from "../lib/statusResizeSuppression";
+import {
   clearTmuxTerminal,
   getCurrentTmuxTransportOutputRouter,
   sendInputToTmuxTerminal,
@@ -547,7 +551,24 @@ function isRecordableTerminalOutput(data: string, options?: QueuedTerminalOutput
 }
 
 function recordTerminalOutputActivity(terminalId: string) {
-  useTerminalStore.getState().markTerminalOutput(terminalId);
+  const terminalStore = useTerminalStore.getState();
+  const resizeSuppression = getActiveStatusResizeSuppression([terminalId]);
+  const session = terminalStore.sessions[terminalId];
+  if (
+    resizeSuppression
+    && (session?.lastUserInputAt ?? 0) <= resizeSuppression.startedAt
+    && (session?.lastOutputAt ?? 0) <= resizeSuppression.startedAt
+  ) {
+    debugLog("terminal.output", "suppress output activity during resize", {
+      terminalId,
+      reason: resizeSuppression.reason,
+      suppressionTerminalId: resizeSuppression.terminalId,
+      suppressionUntil: resizeSuppression.until,
+    });
+    return;
+  }
+
+  terminalStore.markTerminalOutput(terminalId);
   reflectImmediateTabOutput(terminalId);
 }
 
@@ -1575,6 +1596,7 @@ export function syncTerminalFrontendSize(terminalId: string, cols: number, rows:
       overflowY,
     });
   }
+  markStatusResizeSuppression([terminalId], "frontend-grid-resize");
   instance.xterm.resize(nextCols, nextRows);
 }
 
@@ -1894,6 +1916,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     // Handle resize
     const resizeDisposable = inst.xterm.onResize(({ cols, rows }) => {
       const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+      markStatusResizeSuppression([terminalId], "xterm-resize");
       if (backendKind === "local" || backendKind === "tmux-transport") {
         resizeTerminal(terminalId, cols, rows).catch(() => {});
       }

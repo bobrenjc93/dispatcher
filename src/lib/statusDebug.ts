@@ -19,6 +19,9 @@ export interface StatusDebugEntry {
   ignoreVisualChange?: boolean;
   visualChangeIgnoredReason?: string;
   focusVisualSuppressionUntil?: number | null;
+  resizeSuppressionUntil?: number | null;
+  resizeSuppressionReason?: string | null;
+  resizeSuppressionTerminalId?: string | null;
   previousAcknowledgedAt?: number;
   acknowledgedTime?: number;
   hasDetectedActivity?: boolean;

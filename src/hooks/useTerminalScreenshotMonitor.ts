@@ -21,6 +21,10 @@ import { resolveTerminalScreenshotStatus } from "../lib/terminalScreenshotStatus
 import { debugLog, previewDebugText } from "../lib/debugLog";
 import { pushStatusDebug } from "../lib/statusDebug";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
+import {
+  getActiveStatusResizeSuppression,
+  shouldIgnoreStatusResizeChange,
+} from "../lib/statusResizeSuppression";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import type { TerminalSession } from "../types/terminal";
@@ -840,7 +844,7 @@ export function useTerminalScreenshotMonitor() {
             focusVisualSuppression && now <= focusVisualSuppression.until
               ? focusVisualSuppression
               : null;
-          const ignoreVisualChange = shouldIgnoreTmuxFocusVisualChange({
+          const ignoreTmuxFocusVisualChange = shouldIgnoreTmuxFocusVisualChange({
             changed,
             hasActiveFocusVisualSuppression: activeFocusVisualSuppression !== null,
             hasTmuxStatusSession: latestSessions.some(isTmuxStatusSession),
@@ -848,8 +852,21 @@ export function useTerminalScreenshotMonitor() {
             lastOutputAt,
             suppressionStartedAt: activeFocusVisualSuppression?.startedAt ?? 0,
           });
+          const activeResizeSuppression = getActiveStatusResizeSuppression(
+            [...terminalIds, ...statusTerminalIds],
+            now
+          );
+          const ignoreResizeVisualChange = shouldIgnoreStatusResizeChange({
+            changed,
+            suppression: activeResizeSuppression,
+            lastUserInputAt,
+            lastOutputAt,
+          });
+          const ignoreVisualChange = ignoreTmuxFocusVisualChange || ignoreResizeVisualChange;
           const visualChangeIgnoredReason = ignoreVisualChange
-            ? "tmux-focus-refresh"
+            ? ignoreResizeVisualChange
+              ? "resize"
+              : "tmux-focus-refresh"
             : undefined;
           const changedForStatus = changed && !ignoreVisualChange;
           const changedAt =
@@ -917,6 +934,9 @@ export function useTerminalScreenshotMonitor() {
             ignoreVisualChange,
             visualChangeIgnoredReason,
             focusVisualSuppressionUntil: activeFocusVisualSuppression?.until ?? null,
+            resizeSuppressionUntil: activeResizeSuppression?.until ?? null,
+            resizeSuppressionReason: activeResizeSuppression?.reason ?? null,
+            resizeSuppressionTerminalId: activeResizeSuppression?.terminalId ?? null,
             hasDetectedActivity,
             isActiveTab,
             lastUserInputAt,

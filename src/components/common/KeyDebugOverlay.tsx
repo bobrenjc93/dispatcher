@@ -87,6 +87,7 @@ function formatMaybeTime(value: number | undefined | null): string | null {
 
 function formatStatusDetail(entry: StatusDebugEntry): string {
   const focusSuppressionUntil = formatMaybeTime(entry.focusVisualSuppressionUntil);
+  const resizeSuppressionUntil = formatMaybeTime(entry.resizeSuppressionUntil);
   const timing = [
     entry.acknowledgedTime ? `ack=${formatMaybeTime(entry.acknowledgedTime)}` : null,
     entry.effectiveChangedAt ? `effective=${formatMaybeTime(entry.effectiveChangedAt)}` : null,
@@ -95,6 +96,7 @@ function formatStatusDetail(entry: StatusDebugEntry): string {
     entry.lastUserInputAt ? `input=${formatMaybeTime(entry.lastUserInputAt)}` : null,
     entry.lastOutputAt ? `output=${formatMaybeTime(entry.lastOutputAt)}` : null,
     focusSuppressionUntil ? `focusSuppressUntil=${focusSuppressionUntil}` : null,
+    resizeSuppressionUntil ? `resizeSuppressUntil=${resizeSuppressionUntil}` : null,
   ].filter((part): part is string => part !== null).join(" ");
   const change = [
     entry.changed !== undefined ? `changed=${String(entry.changed)}` : null,

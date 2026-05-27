@@ -860,7 +860,7 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -t %1\n"
     );
 
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(1_200);
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,
       "capture-pane -p -e -C -t %1\n"
@@ -925,7 +925,7 @@ describe("tmuxControl", () => {
     queueTerminalOutputMock.mockClear();
 
     routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfirst tui frame\n");
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(1_200);
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,
       "capture-pane -p -e -C -t %1\n"
@@ -952,7 +952,7 @@ describe("tmuxControl", () => {
     );
 
     writeTerminalMock.mockClear();
-    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(1_200);
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,
       "capture-pane -p -e -C -t %1\n"
@@ -970,7 +970,7 @@ describe("tmuxControl", () => {
     queueTerminalOutputMock.mockClear();
 
     routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfirst tui frame\n");
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(1_200);
     routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Ksecond tui frame\n");
     completeTmuxCommandWithLines(transportTerminalId, 4, ["stale authoritative frame 1"]);
     await Promise.resolve();
@@ -1021,7 +1021,7 @@ describe("tmuxControl", () => {
     queueTerminalOutputMock.mockClear();
 
     routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfirst tui frame\n");
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(1_200);
     completeTmuxCommandWithLines(transportTerminalId, 4, ["cursor-raced frame 1"]);
     await Promise.resolve();
     await Promise.resolve();
@@ -1085,7 +1085,7 @@ describe("tmuxControl", () => {
     queueTerminalOutputMock.mockClear();
 
     routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Klive tui frame\n");
-    await vi.advanceTimersByTimeAsync(180);
+    await vi.advanceTimersByTimeAsync(1_200);
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,
       "capture-pane -p -e -C -t %1\n"
@@ -1558,6 +1558,7 @@ describe("tmuxControl", () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1_600);
 
     writeTerminalMock.mockClear();
     queueTerminalOutputMock.mockClear();
@@ -2127,6 +2128,53 @@ describe("tmuxControl", () => {
       rightPaneTerminalId,
       "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jright clean\u001b[?7h\u001b[0m\u001b[3;2H",
       { recordActivity: false, replaceBufferedOutput: true }
+    );
+  });
+
+  it("fences live pane output while a layout redraw is pending", async () => {
+    const transportTerminalId = "transport-layout-redraw-output-barrier";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      "%output %1 \\033[31;2H\\033[Klive during resize\n"
+    );
+    expect(
+      queueTerminalOutputMock.mock.calls.some(
+        ([terminalId, data]) =>
+          terminalId === paneTerminalId
+          && String(data).includes("live during resize")
+      )
+    ).toBe(false);
+
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "@1\thappy\t1\t*",
+        "%end 4 0",
+        "%begin 5 0",
+        "@1\t%1\t0\t0\t80\t30\t1\t/Users/bobren\t4\t7\t0\t0",
+        "%end 5 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await settleFrontendLayoutTimers();
+
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
     );
   });
 
