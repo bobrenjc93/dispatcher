@@ -37,6 +37,10 @@ import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
 import {
+  clearStatusResizeSuppressionsForTests,
+  getActiveStatusResizeSuppression,
+} from "../statusResizeSuppression";
+import {
   beginTmuxPaneResizeByTerminal,
   clearTmuxTerminal,
   createTmuxWindowForTerminal,
@@ -392,11 +396,13 @@ describe("tmuxControl", () => {
     queueTerminalOutputMock.mockReset();
     queueTerminalOutputMock.mockReturnValue(true);
     syncTerminalFrontendSizeMock.mockReset();
+    clearStatusResizeSuppressionsForTests();
     resetTmuxRuntime();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    clearStatusResizeSuppressionsForTests();
     resetTmuxRuntime();
   });
 
@@ -2045,6 +2051,35 @@ describe("tmuxControl", () => {
     expect(writes.some((data) => data.includes("list-panes -t @1"))).toBe(true);
     expect(writes.some((data) => data.includes("display-message -p -t @2"))).toBe(false);
     expect(writes.some((data) => data.includes("list-panes -t @2"))).toBe(false);
+  });
+
+  it("does not treat sibling tmux window output during client resize as activity", async () => {
+    const transportTerminalId = "transport-client-resize-output-activity";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateTwoWindows(transportTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    const firstWindowTerminalId = getWindowTerminalIdByWindowId("@1");
+    const secondPaneTerminalId = getPaneTerminalIdByPaneId("%2");
+    expect(syncTmuxWindowSize(firstWindowTerminalId, 640, 384)).toBe(true);
+
+    expect(getActiveStatusResizeSuppression([secondPaneTerminalId])).toMatchObject({
+      terminalId: secondPaneTerminalId,
+      reason: "tmux-client-resize",
+    });
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      "%output %2 resize redraw from sibling window\n"
+    );
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      secondPaneTerminalId,
+      "resize redraw from sibling window",
+      { recordActivity: false }
+    );
   });
 
   it("does not let split pane resize observers fight the tmux window size", async () => {

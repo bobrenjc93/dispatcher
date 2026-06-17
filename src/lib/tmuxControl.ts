@@ -51,7 +51,10 @@ import {
   resolveRecoveredTmuxSessionPlacement,
   resolveTmuxWindowPlacementFromPlaceholder,
 } from "./tmuxSessionPlacement";
-import { markStatusResizeSuppression } from "./statusResizeSuppression";
+import {
+  markStatusResizeSuppression,
+  STATUS_RESIZE_SUPPRESSION_MS,
+} from "./statusResizeSuppression";
 
 interface PendingCommand {
   command: string;
@@ -365,11 +368,12 @@ function ensureTmuxClientSizeState(session: TmuxControlSession) {
 function suppressPaneOutputActivity(
   session: TmuxControlSession,
   paneId: string,
-  reason: string
+  reason: string,
+  durationMs: number = TMUX_PANE_OUTPUT_ACTIVITY_SUPPRESSION_MS
 ) {
   ensurePaneOutputActivitySuppressionState(session);
   const now = Date.now();
-  const expiresAt = now + TMUX_PANE_OUTPUT_ACTIVITY_SUPPRESSION_MS;
+  const expiresAt = now + Math.max(0, durationMs);
   const previousExpiresAt = session.paneOutputActivitySuppressionUntil.get(paneId) ?? 0;
   session.paneOutputActivitySuppressionUntil.set(
     paneId,
@@ -379,6 +383,7 @@ function suppressPaneOutputActivity(
     sessionId: session.id,
     paneId,
     reason,
+    durationMs,
     expiresAt,
   });
 }
@@ -386,13 +391,31 @@ function suppressPaneOutputActivity(
 function suppressWindowOutputActivity(
   session: TmuxControlSession,
   windowId: string,
-  reason: string
+  reason: string,
+  durationMs?: number
 ) {
   for (const pane of session.panes.values()) {
     if (pane.windowId === windowId) {
-      suppressPaneOutputActivity(session, pane.paneId, reason);
+      suppressPaneOutputActivity(session, pane.paneId, reason, durationMs);
     }
   }
+}
+
+function suppressSessionOutputActivity(
+  session: TmuxControlSession,
+  reason: string,
+  durationMs?: number
+) {
+  for (const pane of session.panes.values()) {
+    suppressPaneOutputActivity(session, pane.paneId, reason, durationMs);
+  }
+}
+
+function getTmuxSessionStatusTerminalIds(session: TmuxControlSession): string[] {
+  return [
+    ...[...session.windows.values()].map((windowState) => windowState.terminalId),
+    ...[...session.panes.values()].map((pane) => pane.terminalId),
+  ];
 }
 
 function shouldRecordPaneOutputActivity(session: TmuxControlSession, paneId: string): boolean {
@@ -4661,16 +4684,14 @@ function applyTmuxWindowSize(
   const previousClientSize = session.clientSize;
   markTmuxClientSize(session, nextSize);
   beginTmuxClientResizeLayoutSuppression(session, windowState.windowId);
+  const resizeReason = options.forceReason ?? "tmux-client-resize";
   session.pendingWindowRedraws.add(windowState.windowId);
-  markStatusResizeSuppression(
-    [
-      windowState.terminalId,
-      ...[...session.panes.values()]
-        .filter((pane) => pane.windowId === windowState.windowId)
-        .map((pane) => pane.terminalId),
-    ],
-    options.forceReason ?? "tmux-client-resize"
-  );
+  // refresh-client -C is a client-wide operation even when Dispatcher initiates
+  // it from one visible tab. tmux can fan out layout/redraw output for sibling
+  // windows; treating that as pane activity turns inactive tabs green. Mark the
+  // whole control session as resize-related for status and output accounting.
+  markStatusResizeSuppression(getTmuxSessionStatusTerminalIds(session), resizeReason);
+  suppressSessionOutputActivity(session, resizeReason, STATUS_RESIZE_SUPPRESSION_MS);
   beginWindowLayoutRedrawBarrier(session, windowState.windowId, options.forceReason ?? "client-resize");
   debugLog("tmux.size", forceRefresh ? "force window size refresh" : "sync window size", {
     sessionId: session.id,
