@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
-import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Channel } from "@tauri-apps/api/core";
 import { readText as readClipboardText, writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
@@ -26,6 +25,7 @@ import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../li
 import { debugLog } from "../lib/debugLog";
 import { getScopedStorageKey } from "../lib/storageNamespace";
 import { isLinkOpenModifierPressed } from "../lib/terminalMouse";
+import { findTerminalWebLinkMatches } from "../lib/terminalLinks";
 import {
   getActiveStatusResizeSuppression,
   markStatusResizeSuppression,
@@ -1053,47 +1053,55 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
   const searchAddon = new SearchAddon();
   xterm.loadAddon(searchAddon);
 
-  const webLinksAddon = new WebLinksAddon((event, uri) => {
-    const modifierPressed = isLinkOpenModifierPressed(event);
-    const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
+  xterm.registerLinkProvider({
+    provideLinks: (bufferLineNumber, callback) => {
+      const links = findTerminalWebLinkMatches(xterm, bufferLineNumber).map(({ text, range }) => ({
+        text,
+        range,
+        activate: (event: MouseEvent) => {
+          const modifierPressed = isLinkOpenModifierPressed(event);
+          const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
 
-    debugLog("terminal.link", "activate", {
-      terminalId,
-      backendKind,
-      uri,
-      modifierPressed,
-      button: event.button,
-      metaKey: event.metaKey,
-      ctrlKey: event.ctrlKey,
-      altKey: event.altKey,
-      shiftKey: event.shiftKey,
-      defaultPrevented: event.defaultPrevented,
-    });
+          debugLog("terminal.link", "activate", {
+            terminalId,
+            backendKind,
+            uri: text,
+            range,
+            modifierPressed,
+            button: event.button,
+            metaKey: event.metaKey,
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            defaultPrevented: event.defaultPrevented,
+          });
 
-    if (!modifierPressed) {
-      return;
-    }
+          if (!modifierPressed) {
+            return;
+          }
 
-    event.preventDefault();
-    void open(uri).catch(() => {});
-  }, {
-    hover: (event, uri) => {
-      const target = event.target as HTMLElement | null;
-      if (!target) {
-        return;
-      }
+          event.preventDefault();
+          void open(text).catch(() => {});
+        },
+        hover: (event: MouseEvent) => {
+          const target = event.target as HTMLElement | null;
+          if (!target) {
+            return;
+          }
 
-      const isMac = navigator.platform.startsWith("Mac");
-      target.title = isMac ? `Cmd-click to open ${uri}` : `Ctrl-click to open ${uri}`;
-    },
-    leave: (event) => {
-      const target = event.target as HTMLElement | null;
-      if (target) {
-        target.removeAttribute("title");
-      }
+          const isMac = navigator.platform.startsWith("Mac");
+          target.title = isMac ? `Cmd-click to open ${text}` : `Ctrl-click to open ${text}`;
+        },
+        leave: (event: MouseEvent) => {
+          const target = event.target as HTMLElement | null;
+          if (target) {
+            target.removeAttribute("title");
+          }
+        },
+      }));
+      callback(links);
     },
   });
-  xterm.loadAddon(webLinksAddon);
 
   const instance = {
     xterm,

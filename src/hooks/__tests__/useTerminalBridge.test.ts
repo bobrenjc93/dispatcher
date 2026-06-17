@@ -45,6 +45,7 @@ vi.mock("@xterm/xterm", () => {
 
     open = vi.fn();
     loadAddon = vi.fn();
+    registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
     attachCustomKeyEventHandler = vi.fn();
     scrollToBottom = vi.fn();
     write = vi.fn((_data: string, callback?: () => void) => {
@@ -96,14 +97,6 @@ vi.mock("@xterm/addon-search", () => {
 
   return {
     SearchAddon: SearchAddonMock,
-  };
-});
-
-vi.mock("@xterm/addon-web-links", () => {
-  class WebLinksAddonMock {}
-
-  return {
-    WebLinksAddon: WebLinksAddonMock,
   };
 });
 
