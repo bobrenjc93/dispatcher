@@ -266,12 +266,34 @@ pub fn write_debug_artifact(file_name: String, content: String) -> Result<String
     Ok(path.display().to_string())
 }
 
-fn app_state_backup_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, PtyError> {
+fn app_state_backup_file_name(storage_namespace: Option<&str>) -> String {
+    let Some(namespace) = storage_namespace else {
+        return "dispatcher-state-backup.json".to_string();
+    };
+
+    // Keep the namespace path-safe because this value comes from the frontend.
+    // None/empty remains production's historical filename for compatibility.
+    let sanitized: String = namespace
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect();
+
+    if sanitized.is_empty() {
+        "dispatcher-state-backup.json".to_string()
+    } else {
+        format!("dispatcher-state-backup.{}.json", sanitized)
+    }
+}
+
+fn app_state_backup_path(
+    app_handle: &AppHandle,
+    storage_namespace: Option<&str>,
+) -> Result<std::path::PathBuf, PtyError> {
     let dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|err| PtyError::from(err.to_string()))?;
-    Ok(dir.join("dispatcher-state-backup.json"))
+    Ok(dir.join(app_state_backup_file_name(storage_namespace)))
 }
 
 const APP_STATE_BACKUP_GENERATIONS: usize = 10;
@@ -317,8 +339,11 @@ fn rotate_existing_app_state_backups(path: &std::path::Path) -> Result<(), PtyEr
 }
 
 #[tauri::command]
-pub fn read_app_state_backup(app_handle: AppHandle) -> Result<Option<String>, PtyError> {
-    let path = app_state_backup_path(&app_handle)?;
+pub fn read_app_state_backup(
+    app_handle: AppHandle,
+    storage_namespace: Option<String>,
+) -> Result<Option<String>, PtyError> {
+    let path = app_state_backup_path(&app_handle, storage_namespace.as_deref())?;
     match fs::read_to_string(&path) {
         Ok(content) => Ok(Some(content)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -327,8 +352,12 @@ pub fn read_app_state_backup(app_handle: AppHandle) -> Result<Option<String>, Pt
 }
 
 #[tauri::command]
-pub fn write_app_state_backup(app_handle: AppHandle, content: String) -> Result<String, PtyError> {
-    let path = app_state_backup_path(&app_handle)?;
+pub fn write_app_state_backup(
+    app_handle: AppHandle,
+    content: String,
+    storage_namespace: Option<String>,
+) -> Result<String, PtyError> {
+    let path = app_state_backup_path(&app_handle, storage_namespace.as_deref())?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -343,8 +372,43 @@ pub fn write_app_state_backup(app_handle: AppHandle, content: String) -> Result<
 }
 
 #[tauri::command]
-pub fn get_app_state_backup_path(app_handle: AppHandle) -> Result<String, PtyError> {
-    Ok(app_state_backup_path(&app_handle)?.display().to_string())
+pub fn get_app_state_backup_path(
+    app_handle: AppHandle,
+    storage_namespace: Option<String>,
+) -> Result<String, PtyError> {
+    Ok(app_state_backup_path(&app_handle, storage_namespace.as_deref())?
+        .display()
+        .to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::app_state_backup_file_name;
+
+    #[test]
+    fn app_state_backup_file_name_keeps_prod_name_stable() {
+        assert_eq!(app_state_backup_file_name(None), "dispatcher-state-backup.json");
+        assert_eq!(
+            app_state_backup_file_name(Some("")),
+            "dispatcher-state-backup.json"
+        );
+    }
+
+    #[test]
+    fn app_state_backup_file_name_namespaces_dev() {
+        assert_eq!(
+            app_state_backup_file_name(Some("dev")),
+            "dispatcher-state-backup.dev.json"
+        );
+    }
+
+    #[test]
+    fn app_state_backup_file_name_sanitizes_namespace() {
+        assert_eq!(
+            app_state_backup_file_name(Some("dev/../../prod")),
+            "dispatcher-state-backup.devprod.json"
+        );
+    }
 }
 
 #[tauri::command]

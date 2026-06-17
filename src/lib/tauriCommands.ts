@@ -1,4 +1,5 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { getNativeStorageNamespace } from "./storageNamespace";
 
 export interface TerminalOutputPayload {
   terminal_id: string;
@@ -113,13 +114,20 @@ export async function writeDebugArtifact(
 }
 
 export async function readAppStateBackup(): Promise<string | null> {
-  return await invoke("read_app_state_backup");
+  return await invoke("read_app_state_backup", {
+    storageNamespace: getNativeStorageNamespace(),
+  });
 }
 
 export async function writeAppStateBackup(content: string): Promise<string> {
-  return await invoke("write_app_state_backup", { content });
+  return await invoke("write_app_state_backup", {
+    content,
+    storageNamespace: getNativeStorageNamespace(),
+  });
 }
 
 export async function getAppStateBackupPath(): Promise<string> {
-  return await invoke("get_app_state_backup_path");
+  return await invoke("get_app_state_backup_path", {
+    storageNamespace: getNativeStorageNamespace(),
+  });
 }

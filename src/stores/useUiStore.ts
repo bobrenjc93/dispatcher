@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { getScopedStorageKey } from "../lib/storageNamespace";
 
 interface UiStore {
   isTerminalNotesOpen: boolean;
@@ -23,7 +24,7 @@ export const useUiStore = create<UiStore>()(
         set((state) => ({ isDetailPanelCollapsed: !state.isDetailPanelCollapsed })),
     }),
     {
-      name: "dispatcher-ui",
+      name: getScopedStorageKey("dispatcher-ui"),
       partialize: (state) => ({
         isTerminalNotesOpen: state.isTerminalNotesOpen,
         isDetailPanelCollapsed: state.isDetailPanelCollapsed,

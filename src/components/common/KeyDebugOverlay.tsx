@@ -21,10 +21,11 @@ import {
   type StatusDebugEntry,
 } from "../../lib/statusDebug";
 import { findLayoutKeyForTerminal } from "../../lib/layoutUtils";
+import { getScopedStorageKey } from "../../lib/storageNamespace";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 
-const KEY_DEBUG_WIDTH_STORAGE_KEY = "dispatcher.keydebug.width";
+const KEY_DEBUG_WIDTH_STORAGE_KEY = getScopedStorageKey("dispatcher.keydebug.width");
 type DebugTab = "status" | "keys" | "screenshots";
 
 function readStoredWidth(): number {

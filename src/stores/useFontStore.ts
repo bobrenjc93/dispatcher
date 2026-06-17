@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { getScopedStorageKey } from "../lib/storageNamespace";
 
 const DEFAULT_FONT_FAMILY = "Menlo";
 const DEFAULT_FONT_SIZE = 13;
@@ -71,12 +72,12 @@ export const useFontStore = create<FontStore>()(
         }),
     }),
     {
-      name: "dispatcher-font",
+      name: getScopedStorageKey("dispatcher-font"),
       migrate: (persisted, version) => {
         // If no persisted state, try to migrate font size from the old key
         if (version === 0 && typeof window !== "undefined") {
           try {
-            const oldData = window.localStorage.getItem("dispatcher-font-size");
+            const oldData = window.localStorage.getItem(getScopedStorageKey("dispatcher-font-size"));
             if (oldData) {
               const parsed = JSON.parse(oldData);
               if (parsed?.state?.fontSize) {

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { DEFAULT_SCHEME_ID, getScheme } from "../lib/colorSchemes";
+import { getScopedStorageKey } from "../lib/storageNamespace";
 import type { ColorScheme } from "../types/colorScheme";
 
 interface ColorSchemeStore {
@@ -17,7 +18,7 @@ export const useColorSchemeStore = create<ColorSchemeStore>()(
       getActiveScheme: () => getScheme(get().schemeId),
     }),
     {
-      name: "dispatcher-color-scheme",
+      name: getScopedStorageKey("dispatcher-color-scheme"),
     }
   )
 );

@@ -13,8 +13,9 @@ import {
   syncTmuxWindowSize,
 } from "../../lib/tmuxControl";
 import { getTerminalCellSize } from "../../hooks/useTerminalBridge";
+import { getScopedStorageKey } from "../../lib/storageNamespace";
 
-const DETAIL_PANEL_WIDTH_KEY = "dispatcher.detailPanelWidth";
+const DETAIL_PANEL_WIDTH_KEY = getScopedStorageKey("dispatcher.detailPanelWidth");
 const DEFAULT_DETAIL_PANEL_WIDTH = 260;
 const MIN_DETAIL_PANEL_WIDTH = 180;
 const MAX_DETAIL_PANEL_WIDTH = 480;

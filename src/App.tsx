@@ -42,7 +42,17 @@ import {
 } from "./lib/tmuxControl";
 import { onTerminalExit } from "./lib/terminalEvents";
 import { collectVisibleTerminalRefs, findProjectIdForTerminal } from "./lib/treeUtils";
+import {
+  APP_STATE_LAYOUTS_KEY,
+  APP_STATE_PROJECTS_KEY,
+  APP_STATE_TERMINALS_KEY,
+  getScopedStorageKey,
+  getStorageNamespaceLabel,
+  isDispatcherStorageKey,
+} from "./lib/storageNamespace";
 import "./App.css";
+
+const KEY_DEBUG_VISIBLE_STORAGE_KEY = getScopedStorageKey("dispatcher.keydebug.visible");
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -65,7 +75,7 @@ type DialogMode =
 export default function App() {
   const [showKeyDebug, setShowKeyDebug] = useState(() => {
     if (typeof window === "undefined") return false;
-    return window.localStorage.getItem("dispatcher.keydebug.visible") === "1";
+    return window.localStorage.getItem(KEY_DEBUG_VISIBLE_STORAGE_KEY) === "1";
   });
   const projects = useProjectStore((s) => s.projects);
   const projectOrder = useProjectStore((s) => s.projectOrder);
@@ -103,12 +113,13 @@ export default function App() {
         layouts: Object.keys(useLayoutStore.getState().layouts).length,
         activeProjectId: useProjectStore.getState().activeProjectId,
         activeTerminalId: useTerminalStore.getState().activeTerminalId,
+        storageNamespace: getStorageNamespaceLabel(),
         localStorageLength: window.localStorage.length,
         localStorageKeys: Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index))
-          .filter((key): key is string => key !== null && key.startsWith("dispatcher")),
-        hasPersistedProjects: window.localStorage.getItem("dispatcher-projects") !== null,
-        hasPersistedTerminals: window.localStorage.getItem("dispatcher-terminals") !== null,
-        hasPersistedLayouts: window.localStorage.getItem("dispatcher-layouts") !== null,
+          .filter((key): key is string => key !== null && isDispatcherStorageKey(key)),
+        hasPersistedProjects: window.localStorage.getItem(getScopedStorageKey(APP_STATE_PROJECTS_KEY)) !== null,
+        hasPersistedTerminals: window.localStorage.getItem(getScopedStorageKey(APP_STATE_TERMINALS_KEY)) !== null,
+        hasPersistedLayouts: window.localStorage.getItem(getScopedStorageKey(APP_STATE_LAYOUTS_KEY)) !== null,
       });
     };
 
@@ -181,7 +192,7 @@ export default function App() {
   const sidebarDividerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    window.localStorage.setItem("dispatcher.keydebug.visible", showKeyDebug ? "1" : "0");
+    window.localStorage.setItem(KEY_DEBUG_VISIBLE_STORAGE_KEY, showKeyDebug ? "1" : "0");
   }, [showKeyDebug]);
 
   const handleSidebarDividerMouseDown = useCallback((e: React.MouseEvent) => {

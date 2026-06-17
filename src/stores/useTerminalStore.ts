@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { getScopedStorageKey } from "../lib/storageNamespace";
 import type { TerminalSession } from "../types/terminal";
 
 interface TerminalStore {
@@ -260,7 +261,7 @@ export const useTerminalStore = create<TerminalStore>()(
         }),
     }),
     {
-      name: "dispatcher-terminals",
+      name: getScopedStorageKey("dispatcher-terminals"),
       partialize: (state) => ({
         sessions: state.sessions,
         activeTerminalId: state.activeTerminalId,

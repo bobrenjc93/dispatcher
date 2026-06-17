@@ -7,6 +7,7 @@ import {
   removeFromLayout,
   updateRatio,
 } from "../lib/layoutUtils";
+import { getScopedStorageKey } from "../lib/storageNamespace";
 
 interface LayoutStore {
   layouts: Record<string, LayoutNode>;
@@ -76,7 +77,7 @@ export const useLayoutStore = create<LayoutStore>()(
       getLayout: (layoutId) => get().layouts[layoutId],
     }),
     {
-      name: "dispatcher-layouts",
+      name: getScopedStorageKey("dispatcher-layouts"),
     }
   )
 );

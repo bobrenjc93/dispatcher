@@ -24,6 +24,7 @@ import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
 import { debugLog } from "../lib/debugLog";
+import { getScopedStorageKey } from "../lib/storageNamespace";
 import { isLinkOpenModifierPressed } from "../lib/terminalMouse";
 import {
   getActiveStatusResizeSuppression,
@@ -224,7 +225,7 @@ const PARKED_TMUX_ACTIVITY_THROTTLE_MS = 1_000;
 const LARGE_WRITE_DRAIN_BYTES = 1_000_000;
 const SLOW_WRITE_DRAIN_MS = 100;
 
-const WEBGL_OPT_IN_STORAGE_KEY = "dispatcher.webgl.enabled";
+const WEBGL_OPT_IN_STORAGE_KEY = getScopedStorageKey("dispatcher.webgl.enabled");
 
 function getCurrentTerminalInputRouter(): TerminalInputRouter {
   return globalThis.__dispatcherTerminalInputRouter ?? handleTerminalInputData;
@@ -882,7 +883,7 @@ function hasTerminalActivityOutput(data: string): boolean {
 
 // ---------------------------------------------------------------------------
 // WebGL addon policy:
-// - default off (opt-in only via localStorage key dispatcher.webgl.enabled=1)
+// - default off (opt-in only via the environment-scoped WebGL localStorage key)
 // - if enabled, disable automatically on first context loss for safety
 // ---------------------------------------------------------------------------
 

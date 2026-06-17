@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { getScopedStorageKey } from "../lib/storageNamespace";
 import type { Project, TreeNode } from "../types/project";
 
 interface ProjectStore {
@@ -260,7 +261,7 @@ export const useProjectStore = create<ProjectStore>()(
         }),
     }),
     {
-      name: "dispatcher-projects",
+      name: getScopedStorageKey("dispatcher-projects"),
       merge: (persisted, current) => {
         const merged = { ...current, ...(persisted as Partial<ProjectStore>) };
         if (!merged.projectOrder || merged.projectOrder.length === 0) {

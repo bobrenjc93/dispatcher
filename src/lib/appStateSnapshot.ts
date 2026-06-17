@@ -3,6 +3,14 @@ import { debugLog } from "./debugLog";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useProjectStore } from "../stores/useProjectStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
+import {
+  APP_STATE_LAYOUTS_KEY,
+  APP_STATE_PROJECTS_KEY,
+  APP_STATE_STORAGE_KEYS,
+  APP_STATE_TERMINALS_KEY,
+  getScopedAppStateStorageKey,
+  getStorageNamespaceLabel,
+} from "./storageNamespace";
 import type { LayoutNode } from "../types/layout";
 import type { Project, TreeNode } from "../types/project";
 import type { TerminalSession } from "../types/terminal";
@@ -31,9 +39,9 @@ interface PersistedStore<T> {
 export interface AppStateSnapshot {
   source?: string;
   exportedAt?: string;
-  "dispatcher-projects"?: PersistedStore<PersistedProjectState>;
-  "dispatcher-terminals"?: PersistedStore<PersistedTerminalState>;
-  "dispatcher-layouts"?: PersistedStore<PersistedLayoutState>;
+  [APP_STATE_PROJECTS_KEY]?: PersistedStore<PersistedProjectState>;
+  [APP_STATE_TERMINALS_KEY]?: PersistedStore<PersistedTerminalState>;
+  [APP_STATE_LAYOUTS_KEY]?: PersistedStore<PersistedLayoutState>;
 }
 
 export interface AppStateCounts {
@@ -79,7 +87,7 @@ export function buildAppStateSnapshot(): AppStateSnapshot {
   return {
     source: "dispatcher-app-state-backup",
     exportedAt: new Date().toISOString(),
-    "dispatcher-projects": {
+    [APP_STATE_PROJECTS_KEY]: {
       state: {
         projects: projectState.projects,
         nodes: projectState.nodes,
@@ -88,14 +96,14 @@ export function buildAppStateSnapshot(): AppStateSnapshot {
       },
       version: 0,
     },
-    "dispatcher-terminals": {
+    [APP_STATE_TERMINALS_KEY]: {
       state: {
         sessions: terminalState.sessions,
         activeTerminalId: terminalState.activeTerminalId,
       },
       version: 0,
     },
-    "dispatcher-layouts": {
+    [APP_STATE_LAYOUTS_KEY]: {
       state: {
         layouts: layoutState.layouts,
       },
@@ -105,9 +113,9 @@ export function buildAppStateSnapshot(): AppStateSnapshot {
 }
 
 function getSnapshotCounts(snapshot: AppStateSnapshot): AppStateCounts {
-  const projectState = snapshot["dispatcher-projects"]?.state;
-  const terminalState = snapshot["dispatcher-terminals"]?.state;
-  const layoutState = snapshot["dispatcher-layouts"]?.state;
+  const projectState = snapshot[APP_STATE_PROJECTS_KEY]?.state;
+  const terminalState = snapshot[APP_STATE_TERMINALS_KEY]?.state;
+  const layoutState = snapshot[APP_STATE_LAYOUTS_KEY]?.state;
 
   return {
     projects: Object.keys(projectState?.projects ?? {}).length,
@@ -142,15 +150,16 @@ export function writeAppStateSnapshotToLocalStorage(snapshot: AppStateSnapshot):
   }
 
   try {
-    for (const key of ["dispatcher-projects", "dispatcher-terminals", "dispatcher-layouts"] as const) {
+    for (const key of APP_STATE_STORAGE_KEYS) {
       const value = snapshot[key];
       if (value) {
-        window.localStorage.setItem(key, JSON.stringify(value));
+        window.localStorage.setItem(getScopedAppStateStorageKey(key), JSON.stringify(value));
       }
     }
     return true;
   } catch (error) {
     debugLog("app.persistence", "localStorage mirror failed", {
+      storageNamespace: getStorageNamespaceLabel(),
       error: error instanceof Error ? error.message : String(error),
     });
     return false;
@@ -161,14 +170,15 @@ export function restoreAppStateSnapshot(
   snapshot: AppStateSnapshot,
   source: string
 ): RestoreAppStateResult {
-  const projectState = snapshot["dispatcher-projects"]?.state;
-  const terminalState = snapshot["dispatcher-terminals"]?.state;
-  const layoutState = snapshot["dispatcher-layouts"]?.state;
+  const projectState = snapshot[APP_STATE_PROJECTS_KEY]?.state;
+  const terminalState = snapshot[APP_STATE_TERMINALS_KEY]?.state;
+  const layoutState = snapshot[APP_STATE_LAYOUTS_KEY]?.state;
 
   if (!projectState?.projects || !projectState.nodes || !terminalState?.sessions || !layoutState?.layouts) {
     const counts = getSnapshotCounts(snapshot);
     debugLog("app.persistence", "invalid state snapshot", {
       source,
+      storageNamespace: getStorageNamespaceLabel(),
       counts,
       hasProjects: Boolean(projectState?.projects),
       hasNodes: Boolean(projectState?.nodes),
@@ -208,6 +218,7 @@ export function restoreAppStateSnapshot(
 
   debugLog("app.persistence", "restored state snapshot", {
     source,
+    storageNamespace: getStorageNamespaceLabel(),
     counts,
     mirroredToLocalStorage,
   });
