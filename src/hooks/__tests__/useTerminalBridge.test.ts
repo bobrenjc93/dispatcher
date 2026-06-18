@@ -595,6 +595,30 @@ describe("useTerminalBridge synthetic input", () => {
     expect(useTerminalStore.getState().sessions["pane"].lastOutputAt).toBe(0);
   });
 
+  it("keeps suppressing resize output after an earlier resize packet touched the timestamp", () => {
+    useTerminalStore.getState().addSession("tab-root", "A");
+    useTerminalStore.getState().addSession("pane", "A");
+    useLayoutStore.getState().initLayout("tab-root", "pane");
+
+    useTerminalStore.getState().setDetectedActivity("tab-root", true);
+    useTerminalStore.getState().setLongInactive("tab-root", true);
+    useTerminalStore.getState().setDetectedActivity("pane", true);
+    useTerminalStore.getState().setLongInactive("pane", true);
+
+    const resizeStartedAt = Date.now();
+    const previousResizeOutputAt = resizeStartedAt + 1;
+    markStatusResizeSuppression(["pane"], "test-resize", resizeStartedAt);
+    useTerminalStore.getState().patchSession("pane", {
+      lastOutputAt: previousResizeOutputAt,
+    });
+
+    queueTerminalOutput("pane", "another resize redraw\n");
+
+    expect(useTerminalStore.getState().sessions["tab-root"].isLongInactive).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].isLongInactive).toBe(true);
+    expect(useTerminalStore.getState().sessions["pane"].lastOutputAt).toBe(previousResizeOutputAt);
+  });
+
   it("does not clear brown tab status for tmux focus tracking output", () => {
     useTerminalStore.getState().addSession("tab-root", "A");
     useTerminalStore.getState().addSession("pane", "A");

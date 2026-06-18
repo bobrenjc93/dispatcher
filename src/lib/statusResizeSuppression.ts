@@ -1,4 +1,10 @@
 export const STATUS_RESIZE_SUPPRESSION_MS = 5_000;
+// Keep expired resize windows around long enough for the status sampler to see
+// that a recently-recorded output timestamp landed inside a resize. The sampler
+// runs on a 5s interval, so deleting the marker exactly at `until` creates a
+// race where resize output recorded near the end of the window becomes a normal
+// activity baseline on the next tick.
+export const STATUS_RESIZE_SUPPRESSION_RETENTION_MS = 60_000;
 
 export interface StatusResizeSuppression {
   terminalId: string;
@@ -73,7 +79,9 @@ export function getActiveStatusResizeSuppression(
       continue;
     }
     if (now > suppression.until) {
-      runtime.suppressions.delete(terminalId);
+      if (now > suppression.until + STATUS_RESIZE_SUPPRESSION_RETENTION_MS) {
+        runtime.suppressions.delete(terminalId);
+      }
       continue;
     }
     if (!active || suppression.until > active.until) {
@@ -82,6 +90,38 @@ export function getActiveStatusResizeSuppression(
   }
 
   return active;
+}
+
+export function getStatusResizeSuppressionForActivity(
+  terminalIds: Iterable<string | null | undefined>,
+  activityAt: number,
+  now: number = Date.now()
+): StatusResizeSuppression | null {
+  if (activityAt <= 0) {
+    return null;
+  }
+
+  const runtime = getRuntime();
+  let matching: StatusResizeSuppression | null = null;
+
+  for (const terminalId of normalizeTerminalIds(terminalIds)) {
+    const suppression = runtime.suppressions.get(terminalId);
+    if (!suppression) {
+      continue;
+    }
+    if (now > suppression.until + STATUS_RESIZE_SUPPRESSION_RETENTION_MS) {
+      runtime.suppressions.delete(terminalId);
+      continue;
+    }
+    if (activityAt < suppression.startedAt || activityAt > suppression.until) {
+      continue;
+    }
+    if (!matching || suppression.until > matching.until) {
+      matching = suppression;
+    }
+  }
+
+  return matching;
 }
 
 export function shouldIgnoreStatusResizeChange(args: {
@@ -94,7 +134,7 @@ export function shouldIgnoreStatusResizeChange(args: {
     args.changed
     && args.suppression !== null
     && args.lastUserInputAt <= args.suppression.startedAt
-    && args.lastOutputAt <= args.suppression.startedAt
+    && args.lastOutputAt <= args.suppression.until
   );
 }
 

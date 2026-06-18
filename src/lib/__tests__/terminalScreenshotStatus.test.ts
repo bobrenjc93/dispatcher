@@ -14,6 +14,7 @@ function status(patch: Partial<TerminalScreenshotStatusInput> = {}) {
     acknowledgedTime: 0,
     wasNeedsAttention: false,
     wasPossiblyDone: false,
+    wasLongInactive: false,
     inactivityMs: INACTIVITY_MS,
     longInactivityMs: LONG_INACTIVITY_MS,
     ...patch,
@@ -140,6 +141,37 @@ describe("terminalScreenshotStatus", () => {
       shouldKeepBrownUntilInput: true,
       nextNeedsAttention: false,
       nextPossiblyDone: true,
+      nextLongInactive: false,
+    });
+  });
+
+  it("keeps long-inactive gray when resize churn is ignored", () => {
+    expect(status({
+      changed: true,
+      ignoreVisualChange: true,
+      wasLongInactive: true,
+      acknowledgedTime: 1_000,
+      effectiveChangedAt: 15_000,
+    })).toMatchObject({
+      changedForStatus: false,
+      shouldKeepLongInactiveUntilInput: true,
+      nextNeedsAttention: false,
+      nextPossiblyDone: false,
+      nextLongInactive: true,
+    });
+  });
+
+  it("clears long-inactive gray when there is real progress", () => {
+    expect(status({
+      changed: true,
+      wasLongInactive: true,
+      acknowledgedTime: 1_000,
+      effectiveChangedAt: 15_000,
+    })).toMatchObject({
+      changedForStatus: true,
+      shouldKeepLongInactiveUntilInput: false,
+      nextNeedsAttention: false,
+      nextPossiblyDone: false,
       nextLongInactive: false,
     });
   });

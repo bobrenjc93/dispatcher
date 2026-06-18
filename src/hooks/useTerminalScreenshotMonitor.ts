@@ -23,6 +23,9 @@ import { pushStatusDebug } from "../lib/statusDebug";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
 import {
   getActiveStatusResizeSuppression,
+  getStatusResizeSuppressionForActivity,
+  markStatusResizeSuppression,
+  type StatusResizeSuppression,
   shouldIgnoreStatusResizeChange,
 } from "../lib/statusResizeSuppression";
 import { useLayoutStore } from "../stores/useLayoutStore";
@@ -85,6 +88,22 @@ export function resolveTimestampStatusChangedAt(args: {
       : args.previousChangedAt;
 
   return { changed, changedAt };
+}
+
+export function shouldIgnoreTimestampResizeActivity(args: {
+  timestampOnlyStatus: boolean;
+  latestActivityAt: number;
+  lastUserInputAt: number;
+  lastOutputAt: number;
+  resizeSuppression: StatusResizeSuppression | null;
+}): boolean {
+  return (
+    args.timestampOnlyStatus
+    && args.resizeSuppression !== null
+    && args.lastOutputAt > 0
+    && args.latestActivityAt === args.lastOutputAt
+    && args.lastUserInputAt <= args.resizeSuppression.startedAt
+  );
 }
 
 async function hashScreenshot(screenshot: string): Promise<string> {
@@ -503,13 +522,32 @@ export function useTerminalScreenshotMonitor() {
       );
       const latestActivityAt = Math.max(lastUserInputAt, lastOutputAt);
       const timestampOnlyStatus = shouldUseTimestampOnlyStatus(latestSessions);
-      const { changed, changedAt } = resolveTimestampStatusChangedAt({
+      const resizeSuppressionForTimestamp = getStatusResizeSuppressionForActivity(
+        [...terminalIds, ...statusTerminalIds],
+        lastOutputAt,
+        args.now
+      );
+      const ignoreTimestampResizeActivity = shouldIgnoreTimestampResizeActivity({
         timestampOnlyStatus,
         latestActivityAt,
+        lastUserInputAt,
+        lastOutputAt,
+        resizeSuppression: resizeSuppressionForTimestamp,
+      });
+      const statusActivityAt = ignoreTimestampResizeActivity
+        ? Math.max(lastUserInputAt, previousActivityAt)
+        : latestActivityAt;
+      const { changed, changedAt } = resolveTimestampStatusChangedAt({
+        timestampOnlyStatus,
+        latestActivityAt: statusActivityAt,
         previousChangedAt: previousActivityAt,
         now: args.now,
       });
-      const effectiveChangedAt = Math.max(changedAt, lastUserInputAt, lastOutputAt);
+      const effectiveChangedAt = Math.max(
+        changedAt,
+        lastUserInputAt,
+        ignoreTimestampResizeActivity ? 0 : lastOutputAt
+      );
       const hasDetectedActivity =
         latestSessions.some((session) => session.hasDetectedActivity)
         || lastUserInputAt > 0
@@ -524,6 +562,7 @@ export function useTerminalScreenshotMonitor() {
         changedForStatus,
         shouldKeepAttentionUntilFocus,
         shouldKeepBrownUntilInput,
+        shouldKeepLongInactiveUntilInput,
         nextNeedsAttention,
         nextPossiblyDone,
         nextLongInactive,
@@ -531,12 +570,13 @@ export function useTerminalScreenshotMonitor() {
         hasDetectedActivity,
         isActiveTab,
         changed,
-        ignoreVisualChange: false,
+        ignoreVisualChange: ignoreTimestampResizeActivity,
         now: args.now,
         effectiveChangedAt,
         acknowledgedTime,
         wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
         wasPossiblyDone: latestSessions.some((session) => session.isPossiblyDone),
+        wasLongInactive: latestSessions.some((session) => session.isLongInactive),
         inactivityMs: SCREENSHOT_INACTIVITY_MS,
         longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
       });
@@ -567,8 +607,12 @@ export function useTerminalScreenshotMonitor() {
         statusDotSemantic,
         changed,
         changedForStatus,
-        ignoreVisualChange: false,
-        visualChangeIgnoredReason: undefined,
+        ignoreVisualChange: ignoreTimestampResizeActivity,
+        visualChangeIgnoredReason: ignoreTimestampResizeActivity ? "resize" : undefined,
+        resizeSuppressionUntil: resizeSuppressionForTimestamp?.until ?? null,
+        resizeSuppressionReason: resizeSuppressionForTimestamp?.reason ?? null,
+        resizeSuppressionTerminalId: resizeSuppressionForTimestamp?.terminalId ?? null,
+        ignoreTimestampResizeActivity,
         focusVisualSuppressionUntil: focusVisualSuppressions.get(args.tabRootTerminalId)?.until ?? null,
         hasDetectedActivity,
         isActiveTab,
@@ -591,6 +635,7 @@ export function useTerminalScreenshotMonitor() {
         nextLongInactive,
         shouldKeepAttentionUntilFocus,
         shouldKeepBrownUntilInput,
+        shouldKeepLongInactiveUntilInput,
         visualSampled: false,
         reason: args.reason,
         timestampOnlyStatus,
@@ -888,6 +933,7 @@ export function useTerminalScreenshotMonitor() {
             changedForStatus: resolvedChangedForStatus,
             shouldKeepAttentionUntilFocus,
             shouldKeepBrownUntilInput,
+            shouldKeepLongInactiveUntilInput,
             nextNeedsAttention,
             nextPossiblyDone,
             nextLongInactive,
@@ -901,6 +947,7 @@ export function useTerminalScreenshotMonitor() {
             acknowledgedTime,
             wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
             wasPossiblyDone: latestSessions.some((session) => session.isPossiblyDone),
+            wasLongInactive: latestSessions.some((session) => session.isLongInactive),
             inactivityMs: SCREENSHOT_INACTIVITY_MS,
             longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
           });
@@ -958,6 +1005,7 @@ export function useTerminalScreenshotMonitor() {
             nextLongInactive,
             shouldKeepAttentionUntilFocus,
             shouldKeepBrownUntilInput,
+            shouldKeepLongInactiveUntilInput,
             visualSampled: true,
             timestampOnlyStatus: false,
             backendKinds: [...new Set(latestSessions.map((session) => session.backendKind))],
@@ -1162,6 +1210,19 @@ export function useTerminalScreenshotMonitor() {
     void sampleAllTabs();
     scheduleSample(500);
     scheduleSample(1500);
+    let lastWindowResizeSuppressionLogAt = 0;
+    const markWindowResizeSuppression = () => {
+      const terminalIds = Object.keys(useTerminalStore.getState().sessions);
+      markStatusResizeSuppression(terminalIds, "window-resize");
+      const now = Date.now();
+      if (now - lastWindowResizeSuppressionLogAt >= 1_000) {
+        lastWindowResizeSuppressionLogAt = now;
+        debugLog("status.monitor", "window resize suppression", {
+          terminalCount: terminalIds.length,
+        });
+      }
+    };
+    window.addEventListener("resize", markWindowResizeSuppression);
     acknowledgeTab(
       getActiveTabRootTerminalId(),
       new Set(Object.keys(useTerminalStore.getState().sessions)),
@@ -1202,6 +1263,7 @@ export function useTerminalScreenshotMonitor() {
       isDisposed = true;
       unsubscribeSessions();
       unsubscribeActiveTerminal();
+      window.removeEventListener("resize", markWindowResizeSuppression);
       window.clearInterval(intervalId);
       for (const timeoutId of scheduledSamples) {
         window.clearTimeout(timeoutId);

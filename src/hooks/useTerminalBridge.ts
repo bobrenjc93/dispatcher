@@ -558,7 +558,6 @@ function recordTerminalOutputActivity(terminalId: string) {
   if (
     resizeSuppression
     && (session?.lastUserInputAt ?? 0) <= resizeSuppression.startedAt
-    && (session?.lastOutputAt ?? 0) <= resizeSuppression.startedAt
   ) {
     debugLog("terminal.output", "suppress output activity during resize", {
       terminalId,
@@ -571,6 +570,19 @@ function recordTerminalOutputActivity(terminalId: string) {
 
   terminalStore.markTerminalOutput(terminalId);
   reflectImmediateTabOutput(terminalId);
+}
+
+function markTerminalStatusResizeSuppression(terminalId: string, reason: string) {
+  const terminalStore = useTerminalStore.getState();
+  const layouts = useLayoutStore.getState().layouts;
+  const tabRootTerminalId = findLayoutKeyForTerminal(layouts, terminalId) ?? terminalId;
+  const statusTerminalIds = getTabStatusTerminalIds(
+    layouts,
+    tabRootTerminalId,
+    new Set(Object.keys(terminalStore.sessions))
+  );
+
+  markStatusResizeSuppression([terminalId, tabRootTerminalId, ...statusTerminalIds], reason);
 }
 
 function maybeRecordDroppedParkedTmuxActivity(
@@ -1605,7 +1617,7 @@ export function syncTerminalFrontendSize(terminalId: string, cols: number, rows:
       overflowY,
     });
   }
-  markStatusResizeSuppression([terminalId], "frontend-grid-resize");
+  markTerminalStatusResizeSuppression(terminalId, "frontend-grid-resize");
   instance.xterm.resize(nextCols, nextRows);
 }
 
@@ -1925,7 +1937,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
     // Handle resize
     const resizeDisposable = inst.xterm.onResize(({ cols, rows }) => {
       const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
-      markStatusResizeSuppression([terminalId], "xterm-resize");
+      markTerminalStatusResizeSuppression(terminalId, "xterm-resize");
       if (backendKind === "local" || backendKind === "tmux-transport") {
         resizeTerminal(terminalId, cols, rows).catch(() => {});
       }

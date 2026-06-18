@@ -1,12 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   resolveTimestampStatusChangedAt,
   selectVisualSampleTabRootTerminalIds,
+  shouldIgnoreTimestampResizeActivity,
   shouldIgnoreTmuxFocusVisualChange,
   shouldUseTimestampOnlyStatus,
   shouldWriteScreenshotDebugArtifact,
 } from "../useTerminalScreenshotMonitor";
-import { shouldIgnoreStatusResizeChange } from "../../lib/statusResizeSuppression";
+import {
+  clearStatusResizeSuppressionsForTests,
+  getStatusResizeSuppressionForActivity,
+  markStatusResizeSuppression,
+  shouldIgnoreStatusResizeChange,
+} from "../../lib/statusResizeSuppression";
 import type { TerminalSession } from "../../types/terminal";
 
 function session(patch: Partial<TerminalSession> = {}): TerminalSession {
@@ -52,6 +58,10 @@ describe("shouldIgnoreTmuxFocusVisualChange", () => {
 });
 
 describe("shouldIgnoreStatusResizeChange", () => {
+  afterEach(() => {
+    clearStatusResizeSuppressionsForTests();
+  });
+
   it("ignores visual changes that only reflect recent resize", () => {
     expect(shouldIgnoreStatusResizeChange({
       changed: true,
@@ -66,7 +76,7 @@ describe("shouldIgnoreStatusResizeChange", () => {
     })).toBe(true);
   });
 
-  it("does not ignore visual changes after output arrives post-resize", () => {
+  it("ignores visual changes when resize output arrives inside the suppression window", () => {
     expect(shouldIgnoreStatusResizeChange({
       changed: true,
       suppression: {
@@ -76,7 +86,63 @@ describe("shouldIgnoreStatusResizeChange", () => {
         reason: "test-resize",
       },
       lastUserInputAt: 1_000,
-      lastOutputAt: 2_001,
+      lastOutputAt: 4_000,
+    })).toBe(true);
+  });
+
+  it("does not ignore visual changes after output arrives beyond the resize window", () => {
+    expect(shouldIgnoreStatusResizeChange({
+      changed: true,
+      suppression: {
+        terminalId: "pane",
+        startedAt: 2_000,
+        until: 7_000,
+        reason: "test-resize",
+      },
+      lastUserInputAt: 1_000,
+      lastOutputAt: 7_001,
+    })).toBe(false);
+  });
+
+  it("finds recently expired resize suppressions for activity timestamps", () => {
+    markStatusResizeSuppression(["pane"], "test-resize", 2_000, 5_000);
+
+    expect(getStatusResizeSuppressionForActivity(["pane"], 4_000, 8_000)).toMatchObject({
+      terminalId: "pane",
+      reason: "test-resize",
+    });
+    expect(getStatusResizeSuppressionForActivity(["pane"], 8_001, 8_001)).toBeNull();
+  });
+});
+
+describe("shouldIgnoreTimestampResizeActivity", () => {
+  it("ignores tmux timestamp progress that is only resize output", () => {
+    expect(shouldIgnoreTimestampResizeActivity({
+      timestampOnlyStatus: true,
+      latestActivityAt: 4_000,
+      lastUserInputAt: 1_000,
+      lastOutputAt: 4_000,
+      resizeSuppression: {
+        terminalId: "pane",
+        startedAt: 2_000,
+        until: 7_000,
+        reason: "test-resize",
+      },
+    })).toBe(true);
+  });
+
+  it("does not ignore user input during a resize window", () => {
+    expect(shouldIgnoreTimestampResizeActivity({
+      timestampOnlyStatus: true,
+      latestActivityAt: 4_000,
+      lastUserInputAt: 4_000,
+      lastOutputAt: 3_000,
+      resizeSuppression: {
+        terminalId: "pane",
+        startedAt: 2_000,
+        until: 7_000,
+        reason: "test-resize",
+      },
     })).toBe(false);
   });
 });

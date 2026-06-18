@@ -14,6 +14,7 @@ export interface TerminalScreenshotStatusInput {
   acknowledgedTime: number;
   wasNeedsAttention: boolean;
   wasPossiblyDone: boolean;
+  wasLongInactive: boolean;
   inactivityMs: number;
   longInactivityMs: number;
 }
@@ -32,6 +33,7 @@ export interface TerminalScreenshotStatusState {
   changedForStatus: boolean;
   shouldKeepAttentionUntilFocus: boolean;
   shouldKeepBrownUntilInput: boolean;
+  shouldKeepLongInactiveUntilInput: boolean;
   nextNeedsAttention: boolean;
   nextPossiblyDone: boolean;
   nextLongInactive: boolean;
@@ -94,22 +96,29 @@ export function resolveTerminalScreenshotStatus(
   const shouldKeepAttentionUntilFocus =
     isStable && input.wasNeedsAttention && !hasAcknowledgedCurrentOutput;
   const shouldKeepBrownUntilInput = isStable && input.wasPossiblyDone;
+  const shouldKeepLongInactiveUntilInput = isStable && input.wasLongInactive;
   const shouldRevertToGreen = changedForStatus && !shouldKeepAttentionUntilFocus;
   const nextNeedsAttention = shouldKeepAttentionUntilFocus
     ? true
     : shouldRevertToGreen
       ? false
-      : shouldKeepBrownUntilInput
+      : shouldKeepBrownUntilInput || shouldKeepLongInactiveUntilInput
         ? false
         : (isNeedsAttention && !isLongInactive);
-  const nextPossiblyDone = shouldKeepAttentionUntilFocus
+  const nextPossiblyDone = shouldKeepLongInactiveUntilInput
     ? false
-    : shouldRevertToGreen
+    : shouldKeepAttentionUntilFocus
       ? false
-      : shouldKeepBrownUntilInput
-        ? !isLongInactive
-        : isPossiblyDone;
-  const nextLongInactive = nextNeedsAttention ? false : isLongInactive;
+      : shouldRevertToGreen
+        ? false
+        : shouldKeepBrownUntilInput
+          ? !isLongInactive
+          : isPossiblyDone;
+  const nextLongInactive = shouldKeepLongInactiveUntilInput
+    ? true
+    : nextNeedsAttention
+      ? false
+      : isLongInactive;
 
   return {
     hasAcknowledgedCurrentOutput,
@@ -122,6 +131,7 @@ export function resolveTerminalScreenshotStatus(
     changedForStatus,
     shouldKeepAttentionUntilFocus,
     shouldKeepBrownUntilInput,
+    shouldKeepLongInactiveUntilInput,
     nextNeedsAttention,
     nextPossiblyDone,
     nextLongInactive,
