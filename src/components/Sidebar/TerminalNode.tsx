@@ -80,10 +80,16 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     startDrag({ type: "terminal", terminalId, projectId, nodeId }, e.clientX, e.clientY, e.currentTarget as HTMLElement);
   };
 
+  const nodeClassName = [
+    "sidebar-terminal-node",
+    isActive ? "active" : "",
+    session.isNeedsAttention ? "needs-attention" : "",
+  ].filter(Boolean).join(" ");
+
   return (
     <div
       ref={nodeRef}
-      className={`sidebar-terminal-node ${isActive ? "active" : ""}`}
+      className={nodeClassName}
       data-node-id={nodeId}
       data-project-id={projectId}
       data-parent-node-id={parentNodeId}
