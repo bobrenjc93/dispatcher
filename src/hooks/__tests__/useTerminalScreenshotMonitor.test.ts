@@ -184,7 +184,7 @@ describe("selectVisualSampleTabRootTerminalIds", () => {
 });
 
 describe("shouldUseTimestampOnlyStatus", () => {
-  it("uses timestamp-only status for tmux tabs", () => {
+  it("uses timestamp-only status for every terminal tab", () => {
     expect(shouldUseTimestampOnlyStatus([
       session({ backendKind: "tmux-pane" }),
     ])).toBe(true);
@@ -193,7 +193,8 @@ describe("shouldUseTimestampOnlyStatus", () => {
     ])).toBe(true);
     expect(shouldUseTimestampOnlyStatus([
       session({ backendKind: "local" }),
-    ])).toBe(false);
+    ])).toBe(true);
+    expect(shouldUseTimestampOnlyStatus([])).toBe(false);
   });
 });
 

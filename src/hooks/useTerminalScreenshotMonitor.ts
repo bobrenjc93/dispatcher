@@ -67,10 +67,11 @@ function isTmuxStatusSession(session: TerminalSession): boolean {
 }
 
 export function shouldUseTimestampOnlyStatus(sessions: readonly TerminalSession[]): boolean {
-  // Tmux control mode already gives us a precise signal when pane data arrives.
-  // Visual sampling is weaker for tmux because focus redraws, cursor updates,
-  // and capture replays can change the xterm buffer without agent progress.
-  return sessions.some(isTmuxStatusSession);
+  // Status is intentionally driven by terminal I/O timestamps, not screenshots.
+  // Resize, focus, cursor blink, wrapping, and authoritative tmux replays can
+  // all change the local xterm buffer without agent progress. Backend output
+  // and user input are the durable signals shared by local PTYs and tmux panes.
+  return sessions.length > 0;
 }
 
 export function resolveTimestampStatusChangedAt(args: {
