@@ -21,11 +21,9 @@ export function StatusDot({ terminalId }: { terminalId: string }) {
       : isPossiblyDone
         ? BROWN
         : GREEN;
-  const className = isNeedsAttention ? "status-dot status-dot-pulsing" : "status-dot";
-
   return (
     <span
-      className={className}
+      className="status-dot"
       style={{ backgroundColor, color: backgroundColor }}
     />
   );

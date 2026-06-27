@@ -49,19 +49,19 @@ export function resolveTerminalScreenshotStatus(
    *   The tab is still within the inactivity window, or we just saw accepted
    *   progress. In product terms this means "the agent appears to be working."
    *
-   * Pulsing green (needs attention):
+   * Green with attention border (needs attention):
    *   The tab was green, then became stale in the background, and the user has
    *   not acknowledged the current output generation yet.
    *
    * Brown (possibly done):
    *   The stale output has been acknowledged. The common path is "background tab
-   *   starts pulsing, user focuses it, no real progress or user input follows."
-   *   Focusing must not restart the stale timer; otherwise a pulsing tab waits a
+   *   needs attention, user focuses it, no real progress or user input follows."
+   *   Focusing must not restart the stale timer; otherwise an attention tab waits a
    *   second full inactivity window before becoming brown.
    *
    * Gray (long inactive):
    *   The tab was brown, then remained unchanged for the long-inactivity window.
-   *   Unacknowledged background work should keep pulsing instead of silently
+   *   Unacknowledged background work should keep needing attention instead of silently
    *   aging into gray, because gray means "you already looked at this stale
    *   output and it has been stale for a long time."
    */

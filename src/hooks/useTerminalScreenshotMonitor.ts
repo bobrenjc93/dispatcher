@@ -33,14 +33,14 @@ import { useTerminalStore } from "../stores/useTerminalStore";
 import type { TerminalSession } from "../types/terminal";
 
 const SCREENSHOT_INTERVAL_MS = 5_000;
-// A stable tab becomes stale after this window. Background stale tabs pulse
-// until the user looks at them; acknowledged stale tabs turn brown.
+// A stable tab becomes stale after this window. Background stale tabs require
+// attention until the user looks at them; acknowledged stale tabs turn brown.
 const SCREENSHOT_INACTIVITY_MS = 10_000;
 // Long inactivity applies to brown tabs only. Unacknowledged stale tabs keep
-// pulsing because they still need the user's attention.
+// needing attention because they still need the user's attention.
 const SCREENSHOT_LONG_INACTIVITY_MS = 60 * 60 * 1000;
 // Tmux focus can redraw panes without real agent progress. This short window
-// prevents those focus-only redraws from clearing pulse/brown state.
+// prevents those focus-only redraws from clearing attention/brown state.
 const FOCUS_VISUAL_SUPPRESSION_MS = SCREENSHOT_INTERVAL_MS + 2_500;
 const SCREENSHOT_ARTIFACT_INTERVAL_MS = 5 * 60 * 1000;
 const SCREENSHOT_ARTIFACT_GLOBAL_INTERVAL_MS = 30_000;
@@ -679,8 +679,8 @@ export function useTerminalScreenshotMonitor() {
         .filter((session): session is TerminalSession => session !== undefined);
       const previousAcknowledgedAt = acknowledgedAt.get(tabRootTerminalId) ?? 0;
       // Acknowledgement is intentionally separate from activity. Focusing a
-      // pulsing tab means "the user has seen this stale output"; it must clear
-      // the pulse and let the next monitor pass mark it brown if nothing real
+      // attention tab means "the user has seen this stale output"; it must clear
+      // the attention state and let the next monitor pass mark it brown if nothing real
       // changed. It must not move the output's idle baseline forward, because
       // that would force a second inactivity window after focus.
       acknowledgedAt.set(tabRootTerminalId, now);

@@ -41,7 +41,7 @@ describe("terminalScreenshotStatus", () => {
     });
   });
 
-  it("turns a viewed pulsing tab brown without restarting the inactivity timer", () => {
+  it("turns a viewed attention tab brown without restarting the inactivity timer", () => {
     expect(status({
       isActiveTab: true,
       wasNeedsAttention: true,
@@ -74,7 +74,7 @@ describe("terminalScreenshotStatus", () => {
     });
   });
 
-  it("keeps very old unacknowledged background output pulsing instead of turning it gray", () => {
+  it("keeps very old unacknowledged background output needing attention instead of turning it gray", () => {
     expect(status({
       acknowledgedTime: 0,
       effectiveChangedAt: 1_000,
