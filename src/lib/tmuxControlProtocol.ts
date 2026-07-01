@@ -88,24 +88,80 @@ export function buildTmuxNewWindowCommand(options: {
   return segments.join(" ");
 }
 
+const tmuxOutputTextDecoder = new TextDecoder("utf-8", { fatal: false });
+const tmuxOutputTextEncoder = new TextEncoder();
+
 export function unescapeTmuxOutput(value: string): string {
-  let result = "";
-
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index];
-    if (char === "\\" && index + 3 < value.length) {
-      const octal = value.slice(index + 1, index + 4);
-      if (/^[0-7]{3}$/.test(octal)) {
-        result += String.fromCharCode(parseInt(octal, 8));
-        index += 3;
-        continue;
-      }
-    }
-
-    result += char;
+  if (!value.includes("\\")) {
+    return value;
   }
 
-  return result;
+  // tmux octal escapes are raw bytes, not code points: multibyte UTF-8 text
+  // arrives as one escape per byte (e.g. "é" as "\303\251"). Decode escapes
+  // into a byte stream alongside the UTF-8 re-encoded literal characters and
+  // convert the whole payload back to text in one pass, so escaped multibyte
+  // sequences (including ones mixing raw and escaped bytes) are not mangled
+  // into one Latin-1 character per byte.
+  const parts: Uint8Array[] = [];
+  let runStart = 0;
+
+  const flushLiteralRun = (end: number) => {
+    if (end > runStart) {
+      parts.push(tmuxOutputTextEncoder.encode(value.slice(runStart, end)));
+    }
+  };
+
+  const escapedBytes: number[] = [];
+  const flushEscapedBytes = () => {
+    if (escapedBytes.length > 0) {
+      parts.push(Uint8Array.from(escapedBytes));
+      escapedBytes.length = 0;
+    }
+  };
+
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== "\\" || index + 4 > value.length) {
+      continue;
+    }
+    const octal = value.slice(index + 1, index + 4);
+    if (!/^[0-7]{3}$/.test(octal)) {
+      continue;
+    }
+
+    flushLiteralRun(index);
+    escapedBytes.push(parseInt(octal, 8));
+    index += 3;
+    runStart = index + 1;
+    // Coalesce adjacent escapes so multibyte sequences decode as one unit.
+    while (
+      runStart < value.length
+      && value[runStart] === "\\"
+      && /^[0-7]{3}$/.test(value.slice(runStart + 1, runStart + 4))
+    ) {
+      escapedBytes.push(parseInt(value.slice(runStart + 1, runStart + 4), 8));
+      index += 4;
+      runStart = index + 1;
+    }
+    flushEscapedBytes();
+  }
+
+  flushLiteralRun(value.length);
+
+  if (parts.length === 1) {
+    return tmuxOutputTextDecoder.decode(parts[0]);
+  }
+
+  let totalLength = 0;
+  for (const part of parts) {
+    totalLength += part.length;
+  }
+  const merged = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const part of parts) {
+    merged.set(part, offset);
+    offset += part.length;
+  }
+  return tmuxOutputTextDecoder.decode(merged);
 }
 
 export function encodeTmuxSendKeysHex(data: string, chunkSize: number = 64): string[] {

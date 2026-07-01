@@ -19,6 +19,27 @@ describe("tmuxControlProtocol", () => {
     expect(unescapeTmuxOutput("\\033[?2004hhello\\015\\012")).toBe("\u001b[?2004hhello\r\n");
   });
 
+  it("decodes octal-escaped multibyte UTF-8 sequences as bytes, not code points", () => {
+    // tmux escapes each raw byte separately: "é" = 0xC3 0xA9 = \303\251
+    expect(unescapeTmuxOutput("\\303\\251")).toBe("é");
+    // "中" = 0xE4 0xB8 0xAD, "😀" = 0xF0 0x9F 0x98 0x80
+    expect(unescapeTmuxOutput("a\\344\\270\\255b\\360\\237\\230\\200c")).toBe("a中b😀c");
+  });
+
+  it("replaces octal-escaped invalid UTF-8 bytes instead of corrupting neighbors", () => {
+    expect(unescapeTmuxOutput("Q\\377Z")).toBe("Q�Z");
+  });
+
+  it("leaves text without octal escapes untouched", () => {
+    expect(unescapeTmuxOutput("plain text é😀 tail")).toBe("plain text é😀 tail");
+    expect(unescapeTmuxOutput("not octal \\9 \\x41")).toBe("not octal \\9 \\x41");
+  });
+
+  it("does not treat a truncated trailing escape as octal", () => {
+    expect(unescapeTmuxOutput("abc\\01")).toBe("abc\\01");
+    expect(unescapeTmuxOutput("abc\\")).toBe("abc\\");
+  });
+
   it("encodes input bytes into hex chunks for send-keys -H", () => {
     expect(encodeTmuxSendKeysHex("A€", 16)).toEqual(["41 e2 82 ac"]);
   });
