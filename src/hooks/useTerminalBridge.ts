@@ -220,6 +220,9 @@ const TERMINAL_RESPONSE_QUERY_PATTERN =
 const TERMINAL_RESPONSE_SEQUENCE_PATTERN =
   /\x1b(?:\](?:(?:1[0-2])|4;\d+);[^\x07\x1b]*(?:\x07|\x1b\\)|\[\d+;\d+R|\[\?\d+(?:;\d+)*c|\[>\d+(?:;\d+)*c)/g;
 const HIDDEN_WRITE_FALLBACK_MS = 50;
+// Longest terminal-response query we detect is ~10 chars; keep a little slack
+// for sequences split across IPC chunk boundaries.
+const RESPONSE_QUERY_BOUNDARY_TAIL_CHARS = 16;
 const PARKED_TMUX_DROP_SUMMARY_INTERVAL_MS = 5_000;
 const PARKED_TMUX_ACTIVITY_THROTTLE_MS = 1_000;
 const LARGE_WRITE_DRAIN_BYTES = 1_000_000;
@@ -488,17 +491,20 @@ function drainTerminalWriteBuffer(terminalId: string) {
     return;
   }
 
+  const instance = instances.get(terminalId);
+  const xterm = instance?.xterm;
+  if (!xterm) {
+    // No frontend yet — keep the data (and its batch flags) buffered so it
+    // renders once the instance is created, instead of silently dropping it.
+    writeStatusRecorded.delete(terminalId);
+    return;
+  }
+
   const chunkCount = buf.length;
   const combined = buf.join("");
   buf.length = 0;
   const allowParkedWrite = writeBufferAllowParked.delete(terminalId);
   const clearScrollbackBeforeWrite = writeBufferClearScrollback.delete(terminalId);
-  const instance = instances.get(terminalId);
-  const xterm = instance?.xterm;
-  if (!xterm) {
-    writeStatusRecorded.delete(terminalId);
-    return;
-  }
   const skippedTmuxWriteReason = allowParkedWrite
     ? null
     : getSkippedTmuxWriteReason(terminalId, instance);
@@ -694,9 +700,19 @@ function batchedWrite(
     recordTerminalOutputActivity(terminalId);
   }
 
-  if (data.includes("\u001b") && containsTerminalResponseQuery(buffer.join(""))) {
-    flushBufferedWrite(terminalId);
-    return true;
+  // Flush immediately when the guest queries the terminal (DSR/DA/OSC color
+  // queries) so xterm can answer without a frame of latency. Scan only the
+  // new chunk plus a short tail of the previous one so a query split across
+  // IPC chunks is still caught without re-joining the whole buffer (which is
+  // quadratic during large output bursts).
+  if (data.includes("\u001b") || buffer.length > 1) {
+    const previousTail = buffer.length > 1
+      ? buffer[buffer.length - 2].slice(-RESPONSE_QUERY_BOUNDARY_TAIL_CHARS)
+      : "";
+    if (containsTerminalResponseQuery(previousTail + data)) {
+      flushBufferedWrite(terminalId);
+      return true;
+    }
   }
 
   scheduleBufferedWrite(terminalId);
@@ -1159,6 +1175,11 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
   });
 
   instances.set(terminalId, instance);
+  // Output that arrived before the frontend existed is still buffered;
+  // schedule a drain now that there is an xterm to render it into.
+  if ((writeBuffers.get(terminalId)?.length ?? 0) > 0) {
+    scheduleBufferedWrite(terminalId);
+  }
   return instance;
 }
 
