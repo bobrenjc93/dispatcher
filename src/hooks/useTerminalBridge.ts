@@ -1447,14 +1447,14 @@ function renderTerminalBufferScreenshot(instance: TerminalInstance): string | nu
   const background = theme.background ?? "#000000";
   const foreground = theme.foreground ?? "#f0f0f0";
   const fontSize = typeof xterm.options.fontSize === "number" ? xterm.options.fontSize : 13;
-  const lineHeight = typeof xterm.options.lineHeight === "number" ? xterm.options.lineHeight : 1;
   const fontFamily = typeof xterm.options.fontFamily === "string" ? xterm.options.fontFamily : "Menlo, monospace";
 
   context.fillStyle = background;
   context.fillRect(0, 0, width, height);
 
-  const cellWidth = width / Math.max(xterm.cols, 1);
   const cellHeight = height / Math.max(xterm.rows, 1);
+  // cellHeight already reflects the configured line height; multiplying the
+  // baseline by lineHeight again pushed text out of its row for lineHeight>1.
   const baselineOffset = Math.min(cellHeight - 2, Math.max(fontSize, cellHeight * 0.8));
 
   context.font = `${fontSize}px ${fontFamily}`;
@@ -1464,7 +1464,7 @@ function renderTerminalBufferScreenshot(instance: TerminalInstance): string | nu
   for (let row = 0; row < xterm.rows; row++) {
     const line = buffer.getLine(buffer.viewportY + row);
     const text = line?.translateToString(false) ?? "";
-    context.fillText(text, 0, row * cellHeight + baselineOffset * lineHeight);
+    context.fillText(text, 0, row * cellHeight + baselineOffset);
   }
 
   return canvas.toDataURL("image/png");
@@ -1478,8 +1478,12 @@ function readTerminalVisualTextSnapshot(
   const buffer = xterm.buffer.active;
   const lines: string[] = [];
 
+  // Read the live tail of the buffer (baseY), not the scrolled viewport.
+  // Status hashing must track where new output lands: with viewportY, a
+  // user scrolling back registers as a content change (false activity) and
+  // real output below the scrolled view goes unseen (missed activity).
   for (let row = 0; row < xterm.rows; row += 1) {
-    const line = buffer.getLine(buffer.viewportY + row);
+    const line = buffer.getLine(buffer.baseY + row);
     lines.push(line?.translateToString(false) ?? "");
   }
 
