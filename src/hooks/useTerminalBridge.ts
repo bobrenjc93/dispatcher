@@ -1937,6 +1937,11 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind;
       if (shouldFitFrontendToViewport(backendKind)) {
         i.fitAddon.fit();
+      } else if (i.xterm.rows > 0) {
+        // tmux panes keep their grid size, but a pane coming back from the
+        // parking lot can hold a stale rendered frame until the next output
+        // arrives. Repaint from the buffer so the visible text is current.
+        i.xterm.refresh(0, i.xterm.rows - 1);
       }
       // Only steal DOM focus if this terminal is the active one.
       // Without this guard, every pane calls focus() on mount and

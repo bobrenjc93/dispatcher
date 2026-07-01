@@ -288,7 +288,7 @@ export function TerminalPane({
       el.removeEventListener("textInput", handleInputLikeEvent, true);
       el.removeEventListener("keypress", handleInputLikeEvent, true);
     };
-  }, [openSearch, closeSearch, resetMacOptionCompositionState, scheduleMacTextInputSuppressionCleanup, searchOpen, resizeRef, xtermRef]);
+  }, [openSearch, closeSearch, resetMacOptionCompositionState, scheduleMacTextInputSuppressionCleanup, searchOpen, resizeRef, xtermRef, terminalId]);
 
   const setActiveTerminal = useTerminalStore((s) => s.setActiveTerminal);
   const isActive = useTerminalStore((s) => s.activeTerminalId === terminalId);
