@@ -1,3 +1,4 @@
-lib
+# lib is committed (built bundles) — see vendor/README.md
+# lib
 node_modules
 out-benchmark
