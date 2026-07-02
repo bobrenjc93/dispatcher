@@ -1988,6 +1988,42 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("resends the client size when a settled layout no longer fits the pane viewport", async () => {
+    const transportTerminalId = "transport-grid-overflow-correction";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    writeTerminalMock.mockClear();
+
+    // The container shrank without a corrective refresh-client being sent
+    // (e.g. the resize landed inside the user-pane-resize lock, or another
+    // tmux client forced a larger window). The next settled layout still
+    // reports 80x24, but only 80x20 fits the mount.
+    getTerminalViewportSizeMock.mockReturnValue({ width: 640, height: 320 });
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "@1\thappy\t1\t*",
+        "%end 4 0",
+        "%begin 5 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren\t4\t7\t0",
+        "%end 5 0",
+        "",
+      ].join("\n")
+    );
+    await vi.runOnlyPendingTimersAsync();
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "refresh-client -C 80x20\n"
+    );
+  });
+
   it("syncs tmux window size from the root canvas instead of stale pane ratios", async () => {
     const transportTerminalId = "transport-root-canvas-resize";
     seedTransportTerminal(transportTerminalId);

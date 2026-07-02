@@ -190,6 +190,7 @@ interface TmuxControlSession {
   clientResizeLayoutSuppressedCount: number;
   pendingWindowRedraws: Set<string>;
   userPaneResizeLocks: Map<string, number>;
+  gridOverflowCorrections: Map<string, { size: string; count: number; windowStartedAt: number }>;
   outputLogCount: number;
   outputLogSuppressed: boolean;
   transportLogCount: number;
@@ -363,6 +364,7 @@ function ensureTmuxClientSizeState(session: TmuxControlSession) {
   session.clientResizeLayoutSuppressionWindowId ??= null;
   session.clientResizeLayoutSuppressionUntil ??= 0;
   session.clientResizeLayoutSuppressedCount ??= 0;
+  session.gridOverflowCorrections ??= new Map();
 }
 
 function suppressPaneOutputActivity(
@@ -763,6 +765,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     clientResizeLayoutSuppressedCount: 0,
     pendingWindowRedraws: new Set(),
     userPaneResizeLocks: new Map(),
+    gridOverflowCorrections: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
     transportLogCount: 0,
@@ -1051,6 +1054,110 @@ function syncProjectedPaneFrontendSizes(
     }
     syncTerminalFrontendSize(paneState.terminalId, paneSnapshot.width, paneSnapshot.height);
   }
+}
+
+const TMUX_GRID_OVERFLOW_CORRECTION_WINDOW_MS = 2_000;
+const TMUX_GRID_OVERFLOW_CORRECTION_MAX_ATTEMPTS = 2;
+
+// After a layout settles, tmux's confirmed grid can still be larger than the
+// visible viewport with no DOM resize event to correct it: another attached
+// client forced a bigger window (window-size latest), a shrink landed inside
+// the user-pane-resize lock, or a refresh-client failed after its size was
+// optimistically cached. Every such path funnels through refreshSingleWindow,
+// so compare the settled grid against the mount here and re-send the client
+// size when whole rows/cols are clipped.
+function correctTmuxFrontendGridOverflowIfNeeded(
+  session: TmuxControlSession,
+  windowId: string,
+  paneSnapshots: readonly TmuxPaneSnapshot[]
+): boolean {
+  ensureTmuxClientSizeState(session);
+  const windowState = session.windows.get(windowId) ?? null;
+  if (!windowState || isTmuxWindowUserPaneResizeLocked(session, windowId)) {
+    return false;
+  }
+
+  const windowPanes = paneSnapshots.filter((pane) => pane.windowId === windowId);
+  const referencePane = windowPanes.find((pane) => pane.isActive) ?? windowPanes[0];
+  const paneState = referencePane ? session.panes.get(referencePane.paneId) : null;
+  if (!referencePane || !paneState) {
+    return false;
+  }
+
+  const cellSize = getTerminalCellSize(paneState.terminalId);
+  const viewportSize = getTerminalViewportSize(paneState.terminalId);
+  if (!cellSize || !viewportSize || cellSize.width <= 0 || cellSize.height <= 0) {
+    // Parked or not-yet-measured panes report no viewport; remount observers
+    // will re-run sizing when they come back.
+    return false;
+  }
+
+  const totalWindowCols = Math.max(1, ...windowPanes.map((pane) => pane.left + pane.width));
+  const totalWindowRows = Math.max(1, ...windowPanes.map((pane) => pane.top + pane.height));
+  const fitCols = Math.floor(viewportSize.width / cellSize.width);
+  const fitRows = Math.floor(viewportSize.height / cellSize.height);
+  if (referencePane.width <= fitCols && referencePane.height <= fitRows) {
+    // Pane grid fits its mount; reset the damper on a healthy settle.
+    session.gridOverflowCorrections.delete(windowId);
+    return false;
+  }
+
+  const targetSize = computeTmuxWindowSizeFromPaneViewport({
+    viewportWidthPx: viewportSize.width,
+    viewportHeightPx: viewportSize.height,
+    cellWidthPx: cellSize.width,
+    cellHeightPx: cellSize.height,
+    activePaneCols: referencePane.width,
+    activePaneRows: referencePane.height,
+    totalWindowCols,
+    totalWindowRows,
+  });
+  if (!targetSize || (targetSize.cols === totalWindowCols && targetSize.rows === totalWindowRows)) {
+    // Resizing to the same grid tmux already has can't fix anything.
+    return false;
+  }
+
+  const nextSize = `${targetSize.cols}x${targetSize.rows}`;
+  const now = Date.now();
+  const damper = session.gridOverflowCorrections.get(windowId);
+  if (damper && now - damper.windowStartedAt <= TMUX_GRID_OVERFLOW_CORRECTION_WINDOW_MS) {
+    // Cap correction attempts so a foreign client re-asserting a larger size
+    // (window-size latest tug-of-war) can't turn this into a resize loop.
+    if (damper.count >= TMUX_GRID_OVERFLOW_CORRECTION_MAX_ATTEMPTS || damper.size === nextSize) {
+      debugLog("tmux.size", "grid overflow correction damped", {
+        sessionId: session.id,
+        windowId,
+        size: nextSize,
+        attempts: damper.count,
+      });
+      return false;
+    }
+    damper.count += 1;
+    damper.size = nextSize;
+  } else {
+    session.gridOverflowCorrections.set(windowId, { size: nextSize, count: 1, windowStartedAt: now });
+  }
+
+  debugLog("tmux.size", "grid overflow correction", {
+    sessionId: session.id,
+    windowId,
+    paneId: referencePane.paneId,
+    paneCols: referencePane.width,
+    paneRows: referencePane.height,
+    viewportWidthPx: viewportSize.width,
+    viewportHeightPx: viewportSize.height,
+    cellWidth: cellSize.width,
+    cellHeight: cellSize.height,
+    size: nextSize,
+  });
+  return applyTmuxWindowSize(session, windowState, targetSize.cols, targetSize.rows, {
+    terminalId: paneState.terminalId,
+    paneId: referencePane.paneId,
+    source: "grid-overflow-correction",
+  }, {
+    forceRefresh: true,
+    forceReason: "frontend-grid-overflow",
+  });
 }
 
 function queueProjectedInitialPaneCaptures(
@@ -3395,6 +3502,7 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
 
   await settleTmuxFrontendLayoutIfNeeded(session, snapshot.windowId, projection, "refresh-window");
   syncProjectedPaneFrontendSizes(session, paneSnapshots);
+  correctTmuxFrontendGridOverflowIfNeeded(session, snapshot.windowId, paneSnapshots);
   queueProjectedInitialPaneCaptures(session, projection);
 
   const shouldRedrawWindow = session.pendingWindowRedraws.delete(snapshot.windowId);
@@ -3519,6 +3627,10 @@ async function hydrateControlSession(session: TmuxControlSession) {
 
     for (const windowPaneSnapshots of hydratedPaneSnapshots) {
       syncProjectedPaneFrontendSizes(session, windowPaneSnapshots);
+      const windowId = windowPaneSnapshots[0]?.windowId;
+      if (windowId) {
+        correctTmuxFrontendGridOverflowIfNeeded(session, windowId, windowPaneSnapshots);
+      }
     }
 
     const activeWindow = windowSnapshots.find((snapshot) => snapshot.isActive) ?? windowSnapshots[0];
@@ -4093,6 +4205,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     clientResizeLayoutSuppressedCount: 0,
     pendingWindowRedraws: new Set(),
     userPaneResizeLocks: new Map(),
+    gridOverflowCorrections: new Map(),
     outputLogCount: 0,
     outputLogSuppressed: false,
     transportLogCount: 0,
@@ -4848,6 +4961,16 @@ export function syncTmuxWindowSizeFromPaneTerminal(terminalId: string): boolean 
       totalWindowCols: totalWindowGrid.cols,
       totalWindowRows: totalWindowGrid.rows,
     });
+    // Split windows are sized from the outer canvas, which can't see
+    // container shrinks inside the pane (e.g. the search bar opening). If the
+    // pane grid no longer fits its mount, settle the window so the grid
+    // overflow corrector re-sends the client size.
+    if (
+      pane.width > Math.floor(viewportSize.width / cellSize.width)
+      || pane.height > Math.floor(viewportSize.height / cellSize.height)
+    ) {
+      scheduleRefresh(session, pane.windowId);
+    }
     return false;
   }
 
@@ -4954,6 +5077,10 @@ export function resizeTmuxPaneByTerminal(
 
   if (delta === 0) {
     clearTmuxWindowUserPaneResizeLock(session, pane.windowId, "drag-end-noop");
+    // A container resize landing while the lock was held was dropped by the
+    // sync paths with only a one-frame retry; settle the window so the grid
+    // overflow corrector can catch any clipping the drop left behind.
+    scheduleRefresh(session, pane.windowId);
     return false;
   }
 
