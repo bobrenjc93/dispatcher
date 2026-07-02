@@ -145,6 +145,12 @@ export function unescapeTmuxOutput(value: string): string {
     flushEscapedBytes();
   }
 
+  // No escape consumed: skip the encode/decode round trip (which would also
+  // replace lone surrogates with U+FFFD) and return the input as-is.
+  if (runStart === 0) {
+    return value;
+  }
+
   flushLiteralRun(value.length);
 
   if (parts.length === 1) {

@@ -35,6 +35,13 @@ describe("tmuxControlProtocol", () => {
     expect(unescapeTmuxOutput("not octal \\9 \\x41")).toBe("not octal \\9 \\x41");
   });
 
+  it("returns backslash-containing text with no escapes identically, without a decode round trip", () => {
+    expect(unescapeTmuxOutput("C:\\path\\file")).toBe("C:\\path\\file");
+    // A lone surrogate would become U+FFFD if round-tripped through UTF-8.
+    const loneSurrogate = "bad \\x surrogate: \uD800";
+    expect(unescapeTmuxOutput(loneSurrogate)).toBe(loneSurrogate);
+  });
+
   it("does not treat a truncated trailing escape as octal", () => {
     expect(unescapeTmuxOutput("abc\\01")).toBe("abc\\01");
     expect(unescapeTmuxOutput("abc\\")).toBe("abc\\");

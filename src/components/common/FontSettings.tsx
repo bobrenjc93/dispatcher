@@ -35,7 +35,10 @@ function buildFontFamilyCSS(family: string): string {
       seen.add(key);
       return true;
     })
-    .map((font) => (font === "monospace" ? font : `"${font.replace(/["\\]/g, "\\$&")}"`))
+    // The generic keyword must stay unquoted (quoting turns it into a family
+    // name); match it case-insensitively so a family like "Monospace" doesn't
+    // dedupe away the generic fallback and then get emitted as a quoted name.
+    .map((font) => (font.toLowerCase() === "monospace" ? "monospace" : `"${font.replace(/["\\]/g, "\\$&")}"`))
     .join(", ");
 }
 
