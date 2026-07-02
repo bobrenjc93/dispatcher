@@ -28,5 +28,7 @@ export default defineConfig({
     globals: true,
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
+    // The vendored xterm.js tree ships its own test suite; only run ours.
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
   },
 });

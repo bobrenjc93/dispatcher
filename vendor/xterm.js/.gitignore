@@ -1,0 +1,31 @@
+node_modules/
+*.swp
+.lock-wscript
+# lib/ is committed so the app builds without rebuilding the vendor
+# lib/
+out/
+out-test/
+out-esbuild/
+out-esbuild-test/
+.nyc_output/
+Makefile.gyp
+*.Makefile
+*.target.gyp.mk
+*.node
+example/*.log
+docs/
+npm-debug.log
+/.idea/
+.env
+build/
+.DS_Store
+yarn.lock
+test-results/
+
+# Keep bundled code out of Git
+dist/
+demo/dist/
+
+# dont commit benchmark folders
+.benchmark/
+timeline/
