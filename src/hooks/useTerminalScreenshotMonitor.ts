@@ -218,7 +218,10 @@ function buildScreenshotArtifactHtml(args: {
   ].join("\n");
 }
 
-function buildVisibleLinePreview(snapshot: TerminalVisualTextSnapshot) {
+// Previews the live tail of the buffer (what status hashing reads), which can
+// differ from the screenshot image when the user has scrolled back — the
+// screenshot renders the viewport.
+function buildBufferTailLinePreview(snapshot: TerminalVisualTextSnapshot) {
   const startRow = Math.max(0, snapshot.lines.length - MAX_SCREENSHOT_ARTIFACT_LINES);
   return snapshot.lines.slice(startRow).map((line, index) => ({
     row: startRow + index,
@@ -415,7 +418,7 @@ async function writeScreenshotDebugArtifacts(args: {
       cols: snapshot.cols,
       rows: snapshot.rows,
       lineCount: snapshot.lines.length,
-      lines: buildVisibleLinePreview(snapshot),
+      lines: buildBufferTailLinePreview(snapshot),
     })),
   };
 

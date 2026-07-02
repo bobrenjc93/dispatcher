@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "lib": [
+      "dom",
+      "es2021",
+    ],
+    "outDir": "../../out-test/benchmark",
+    "types": [
+      "../../node_modules/@types/node"
+    ],
+    "moduleResolution": "node",
+    "strict": false,
+    "target": "es2021",
+    "module": "commonjs",
+    "baseUrl": ".",
+    "paths": {
+      "common/*": [ "../../src/common/*" ],
+      "browser/*": [ "../../src/browser/*" ],
+      "Terminal": ["../../src/Terminal"]
+    },
+  },
+  "include": [
+    "./**/*",
+    "../../typings/xterm.d.ts"
+  ],
+  "exclude": [
+    "../../**/*test.ts"
+  ],
+  "references": [
+    { "path": "../../src/common" },
+    { "path": "../../src/browser" },
+  ]
+}

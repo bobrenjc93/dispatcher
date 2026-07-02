@@ -15,8 +15,9 @@ const NERD_FONT_FALLBACKS = [
 ];
 
 function buildFontFamilyCSS(family: string): string {
+  const trimmed = family.trim();
   const fonts = [
-    family,
+    ...(trimmed ? [trimmed] : []),
     ...NERD_FONT_FALLBACKS,
     "Menlo",
     "Monaco",
@@ -24,8 +25,20 @@ function buildFontFamilyCSS(family: string): string {
     "monospace",
   ];
 
+  const seen = new Set<string>();
   return fonts
-    .map((font) => (font === "monospace" ? font : `"${font}"`))
+    .filter((font) => {
+      const key = font.toLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    // The generic keyword must stay unquoted (quoting turns it into a family
+    // name); match it case-insensitively so a family like "Monospace" doesn't
+    // dedupe away the generic fallback and then get emitted as a quoted name.
+    .map((font) => (font.toLowerCase() === "monospace" ? "monospace" : `"${font.replace(/["\\]/g, "\\$&")}"`))
     .join(", ");
 }
 

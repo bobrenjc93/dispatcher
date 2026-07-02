@@ -220,6 +220,9 @@ const TERMINAL_RESPONSE_QUERY_PATTERN =
 const TERMINAL_RESPONSE_SEQUENCE_PATTERN =
   /\x1b(?:\](?:(?:1[0-2])|4;\d+);[^\x07\x1b]*(?:\x07|\x1b\\)|\[\d+;\d+R|\[\?\d+(?:;\d+)*c|\[>\d+(?:;\d+)*c)/g;
 const HIDDEN_WRITE_FALLBACK_MS = 50;
+// Longest terminal-response query we detect is ~10 chars; keep a little slack
+// for sequences split across IPC chunk boundaries.
+const RESPONSE_QUERY_BOUNDARY_TAIL_CHARS = 16;
 const PARKED_TMUX_DROP_SUMMARY_INTERVAL_MS = 5_000;
 const PARKED_TMUX_ACTIVITY_THROTTLE_MS = 1_000;
 const LARGE_WRITE_DRAIN_BYTES = 1_000_000;
@@ -488,17 +491,20 @@ function drainTerminalWriteBuffer(terminalId: string) {
     return;
   }
 
+  const instance = instances.get(terminalId);
+  const xterm = instance?.xterm;
+  if (!xterm) {
+    // No frontend yet — keep the data (and its batch flags) buffered so it
+    // renders once the instance is created, instead of silently dropping it.
+    writeStatusRecorded.delete(terminalId);
+    return;
+  }
+
   const chunkCount = buf.length;
   const combined = buf.join("");
   buf.length = 0;
   const allowParkedWrite = writeBufferAllowParked.delete(terminalId);
   const clearScrollbackBeforeWrite = writeBufferClearScrollback.delete(terminalId);
-  const instance = instances.get(terminalId);
-  const xterm = instance?.xterm;
-  if (!xterm) {
-    writeStatusRecorded.delete(terminalId);
-    return;
-  }
   const skippedTmuxWriteReason = allowParkedWrite
     ? null
     : getSkippedTmuxWriteReason(terminalId, instance);
@@ -694,9 +700,19 @@ function batchedWrite(
     recordTerminalOutputActivity(terminalId);
   }
 
-  if (data.includes("\u001b") && containsTerminalResponseQuery(buffer.join(""))) {
-    flushBufferedWrite(terminalId);
-    return true;
+  // Flush immediately when the guest queries the terminal (DSR/DA/OSC color
+  // queries) so xterm can answer without a frame of latency. Scan only the
+  // new chunk plus a short tail of the previous one so a query split across
+  // IPC chunks is still caught without re-joining the whole buffer (which is
+  // quadratic during large output bursts).
+  if (data.includes("\u001b") || buffer.length > 1) {
+    const previousTail = buffer.length > 1
+      ? buffer[buffer.length - 2].slice(-RESPONSE_QUERY_BOUNDARY_TAIL_CHARS)
+      : "";
+    if (containsTerminalResponseQuery(previousTail + data)) {
+      flushBufferedWrite(terminalId);
+      return true;
+    }
   }
 
   scheduleBufferedWrite(terminalId);
@@ -1159,6 +1175,11 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
   });
 
   instances.set(terminalId, instance);
+  // Output that arrived before the frontend existed is still buffered;
+  // schedule a drain now that there is an xterm to render it into.
+  if ((writeBuffers.get(terminalId)?.length ?? 0) > 0) {
+    scheduleBufferedWrite(terminalId);
+  }
   return instance;
 }
 
@@ -1426,14 +1447,14 @@ function renderTerminalBufferScreenshot(instance: TerminalInstance): string | nu
   const background = theme.background ?? "#000000";
   const foreground = theme.foreground ?? "#f0f0f0";
   const fontSize = typeof xterm.options.fontSize === "number" ? xterm.options.fontSize : 13;
-  const lineHeight = typeof xterm.options.lineHeight === "number" ? xterm.options.lineHeight : 1;
   const fontFamily = typeof xterm.options.fontFamily === "string" ? xterm.options.fontFamily : "Menlo, monospace";
 
   context.fillStyle = background;
   context.fillRect(0, 0, width, height);
 
-  const cellWidth = width / Math.max(xterm.cols, 1);
   const cellHeight = height / Math.max(xterm.rows, 1);
+  // cellHeight already reflects the configured line height; multiplying the
+  // baseline by lineHeight again pushed text out of its row for lineHeight>1.
   const baselineOffset = Math.min(cellHeight - 2, Math.max(fontSize, cellHeight * 0.8));
 
   context.font = `${fontSize}px ${fontFamily}`;
@@ -1443,7 +1464,7 @@ function renderTerminalBufferScreenshot(instance: TerminalInstance): string | nu
   for (let row = 0; row < xterm.rows; row++) {
     const line = buffer.getLine(buffer.viewportY + row);
     const text = line?.translateToString(false) ?? "";
-    context.fillText(text, 0, row * cellHeight + baselineOffset * lineHeight);
+    context.fillText(text, 0, row * cellHeight + baselineOffset);
   }
 
   return canvas.toDataURL("image/png");
@@ -1457,8 +1478,12 @@ function readTerminalVisualTextSnapshot(
   const buffer = xterm.buffer.active;
   const lines: string[] = [];
 
+  // Read the live tail of the buffer (baseY), not the scrolled viewport.
+  // Status hashing must track where new output lands: with viewportY, a
+  // user scrolling back registers as a content change (false activity) and
+  // real output below the scrolled view goes unseen (missed activity).
   for (let row = 0; row < xterm.rows; row += 1) {
-    const line = buffer.getLine(buffer.viewportY + row);
+    const line = buffer.getLine(buffer.baseY + row);
     lines.push(line?.translateToString(false) ?? "");
   }
 
@@ -1916,6 +1941,11 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind;
       if (shouldFitFrontendToViewport(backendKind)) {
         i.fitAddon.fit();
+      } else if (i.xterm.rows > 0) {
+        // tmux panes keep their grid size, but a pane coming back from the
+        // parking lot can hold a stale rendered frame until the next output
+        // arrives. Repaint from the buffer so the visible text is current.
+        i.xterm.refresh(0, i.xterm.rows - 1);
       }
       // Only steal DOM focus if this terminal is the active one.
       // Without this guard, every pane calls focus() on mount and
