@@ -31,3 +31,27 @@ Upstream's own unit tests can be run inside `vendor/xterm.js` with
 
 - `package.json` / `addons/*/package.json`: `main` → `lib/*.mjs` (ESM build).
 - `.gitignore`: `lib/` un-ignored so built bundles are committed.
+
+### Backported upstream fixes (post-6.0.0)
+
+Renderer fixes for resize/atlas corruption, cherry-picked from upstream
+master (hashes are upstream xterm.js commits):
+
+- `4619a755` Force a sync render after resize occurs — closes the gap
+  between the canvas being cleared on resize and the debounced repaint.
+- `d6df8d79` Update viewport dims when dpr changes — adds the missing
+  `gl.viewport()` call when the device-pixel observer resizes the backing
+  store (fixes never-repainted black rectangles).
+- `4ddd982e` Fix blur due to canvas dim mismatch in glyph renderer.
+- `dc726a2a` + `3bcb5754` + `c24eb60b` + `b4bd92d6` + `0c8271db` texture
+  atlas page-merge fixes (wrong-glyph corruption when multiple terminals
+  share the atlas cache, stack overflow, stable sort, re-upload after merge).
+- `f43273b3` Include texture size and cell dimensions in atlas cache
+  equality — prevents reusing an atlas built for different cell metrics.
+- `64718444` Avoid glyph atlas mipmaps.
+- `f33f5022` DomRenderer: resilience when buffer lines are missing
+  (adapted: 6.0.0 has no `_setRowBlinkState`; those calls were dropped).
+- `2fe3fd13` WebGL: skip missing buffer lines in `_updateModel`
+  (hand-adapted to the 6.0.0 code shape) — a resize landing between a
+  refresh request and the frame could throw on `lines.get(row)!`,
+  aborting the frame and leaving stale glyphs on rows below the gap.

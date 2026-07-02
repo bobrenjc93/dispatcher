@@ -318,8 +318,8 @@ export class GlyphRenderer extends Disposable {
   public handleResize(): void {
     const gl = this._gl;
     gl.useProgram(this._program);
-    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-    gl.uniform2f(this._resolutionLocation, gl.canvas.width, gl.canvas.height);
+    gl.viewport(0, 0, this._dimensions.device.canvas.width, this._dimensions.device.canvas.height);
+    gl.uniform2f(this._resolutionLocation, this._dimensions.device.canvas.width, this._dimensions.device.canvas.height);
     this.clear();
   }
 
@@ -356,7 +356,9 @@ export class GlyphRenderer extends Disposable {
     gl.bindBuffer(gl.ARRAY_BUFFER, this._attributesBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, activeBuffer.subarray(0, bufferLength), gl.STREAM_DRAW);
 
-    // Bind the atlas page texture if they have changed
+    // Bind the atlas page texture if they have changed. AtlasPage.version is globally
+    // monotonic, so a page object swap at the same index (which happens after a page merge)
+    // is detected by the same comparison.
     for (let i = 0; i < this._atlas.pages.length; i++) {
       if (this._atlas.pages[i].version !== this._atlasTextures[i].version) {
         this._bindAtlasPageTexture(gl, this._atlas, i);
@@ -369,6 +371,10 @@ export class GlyphRenderer extends Disposable {
 
   public setAtlas(atlas: ITextureAtlas): void {
     this._atlas = atlas;
+    this.invalidateAtlasTextures();
+  }
+
+  public invalidateAtlasTextures(): void {
     for (const glTexture of this._atlasTextures) {
       glTexture.version = -1;
     }
@@ -379,8 +385,9 @@ export class GlyphRenderer extends Disposable {
     gl.bindTexture(gl.TEXTURE_2D, this._atlasTextures[i].texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas.pages[i].canvas);
-    gl.generateMipmap(gl.TEXTURE_2D);
     this._atlasTextures[i].version = atlas.pages[i].version;
   }
 

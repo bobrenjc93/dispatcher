@@ -27,6 +27,10 @@ import { addDisposableListener } from 'vs/base/browser/dom';
 import { combinedDisposable, Disposable, MutableDisposable, toDisposable } from 'vs/base/common/lifecycle';
 import { createRenderDimensions } from 'browser/renderer/shared/RendererUtils';
 
+const enum Constants {
+  MERGE_RETRY_LIMIT = 32
+}
+
 export class WebglRenderer extends Disposable implements IRenderer {
   private _renderLayers: IRenderLayer[];
   private _cursorBlinkStateManager: MutableDisposable<CursorBlinkStateManager> = new MutableDisposable();
@@ -201,6 +205,9 @@ export class WebglRenderer extends Disposable implements IRenderer {
     // Force a full refresh. Resizing `_glyphRenderer` should clear it already,
     // so there is no need to clear it again here.
     this._clearModel(false);
+
+    // Render synchronously to avoid flicker when the canvas is cleared
+    this._onRequestRedraw.fire({ start: 0, end: this._terminal.rows - 1, sync: true });
   }
 
   public handleCharSizeChanged(): void {
@@ -351,6 +358,19 @@ export class WebglRenderer extends Disposable implements IRenderer {
       this._updateModel(start, end);
     }
 
+    // A mid-update atlas page merge invalidates vertex data and may not bump the host
+    // page's version, so re-run the update and force a full texture rebind.
+    let merged = false;
+    let mergeRetries = 0;
+    while (this._charAtlas && this._glyphRenderer.value.beginFrame() && mergeRetries++ < Constants.MERGE_RETRY_LIMIT) {
+      merged = true;
+      this._clearModel(true);
+      this._updateModel(0, this._terminal.rows - 1);
+    }
+    if (merged) {
+      this._glyphRenderer.value.invalidateAtlasTextures();
+    }
+
     // Render
     this._rectangleRenderer.value.renderBackgrounds();
     this._glyphRenderer.value.render(this._model);
@@ -412,7 +432,25 @@ export class WebglRenderer extends Disposable implements IRenderer {
 
     for (y = start; y <= end; y++) {
       row = y + terminal.buffer.ydisp;
-      line = terminal.buffer.lines.get(row)!;
+      // Backport of upstream 2fe3fd13: the buffer line can be missing when a
+      // resize/trim lands between the refresh request and this frame. Bailing
+      // with an exception here would leave stale glyphs on all rows below the
+      // gap, so render missing lines as empty cells instead.
+      const bufferLine = terminal.buffer.lines.get(row);
+      if (!bufferLine) {
+        this._model.lineLengths[y] = 0;
+        for (x = 0; x < terminal.cols; x++) {
+          j = ((y * terminal.cols) + x) * RENDER_MODEL_INDICIES_PER_CELL;
+          modelUpdated = true;
+          this._glyphRenderer.value!.updateCell(x, y, NULL_CELL_CODE, 0, 0, 0, NULL_CELL_CHAR, 0, 0);
+          this._model.cells[j] = NULL_CELL_CODE;
+          this._model.cells[j + RENDER_MODEL_BG_OFFSET] = 0;
+          this._model.cells[j + RENDER_MODEL_FG_OFFSET] = 0;
+          this._model.cells[j + RENDER_MODEL_EXT_OFFSET] = 0;
+        }
+        continue;
+      }
+      line = bufferLine;
       this._model.lineLengths[y] = 0;
       isCursorRow = cursorY === row;
       skipJoinedCheckUntilX = 0;
@@ -615,7 +653,8 @@ export class WebglRenderer extends Disposable implements IRenderer {
     // the change as it's an exact multiple of the cell sizes.
     this._canvas.width = width;
     this._canvas.height = height;
-    this._requestRedrawViewport();
+    // Render synchronously to avoid flicker when the canvas is cleared
+    this._onRequestRedraw.fire({ start: 0, end: this._terminal.rows - 1, sync: true });
   }
 
   private _requestRedrawViewport(): void {
