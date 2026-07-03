@@ -6,8 +6,8 @@ A [Remotion](https://www.remotion.dev/) product showcase video for Dispatcher. T
 2. **Projects** — project tree sidebar; per-tab notes type out in the detail panel, then collapse away
 3. **Split panes** — animated horizontal + vertical splits
 4. **Focus** — a background tab finishes and gets the green attention outline
-5. **Remote** — SSH sessions appear as regular tabs and survive restarts
-6. **Outro** — platforms and repo link
+5. **Remote** — tail logs over SSH, lose the connection (saved placeholder tab), re-ssh + `tmux -CC a`, logs resume
+6. **Outro** — platforms and dispatcher.sh
 
 The mock app chrome (`src/components/AppWindow.tsx`) and color palette (`src/theme.ts`) mirror the real app's `src/App.css` so the video matches the product.
 

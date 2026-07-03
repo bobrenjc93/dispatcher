@@ -19,7 +19,7 @@ export const SCENES = [
   { component: Projects, duration: 280 }, // 9.3s — notes type out, then collapse
   { component: Splits, duration: 240 }, // 8s
   { component: StatusDots, duration: 300 }, // 10s
-  { component: Tmux, duration: 270 }, // 9s
+  { component: Tmux, duration: 420 }, // 14s — disconnect/reconnect story
   { component: Outro, duration: 150 }, // 5s
 ] as const;
 

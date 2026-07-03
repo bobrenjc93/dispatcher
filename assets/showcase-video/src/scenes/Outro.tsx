@@ -66,7 +66,7 @@ export const Outro: React.FC = () => {
             color: theme.green,
           }}
         >
-          github.com/TheBuilderJR/dispatcher
+          dispatcher.sh
         </div>
       </FadeIn>
     </AbsoluteFill>
