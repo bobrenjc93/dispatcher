@@ -28,7 +28,14 @@ export type SidebarTab = {
   dot?: string;
   dotPulse?: number;
   // Mirrors the app's .needs-attention green outline ring.
-  attention?: boolean;
+  // Boolean toggles it; a number (0..1) animates the ring's opacity.
+  attention?: boolean | number;
+};
+
+const ringColor = (attention: boolean | number) => {
+  const level = typeof attention === "number" ? Math.max(0, Math.min(1, attention)) : attention ? 1 : 0;
+  const alpha = level * 0.82;
+  return `rgba(0, 200, 83, ${alpha})`;
 };
 
 export type SidebarProject = {
@@ -116,7 +123,7 @@ export const Sidebar: React.FC<{
                   background: tab.active ? theme.bgActive : "transparent",
                   color: tab.active ? theme.textPrimary : theme.textSecondary,
                   boxShadow: tab.attention
-                    ? `inset 0 0 0 1px ${theme.green}d1`
+                    ? `inset 0 0 0 1px ${ringColor(tab.attention)}`
                     : undefined,
                 }}
               >
