@@ -8,6 +8,7 @@ interface DetailPanelProps {
   terminalId: string;
   onSplitHorizontal: () => void;
   onSplitVertical: () => void;
+  onCollapse?: () => void;
   style?: React.CSSProperties;
 }
 
@@ -15,6 +16,7 @@ export function DetailPanel({
   terminalId,
   onSplitHorizontal,
   onSplitVertical,
+  onCollapse,
   style,
 }: DetailPanelProps) {
   const session = useTerminalStore((s) => s.sessions[terminalId]);
@@ -51,6 +53,13 @@ export function DetailPanel({
           />
         </div>
         <div className="detail-panel-actions">
+          {onCollapse && (
+            <button onClick={onCollapse} title="Collapse Notes Panel">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M9 3L5 7L9 11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            </button>
+          )}
           <button
             onClick={onSplitHorizontal}
             title={splitDisabledTitle ?? "Split Right (⌘D)"}

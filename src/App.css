@@ -738,7 +738,7 @@ body.sidebar-dragging * {
   color: var(--red);
 }
 
-.detail-panel-toggle {
+.detail-expand-btn {
   background: var(--bg-secondary);
   border: none;
   border-right: 1px solid var(--border-color);
@@ -752,7 +752,7 @@ body.sidebar-dragging * {
   transition: color 0.15s, background 0.15s;
 }
 
-.detail-panel-toggle:hover {
+.detail-expand-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
