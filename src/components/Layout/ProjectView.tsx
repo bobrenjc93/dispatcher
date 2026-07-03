@@ -129,9 +129,17 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
             terminalId={layoutId}
             onSplitHorizontal={() => onSplitPane(splitTarget, "horizontal")}
             onSplitVertical={() => onSplitPane(splitTarget, "vertical")}
-            onCollapse={() => setDetailPanelCollapsed(true)}
             style={{ width: detailWidth, minWidth: detailWidth }}
           />
+          <button
+            className="detail-panel-toggle"
+            onClick={() => setDetailPanelCollapsed(true)}
+            title="Collapse Notes Panel"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M9 3L5 7L9 11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
           <div
             className="detail-divider"
             onMouseDown={handleDividerMouseDown}
@@ -140,7 +148,7 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
       )}
       {detailCollapsed && (
         <button
-          className="detail-expand-btn"
+          className="detail-panel-toggle"
           onClick={() => setDetailPanelCollapsed(false)}
           title="Show Notes Panel"
         >
