@@ -1,6 +1,6 @@
 # Dispatcher Showcase Video
 
-A [Remotion](https://www.remotion.dev/) product showcase video for Dispatcher. It walks through the core features in ~44 seconds at 1920×1080 / 30fps:
+A [Remotion](https://www.remotion.dev/) product showcase video for Dispatcher. The rendered video is checked in as [`dispatcher-showcase.mp4`](./dispatcher-showcase.mp4). It walks through the core features in ~44 seconds at 1920×1080 / 30fps:
 
 1. **Intro** — logo and tagline
 2. **Projects** — project tree sidebar with tabs and per-tab notes
