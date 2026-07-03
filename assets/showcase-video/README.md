@@ -3,7 +3,7 @@
 A [Remotion](https://www.remotion.dev/) product showcase video for Dispatcher. The rendered video is checked in as [`dispatcher-showcase.mp4`](./dispatcher-showcase.mp4). It walks through the core features in ~44 seconds at 1920×1080 / 30fps:
 
 1. **Intro** — logo and tagline
-2. **Projects** — project tree sidebar with tabs and per-tab notes
+2. **Projects** — project tree sidebar; per-tab notes type out in the detail panel, then collapse away
 3. **Split panes** — animated horizontal + vertical splits
 4. **Focus** — a background tab finishes and gets the green attention outline
 5. **Remote** — SSH sessions appear as regular tabs and survive restarts

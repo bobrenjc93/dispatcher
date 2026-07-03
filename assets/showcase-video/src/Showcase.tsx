@@ -16,7 +16,7 @@ import { theme } from "./theme";
 // 30 fps. Scene lengths in frames.
 export const SCENES = [
   { component: Intro, duration: 150 }, // 5s
-  { component: Projects, duration: 210 }, // 7s
+  { component: Projects, duration: 280 }, // 9.3s — notes type out, then collapse
   { component: Splits, duration: 240 }, // 8s
   { component: StatusDots, duration: 300 }, // 10s
   { component: Tmux, duration: 270 }, // 9s
