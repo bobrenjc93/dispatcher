@@ -126,8 +126,8 @@ export const Splits: React.FC = () => {
               color: theme.textSecondary,
             }}
           >
-            Horizontal and vertical splits with resizable dividers. PTY pooling
-            keeps every new pane feeling instant.
+            See your tests, logs, and monitors side by side. Panes open
+            instantly and resize however you like.
           </div>
         </FadeIn>
         <FadeIn delay={SPLIT_AT + 10}>

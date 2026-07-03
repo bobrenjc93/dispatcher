@@ -5,8 +5,8 @@ A [Remotion](https://www.remotion.dev/) product showcase video for Dispatcher. T
 1. **Intro** — logo and tagline
 2. **Projects** — project tree sidebar with tabs and per-tab notes
 3. **Split panes** — animated horizontal + vertical splits
-4. **Status dots** — the green / pulsing / brown / gray state machine
-5. **tmux -CC** — SSH, attach in control mode, tmux windows become tabs
+4. **Focus** — a background tab finishes and gets the green attention outline
+5. **Remote** — SSH sessions appear as regular tabs and survive restarts
 6. **Outro** — platforms and repo link
 
 The mock app chrome (`src/components/AppWindow.tsx`) and color palette (`src/theme.ts`) mirror the real app's `src/App.css` so the video matches the product.

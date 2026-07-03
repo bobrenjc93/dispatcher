@@ -76,34 +76,18 @@ export const Intro: React.FC = () => {
             letterSpacing: -0.5,
           }}
         >
-          The desktop terminal multiplexer for people who run many things at once
+          All your terminals, organized in one window
         </div>
       </FadeIn>
       <FadeIn delay={80} duration={20}>
         <div
           style={{
             marginTop: 48,
-            display: "flex",
-            gap: 14,
-            fontFamily: fonts.mono,
-            fontSize: 20,
+            fontSize: 24,
             color: theme.textMuted,
           }}
         >
-          {["Tauri", "React", "xterm.js", "tmux -CC"].map((t) => (
-            <span
-              key={t}
-              style={{
-                border: `1px solid ${theme.border}`,
-                borderRadius: 8,
-                padding: "8px 18px",
-                background: theme.bgSurface,
-                color: theme.textSecondary,
-              }}
-            >
-              {t}
-            </span>
-          ))}
+          Stop hunting through windows. Start shipping.
         </div>
       </FadeIn>
     </AbsoluteFill>

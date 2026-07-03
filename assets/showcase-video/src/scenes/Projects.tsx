@@ -78,7 +78,7 @@ const SceneTitleBody: React.FC = () => (
       color: theme.textSecondary,
     }}
   >
-    Group shells by project in a drag-and-drop sidebar. Every tab keeps its own
-    notes, so context lives next to the terminal doing the work.
+    Group terminals by project and drag them wherever they belong. Every tab
+    keeps its own notes, so your context stays right next to your work.
   </div>
 );

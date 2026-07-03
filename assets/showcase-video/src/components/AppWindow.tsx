@@ -27,6 +27,8 @@ export type SidebarTab = {
   active?: boolean;
   dot?: string;
   dotPulse?: number;
+  // Mirrors the app's .needs-attention green outline ring.
+  attention?: boolean;
 };
 
 export type SidebarProject = {
@@ -113,6 +115,9 @@ export const Sidebar: React.FC<{
                   fontSize: 13,
                   background: tab.active ? theme.bgActive : "transparent",
                   color: tab.active ? theme.textPrimary : theme.textSecondary,
+                  boxShadow: tab.attention
+                    ? `inset 0 0 0 1px ${theme.green}d1`
+                    : undefined,
                 }}
               >
                 {tab.dot ? (

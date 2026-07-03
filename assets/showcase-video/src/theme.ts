@@ -12,8 +12,9 @@ export const theme = {
   border: "#222222",
   accent: "#ffffff",
   green: "#00c853",
-  brown: "#a1887f",
-  gray: "#555555",
+  // Real status-dot colors from src/components/common/StatusDot.tsx
+  brown: "#8b6b3f",
+  gray: "#7b8794",
   red: "#ff3333",
 };
 

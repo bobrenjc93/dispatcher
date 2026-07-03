@@ -14,9 +14,9 @@ export const Tmux: React.FC = () => {
   const attached = frame >= ATTACH_AT;
 
   const tmuxTabs = [
-    { label: "tmux: build", dot: theme.green, active: true },
-    { label: "tmux: repl", dot: theme.green },
-    { label: "tmux: logs" },
+    { label: "build", dot: theme.green, active: true },
+    { label: "repl", dot: theme.green },
+    { label: "logs" },
   ];
 
   return (
@@ -30,7 +30,7 @@ export const Tmux: React.FC = () => {
       }}
     >
       <div style={{ width: 480, flexShrink: 0 }}>
-        <SceneTitle kicker="Remote" title="tmux -CC, bridged into native tabs" />
+        <SceneTitle kicker="Remote" title="Remote sessions feel local" />
         <FadeIn delay={25}>
           <div
             style={{
@@ -40,8 +40,8 @@ export const Tmux: React.FC = () => {
               color: theme.textSecondary,
             }}
           >
-            Run tmux in control mode — locally or over SSH — and tmux windows
-            become Dispatcher tabs, tmux panes become splits.
+            SSH into a server and your remote sessions show up as regular tabs —
+            same shortcuts, same sidebar, same splits.
           </div>
         </FadeIn>
         <FadeIn delay={ATTACH_AT + 15}>
@@ -53,9 +53,8 @@ export const Tmux: React.FC = () => {
               color: theme.textSecondary,
             }}
           >
-            ⌘T now creates tmux windows. If Dispatcher restarts, saved tmux tabs
-            come back as placeholders — <span style={{ fontFamily: "monospace", color: theme.textPrimary }}>tmux -CC a</span>{" "}
-            rehydrates them in place.
+            And they survive restarts: your remote tabs come back with their
+            names and notes intact, ready to reconnect.
           </div>
         </FadeIn>
       </div>
@@ -77,11 +76,11 @@ export const Tmux: React.FC = () => {
           }
         >
           <TerminalPane
-            title={attached ? "tmux: build — prod-server" : "ssh shell — prod-server"}
+            title={attached ? "build — prod-server" : "ssh shell — prod-server"}
             lines={
               attached
                 ? [
-                    { text: "[tmux -CC attached — 3 windows mapped to tabs]", color: theme.textMuted },
+                    { text: "[connected — 3 remote sessions opened as tabs]", color: theme.textMuted },
                     { text: "", at: ATTACH_AT + 5 },
                     {
                       text: prompt("app") + "make build",
