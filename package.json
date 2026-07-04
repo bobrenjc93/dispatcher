@@ -1,6 +1,6 @@
 {
   "name": "dispatcher",
-  "version": "0.3.125",
+  "version": "0.3.126",
   "private": true,
   "type": "module",
   "scripts": {
