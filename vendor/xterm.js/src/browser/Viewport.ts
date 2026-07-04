@@ -101,6 +101,15 @@ export class Viewport extends Disposable {
       this.queueSync();
     }));
     this._register(this._bufferService.onScroll(() => this._sync()));
+    this._register(this._renderService.onDimensionsChange(() => {
+      // Cell dimensions can change without a buffer resize (e.g. fontSize or
+      // letterSpacing option changes that keep cols/rows the same). Re-sync
+      // scroll dimensions and reposition to the current ydisp, otherwise the
+      // scrollable element keeps a scrollHeight computed from the old cell
+      // height and the viewport can no longer scroll to the bottom.
+      this._latestYDisp = undefined;
+      this.queueSync();
+    }));
 
     this._register(this._scrollableElement.onScroll(e => this._handleScroll(e)));
   }

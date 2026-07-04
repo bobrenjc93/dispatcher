@@ -35,6 +35,7 @@ import {
   getCurrentTmuxTransportOutputRouter,
   sendInputToTmuxTerminal,
   sendPasteToTmuxTerminal,
+  syncTmuxWindowSizeFromPaneTerminal,
   type TmuxPasteProgress,
 } from "../lib/tmuxControl";
 
@@ -1989,6 +1990,14 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
           if (shouldFitFrontendToViewport(backendKind)) {
             i.fitAddon.fit();
             return;
+          }
+          // tmux grids are sized by tmux, not fit(). A font change alters the
+          // cell size, so the same grid no longer fits the mount — ask tmux
+          // for a new client size or whole rows stay clipped below the fold.
+          if (backendKind === "tmux-pane" && !syncTmuxWindowSizeFromPaneTerminal(terminalId)) {
+            requestAnimationFrame(() => {
+              syncTmuxWindowSizeFromPaneTerminal(terminalId);
+            });
           }
           if (i.xterm.rows > 0) {
             i.xterm.refresh(0, i.xterm.rows - 1);
