@@ -1539,6 +1539,78 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("applies a raced initial capture after repeated races instead of leaving the pane blank", async () => {
+    const transportTerminalId = "transport-initial-race-livelock";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId, { captureInitialContent: false });
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.setState({ activeTerminalId: paneTerminalId });
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    await vi.runOnlyPendingTimersAsync();
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    // A busy pane keeps racing every capture attempt with fresh %output.
+    let commandId = 3;
+    for (let raceRound = 0; raceRound < 3; raceRound += 1) {
+      routeTmuxTransportOutput(transportTerminalId, `%output %1 stream ${raceRound}\n`);
+      completeTmuxCommandWithLines(transportTerminalId, commandId, [
+        `raced frame ${raceRound}`,
+      ]);
+      commandId += 1;
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+        paneTerminalId,
+        expect.stringContaining(`raced frame ${raceRound}`),
+        expect.anything()
+      );
+      writeTerminalMock.mockClear();
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(writeTerminalMock).toHaveBeenCalledWith(
+        transportTerminalId,
+        "capture-pane -p -e -C -t %1\n"
+      );
+    }
+
+    // Fourth attempt races too, but the retry budget is exhausted: the
+    // capture is applied anyway so the reattached pane shows a full frame.
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 stream final\n");
+    completeTmuxCommandWithLines(transportTerminalId, commandId, ["accepted frame"]);
+    commandId += 1;
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
+    );
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 stream during cursor\n");
+    completeTmuxCommandWithLines(transportTerminalId, commandId, ["4\t7"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("accepted frame"),
+      {
+        recordActivity: false,
+        allowParkedWrite: true,
+        replaceBufferedOutput: true,
+        clearScrollbackBeforeWrite: true,
+      }
+    );
+  });
+
   it("retries a focused full-history capture after live output races the first replay", async () => {
     const transportTerminalId = "transport-history-race-retry";
     seedTransportTerminal(transportTerminalId);

@@ -278,6 +278,7 @@ const TMUX_BOOTSTRAP_FALLBACK_DELAY_MS = 100;
 const TMUX_USER_PANE_RESIZE_LOCK_MS = 4_000;
 const TMUX_INITIAL_CAPTURE_BACKGROUND_DELAY_MS = 250;
 const TMUX_INITIAL_CAPTURE_RETRY_DELAY_MS = 50;
+const TMUX_INITIAL_CAPTURE_MAX_RACE_RETRIES = 3;
 const TMUX_PENDING_PANE_OUTPUT_MAX_CHUNKS = 512;
 const TMUX_PENDING_PANE_OUTPUT_MAX_CHARS = 2_000_000;
 const TMUX_CLIENT_RESIZE_LAYOUT_SUPPRESSION_MS = 1_000;
@@ -2746,6 +2747,10 @@ async function resolvePaneCursorForCapture(
   reason: string,
   options?: {
     outputRaceRepair?: "history" | "visible";
+    // Return the freshly queried cursor even when pane output raced the
+    // query instead of aborting the replay. Used by initial captures, where
+    // a best-effort replay beats leaving the pane blank on a busy stream.
+    acceptRacedCursor?: boolean;
   }
 ): Promise<{ cursorX: number; cursorY: number } | null> {
   ensurePaneHistoryCaptureState(pane);
@@ -2778,7 +2783,7 @@ async function resolvePaneCursorForCapture(
     return null;
   }
   ensurePaneHistoryCaptureState(currentPane);
-  if (currentPane.outputGeneration !== outputGeneration) {
+  if (currentPane.outputGeneration !== outputGeneration && !options?.acceptRacedCursor) {
     if (options?.outputRaceRepair === "visible") {
       currentPane.visibleRedrawRaceCount += 1;
     }
@@ -3099,7 +3104,17 @@ async function capturePaneFullContent(
       });
       return;
     }
-    if (currentPane.outputGeneration !== outputGeneration) {
+    const racedOutput = currentPane.outputGeneration !== outputGeneration;
+    // Initial captures on a continuously-streaming pane (e.g. a TUI mid-
+    // redraw right after `tmux -CC a`) can race with %output on every
+    // attempt. Discarding the capture each time livelocks: the reattached
+    // pane never gets its full frame and shows only the live deltas at the
+    // bottom of an otherwise blank screen. After a few retries, accept the
+    // slightly-stale frame and let a settled visible redraw reconcile it.
+    const acceptRacedCapture =
+      options.initial === true
+      && currentPane.historyRefreshRetryAttempts >= TMUX_INITIAL_CAPTURE_MAX_RACE_RETRIES;
+    if (racedOutput && !acceptRacedCapture) {
       if (options.initial) {
         currentPane.initialContentCaptured = false;
       }
@@ -3127,13 +3142,24 @@ async function capturePaneFullContent(
       }
       return;
     }
+    if (racedOutput) {
+      debugLog("tmux.capture", "apply raced initial pane content", {
+        sessionId: session.id,
+        paneId: pane.paneId,
+        terminalId: pane.terminalId,
+        reason: options.reason,
+        outputGeneration,
+        currentOutputGeneration: currentPane.outputGeneration,
+        retryAttempts: currentPane.historyRefreshRetryAttempts,
+      });
+    }
 
     const cursor = await resolvePaneCursorForCapture(
       session,
       currentPane,
       outputGeneration,
       options.reason,
-      { outputRaceRepair: "history" }
+      { outputRaceRepair: "history", acceptRacedCursor: acceptRacedCapture }
     );
     if (!cursor) {
       return;
@@ -3169,8 +3195,15 @@ async function capturePaneFullContent(
     if (!options.initial) {
       currentPane.lastHistoryRefreshAt = Date.now();
     }
-    currentPane.missedOutputSinceHistoryCapture = false;
-    resetPaneHistoryRefreshRetry(currentPane);
+    if (racedOutput) {
+      // The replayed frame predates output that raced the capture. Keep the
+      // pane marked stale and let a settled redraw repaint the raced rows.
+      currentPane.missedOutputSinceHistoryCapture = true;
+      schedulePaneVisibleRedraw(session, currentPane, `${options.reason}-raced-output-replay`);
+    } else {
+      currentPane.missedOutputSinceHistoryCapture = false;
+      resetPaneHistoryRefreshRetry(currentPane);
+    }
     debugLog(
       "tmux.capture",
       options.initial ? "initial pane content complete" : "pane history refresh complete",
