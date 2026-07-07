@@ -18,7 +18,16 @@ export function isLinkOpenModifierPressed(
 
 export function shouldSyncTmuxFocusOnMouseDown(
   event: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey">,
-  platform?: string
+  platform?: string,
+  options?: { isAlreadyActive?: boolean }
 ): boolean {
+  // Clicking an already-active tmux pane does not need a tmux focus sync. That
+  // sync can trigger an authoritative pane capture; if the user was starting a
+  // local text selection inside a full-screen app such as vim, a raced/stale
+  // capture can repaint the normal buffer over the alternate-screen UI.
+  if (options?.isAlreadyActive) {
+    return false;
+  }
+
   return event.button === 0 && !isLinkOpenModifierPressed(event, platform);
 }

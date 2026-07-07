@@ -307,12 +307,13 @@ export function TerminalPane({
       ref={resizeRef}
       onMouseDown={(event) => {
         setActiveTerminal(terminalId);
-        if (!shouldSyncTmuxFocusOnMouseDown(event.nativeEvent)) {
+        if (!shouldSyncTmuxFocusOnMouseDown(event.nativeEvent, undefined, { isAlreadyActive: isActive })) {
           debugLog("tmux.focus", "skip sync for mouse gesture", {
             terminalId,
             button: event.button,
             metaKey: event.metaKey,
             ctrlKey: event.ctrlKey,
+            isAlreadyActive: isActive,
           });
           return;
         }

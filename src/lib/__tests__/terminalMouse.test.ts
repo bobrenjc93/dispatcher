@@ -22,6 +22,14 @@ describe("terminalMouse", () => {
     expect(shouldSyncTmuxFocusOnMouseDown({ button: 0, metaKey: false, ctrlKey: false }, "MacIntel")).toBe(true);
   });
 
+  it("skips tmux focus sync for clicks inside the already-active pane", () => {
+    expect(shouldSyncTmuxFocusOnMouseDown(
+      { button: 0, metaKey: false, ctrlKey: false },
+      "MacIntel",
+      { isAlreadyActive: true }
+    )).toBe(false);
+  });
+
   it("does not sync tmux focus for non-primary clicks", () => {
     expect(shouldSyncTmuxFocusOnMouseDown({ button: 2, metaKey: false, ctrlKey: false }, "MacIntel")).toBe(false);
   });
