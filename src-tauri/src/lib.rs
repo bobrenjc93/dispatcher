@@ -94,7 +94,7 @@ pub fn run() {
         })
         .setup(move |app| {
             let _ = debug_log::init_debug_log();
-            watchdog_for_setup.start();
+            watchdog_for_setup.start(app.handle().clone());
             let window_labels = app
                 .webview_windows()
                 .keys()

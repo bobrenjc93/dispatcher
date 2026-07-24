@@ -119,6 +119,8 @@ interface TmuxPaneState {
   historyRefreshRetryAttempts: number;
   visibleRedrawTimer: number | null;
   visibleRedrawRaceCount: number;
+  backgroundViewportRefreshTimer: number | null;
+  backgroundViewportRefreshInFlight: boolean;
   // Wall-clock time of the last tmux %output chunk for this pane. Visible
   // replay repairs wait for a quiet period so they do not fight fast TUI
   // redraw loops that are still moving the cursor.
@@ -292,6 +294,8 @@ const TMUX_VISIBLE_REDRAW_SETTLE_MS = 180;
 const TMUX_VISIBLE_REDRAW_RETRY_MS = 300;
 const TMUX_VISIBLE_REDRAW_QUIET_MS = 1_200;
 const TMUX_VISIBLE_REDRAW_RETRY_MAX_MS = 3_000;
+const TMUX_BACKGROUND_VIEWPORT_REFRESH_DEBOUNCE_MS = 350;
+const TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS = 1_000;
 const TMUX_LAYOUT_REDRAW_BARRIER_MS = 1_500;
 const TMUX_LAYOUT_REDRAW_SUPPRESSION_SUMMARY_INTERVAL_MS = 1_000;
 const TMUX_PASTE_BUFFER_CHUNK_SIZE = 8_000;
@@ -331,6 +335,8 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.historyRefreshRetryAttempts ??= 0;
   pane.visibleRedrawTimer ??= null;
   pane.visibleRedrawRaceCount ??= 0;
+  pane.backgroundViewportRefreshTimer ??= null;
+  pane.backgroundViewportRefreshInFlight ??= false;
   pane.lastTmuxOutputAt ??= 0;
   pane.layoutRedrawBarrierUntil ??= 0;
   pane.layoutRedrawBarrierReason ??= null;
@@ -857,6 +863,8 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       historyRefreshRetryAttempts: 0,
       visibleRedrawTimer: null,
       visibleRedrawRaceCount: 0,
+      backgroundViewportRefreshTimer: null,
+      backgroundViewportRefreshInFlight: false,
       lastTmuxOutputAt: 0,
       layoutRedrawBarrierUntil: 0,
       layoutRedrawBarrierReason: null,
@@ -1864,6 +1872,8 @@ function upsertWindowProjection(
         historyRefreshRetryAttempts: 0,
         visibleRedrawTimer: null,
         visibleRedrawRaceCount: 0,
+        backgroundViewportRefreshTimer: null,
+        backgroundViewportRefreshInFlight: false,
         lastTmuxOutputAt: 0,
         layoutRedrawBarrierUntil: 0,
         layoutRedrawBarrierReason: null,
@@ -2260,6 +2270,14 @@ function clearPaneVisibleRedraw(pane: TmuxPaneState) {
   }
 }
 
+function clearPaneBackgroundViewportRefresh(pane: TmuxPaneState) {
+  ensurePaneHistoryCaptureState(pane);
+  if (pane.backgroundViewportRefreshTimer !== null) {
+    window.clearTimeout(pane.backgroundViewportRefreshTimer);
+    pane.backgroundViewportRefreshTimer = null;
+  }
+}
+
 function getVisibleRedrawRetryDelayMs(pane: TmuxPaneState, requestedDelayMs: number): number {
   ensurePaneHistoryCaptureState(pane);
   if (pane.visibleRedrawRaceCount <= 0) {
@@ -2430,6 +2448,7 @@ function recordLayoutRedrawSuppressedOutput(
 function clearPaneRenderingTimers(pane: TmuxPaneState) {
   clearPaneHistoryRefreshRetry(pane);
   clearPaneVisibleRedraw(pane);
+  clearPaneBackgroundViewportRefresh(pane);
 }
 
 function markPaneUserInput(pane: TmuxPaneState, reason: string) {
@@ -2546,6 +2565,78 @@ function schedulePaneHistoryRefreshRetryAfterRace(
   ensurePaneHistoryCaptureState(pane);
   pane.historyRefreshRetryAttempts += 1;
   schedulePaneHistoryRefreshRetry(session, pane, reason);
+}
+
+function scheduleBackgroundPaneViewportRefresh(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  reason: string,
+  delayMs: number = TMUX_BACKGROUND_VIEWPORT_REFRESH_DEBOUNCE_MS
+) {
+  ensurePaneHistoryCaptureState(pane);
+  if (
+    !session.controlModeActive
+    || !pane.initialContentCaptured
+    || isPaneVisibleInActiveWindow(session, pane)
+  ) {
+    clearPaneBackgroundViewportRefresh(pane);
+    return;
+  }
+
+  if (pane.backgroundViewportRefreshTimer !== null) {
+    window.clearTimeout(pane.backgroundViewportRefreshTimer);
+    pane.backgroundViewportRefreshTimer = null;
+  }
+
+  const paneId = pane.paneId;
+  const terminalId = pane.terminalId;
+  pane.backgroundViewportRefreshTimer = window.setTimeout(() => {
+    const currentPane = session.panes.get(paneId);
+    if (!currentPane || currentPane.terminalId !== terminalId) {
+      return;
+    }
+
+    ensurePaneHistoryCaptureState(currentPane);
+    currentPane.backgroundViewportRefreshTimer = null;
+    if (
+      !session.controlModeActive
+      || !currentPane.initialContentCaptured
+      || isPaneVisibleInActiveWindow(session, currentPane)
+    ) {
+      return;
+    }
+
+    if (currentPane.historyCaptureInFlight || currentPane.backgroundViewportRefreshInFlight) {
+      scheduleBackgroundPaneViewportRefresh(
+        session,
+        currentPane,
+        `${reason}-busy`,
+        TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS
+      );
+      return;
+    }
+
+    debugLog("tmux.capture", "background pane viewport refresh", {
+      sessionId: session.id,
+      paneId,
+      terminalId,
+      reason,
+      outputGeneration: currentPane.outputGeneration,
+      alternateOn: currentPane.alternateOn,
+    });
+    currentPane.backgroundViewportRefreshInFlight = true;
+    void redrawVisiblePaneContent(session, currentPane, reason, {
+      allowParkedWrite: true,
+      backgroundRefresh: true,
+    }).finally(() => {
+      const latestPane = session.panes.get(paneId);
+      if (latestPane?.terminalId === terminalId) {
+        latestPane.backgroundViewportRefreshInFlight = false;
+      } else {
+        currentPane.backgroundViewportRefreshInFlight = false;
+      }
+    });
+  }, delayMs);
 }
 
 function isTmuxOutputLikelyToNeedAuthoritativeRedraw(output: string): boolean {
@@ -2746,7 +2837,7 @@ async function resolvePaneCursorForCapture(
   outputGeneration: number,
   reason: string,
   options?: {
-    outputRaceRepair?: "history" | "visible";
+    outputRaceRepair?: "history" | "visible" | "background";
     // Return the freshly queried cursor even when pane output raced the
     // query instead of aborting the replay. Used by initial captures, where
     // a best-effort replay beats leaving the pane blank on a busy stream.
@@ -2809,6 +2900,13 @@ async function resolvePaneCursorForCapture(
         currentPane,
         `${reason}-cursor-raced-output`,
         TMUX_VISIBLE_REDRAW_RETRY_MS
+      );
+    } else if (options?.outputRaceRepair === "background") {
+      scheduleBackgroundPaneViewportRefresh(
+        session,
+        currentPane,
+        `${reason}-cursor-raced-output`,
+        TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS
       );
     }
     return null;
@@ -3249,7 +3347,11 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
 async function redrawVisiblePaneContent(
   session: TmuxControlSession,
   pane: TmuxPaneState,
-  reason: string
+  reason: string,
+  options?: {
+    allowParkedWrite?: boolean;
+    backgroundRefresh?: boolean;
+  }
 ) {
   ensurePaneHistoryCaptureState(pane);
   const captureGeneration = pane.contentClearGeneration;
@@ -3257,7 +3359,7 @@ async function redrawVisiblePaneContent(
   const inputGeneration = pane.inputGeneration;
   const alternateGeneration = pane.alternateGeneration;
   const alternateOn = pane.alternateOn;
-  debugLog("tmux.capture", "visible pane redraw start", {
+  debugLog("tmux.capture", options?.backgroundRefresh ? "background pane viewport redraw start" : "visible pane redraw start", {
     sessionId: session.id,
     paneId: pane.paneId,
     terminalId: pane.terminalId,
@@ -3329,8 +3431,10 @@ async function redrawVisiblePaneContent(
     return;
   }
   if (currentPane.outputGeneration !== outputGeneration) {
-    currentPane.visibleRedrawRaceCount += 1;
-    debugLog("tmux.capture", "skip visible pane redraw after raced output", {
+    if (!options?.backgroundRefresh) {
+      currentPane.visibleRedrawRaceCount += 1;
+    }
+    debugLog("tmux.capture", options?.backgroundRefresh ? "skip background pane viewport redraw after raced output" : "skip visible pane redraw after raced output", {
       sessionId: session.id,
       paneId: pane.paneId,
       terminalId: pane.terminalId,
@@ -3339,7 +3443,14 @@ async function redrawVisiblePaneContent(
       currentOutputGeneration: currentPane.outputGeneration,
       visibleRedrawRaceCount: currentPane.visibleRedrawRaceCount,
     });
-    if (shouldRetryVisibleRedraw(reason)) {
+    if (options?.backgroundRefresh) {
+      scheduleBackgroundPaneViewportRefresh(
+        session,
+        currentPane,
+        `${reason}-raced-output`,
+        TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS
+      );
+    } else if (shouldRetryVisibleRedraw(reason)) {
       schedulePaneVisibleRedraw(
         session,
         currentPane,
@@ -3355,7 +3466,7 @@ async function redrawVisiblePaneContent(
     currentPane,
     outputGeneration,
     reason,
-    { outputRaceRepair: "visible" }
+    { outputRaceRepair: options?.backgroundRefresh ? "background" : "visible" }
   );
   if (!cursor) {
     return;
@@ -3399,7 +3510,11 @@ async function redrawVisiblePaneContent(
       cursorY: cursor.cursorY,
       clearScrollback: false,
     }),
-    { recordActivity: false, replaceBufferedOutput: true }
+    {
+      recordActivity: false,
+      allowParkedWrite: options?.allowParkedWrite,
+      replaceBufferedOutput: true,
+    }
   );
   if (queued) {
     currentPane.displayedAlternateOn = currentPane.alternateOn;
@@ -3407,7 +3522,7 @@ async function redrawVisiblePaneContent(
     clearPaneVisibleRedraw(currentPane);
     clearPaneLayoutRedrawBarrier(session, currentPane, reason);
   }
-  debugLog("tmux.capture", "visible pane redraw complete", {
+  debugLog("tmux.capture", options?.backgroundRefresh ? "background pane viewport redraw complete" : "visible pane redraw complete", {
     sessionId: session.id,
     paneId: pane.paneId,
     terminalId: pane.terminalId,
@@ -3449,6 +3564,52 @@ async function refreshPaneContentForDisplay(
   }
 
   await redrawVisiblePaneContent(session, pane, reason);
+}
+
+async function refreshPaneContentForFocus(
+  session: TmuxControlSession,
+  pane: TmuxPaneState
+) {
+  ensurePaneHistoryCaptureState(pane);
+  clearPaneBackgroundViewportRefresh(pane);
+  if (pane.historyCaptureInFlight) {
+    debugLog("tmux.capture", "skip focus refresh during history capture", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+    });
+    return;
+  }
+
+  const staleReason = getPaneHistoryStaleReason(pane);
+  if (!staleReason) {
+    await redrawVisiblePaneContent(session, pane, "focus");
+    return;
+  }
+
+  const now = Date.now();
+  if (!canRefreshPaneHistoryForDisplay(pane, "focus", staleReason, now)) {
+    logDeferredPaneHistoryRefresh(session, pane, "focus", staleReason, now);
+    await redrawVisiblePaneContent(session, pane, "focus");
+    return;
+  }
+
+  // Focus has two different jobs: make the current viewport correct now, and
+  // make old scrollback complete eventually. Over SSH, a full-history capture
+  // can be large enough to make tab switching feel synchronous. Paint the
+  // viewport first, then let the existing history retry path repair scrollback
+  // shortly after focus has returned.
+  debugLog("tmux.capture", "focus viewport first, defer history refresh", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    staleReason,
+    historySize: pane.historySize,
+    lastHistoryCaptureSize: pane.lastHistoryCaptureSize,
+    missedOutputSinceHistoryCapture: pane.missedOutputSinceHistoryCapture,
+  });
+  await redrawVisiblePaneContent(session, pane, "focus-viewport");
+  schedulePaneHistoryRefreshRetry(session, pane, "focus-history-after-viewport");
 }
 
 async function refreshSingleWindow(session: TmuxControlSession, windowId: string) {
@@ -3958,6 +4119,9 @@ function handleNotification(session: TmuxControlSession, line: string) {
     const paneWasVisible = isPaneVisibleInActiveWindow(session, pane);
     updatePaneAlternateScreenFromOutput(session, pane, output);
     markPaneOutputMissedByHistoryCapture(session, pane, parsed.value.length);
+    if (!paneWasVisible && pane.initialContentCaptured) {
+      scheduleBackgroundPaneViewportRefresh(session, pane, "hidden-output");
+    }
     let queued: boolean;
     const suppressLiveOutput = paneWasVisible && shouldSuppressPaneOutputDuringLayoutRedraw(pane, now);
     if (suppressLiveOutput) {
@@ -4645,8 +4809,9 @@ export function handleTmuxTerminalFocus(terminalId: string) {
   });
   if (pane) {
     suppressPaneOutputActivity(session, pane.paneId, "focus-pane-sync");
+    clearPaneBackgroundViewportRefresh(pane);
     if (pane.initialContentCaptured) {
-      void refreshPaneContentForDisplay(session, pane, "focus").catch((error) => {
+      void refreshPaneContentForFocus(session, pane).catch((error) => {
         debugLogError("tmux.capture", "focus pane redraw failed", error);
       });
     } else {

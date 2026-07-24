@@ -18,6 +18,7 @@
   --border-color: #222222;
   --accent: #ffffff;
   --green: #00c853;
+  --active-tab-border: rgba(255, 255, 255, 0.62);
   --red: #ff3333;
   --sidebar-width: 240px;
   --header-height: 44px;
@@ -542,10 +543,17 @@ body.sidebar-dragging * {
 
 .sidebar-terminal-node.active {
   background: var(--bg-active);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--active-tab-border) 86%, transparent);
 }
 
 .sidebar-terminal-node.needs-attention {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 82%, transparent);
+}
+
+.sidebar-terminal-node.active.needs-attention {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--active-tab-border) 86%, transparent),
+    inset 0 0 0 2px color-mix(in srgb, var(--green) 72%, transparent);
 }
 
 .terminal-node-title {
