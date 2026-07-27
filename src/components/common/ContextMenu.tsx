@@ -6,6 +6,7 @@ export interface ContextMenuItem {
   shortcut?: string;
   onClick: () => void;
   danger?: boolean;
+  checked?: boolean;
 }
 
 interface ContextMenuProps {
@@ -53,11 +54,14 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
       ref={ref}
       className="context-menu"
       style={{ left: x, top: y }}
+      role="menu"
     >
       {items.map((item, i) => (
         <button
           key={i}
           className={`context-menu-item ${item.danger ? "context-menu-danger" : ""}`}
+          role={item.checked === undefined ? "menuitem" : "menuitemcheckbox"}
+          aria-checked={item.checked}
           onClick={() => {
             item.onClick();
             onClose();
@@ -66,6 +70,15 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
           {item.icon && <span className="context-menu-icon">{item.icon}</span>}
           <span className="context-menu-label">{item.label}</span>
           {item.shortcut && <span className="context-menu-shortcut">{item.shortcut}</span>}
+          {item.checked !== undefined && (
+            <span className="context-menu-check" aria-hidden="true">
+              {item.checked && (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M2.5 7.25L5.5 10L11.5 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </span>
+          )}
         </button>
       ))}
     </div>

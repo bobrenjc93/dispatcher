@@ -1198,6 +1198,16 @@ body.sidebar-dragging * {
   flex-shrink: 0;
 }
 
+.context-menu-check {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--green);
+}
+
 .context-menu-danger .context-menu-icon {
   color: inherit;
 }

@@ -19,6 +19,11 @@ import {
 } from "../lib/terminalScreenshotHash";
 import { resolveTerminalScreenshotStatus } from "../lib/terminalScreenshotStatus";
 import { debugLog, previewDebugText } from "../lib/debugLog";
+import {
+  notifyTerminalInaction,
+  prepareInactionNotificationSound,
+  shouldNotifyOnInaction,
+} from "../lib/inactionNotification";
 import { pushStatusDebug } from "../lib/statusDebug";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
 import {
@@ -475,6 +480,8 @@ export function useTerminalScreenshotMonitor() {
     const acknowledgedAt = new Map<string, number>();
     const focusVisualSuppressions = new Map<string, FocusVisualSuppression>();
     const lastArtifactAt = new Map<string, number>();
+    const notificationEnabledByTab = new Map<string, boolean>();
+    const lastNotifiedChangedAt = new Map<string, number>();
     const scheduledSamples = new Set<number>();
     let lastGlobalArtifactAt = 0;
     let visualSampleCursor = 0;
@@ -491,6 +498,55 @@ export function useTerminalScreenshotMonitor() {
       acknowledgedAt.delete(tabRootTerminalId);
       focusVisualSuppressions.delete(tabRootTerminalId);
       lastArtifactAt.delete(tabRootTerminalId);
+      notificationEnabledByTab.delete(tabRootTerminalId);
+      lastNotifiedChangedAt.delete(tabRootTerminalId);
+    };
+
+    const maybeNotifyForInaction = (args: {
+      tabRootTerminalId: string;
+      title: string;
+      enabled: boolean;
+      hasDetectedActivity: boolean;
+      now: number;
+      staleStartedAt: number;
+      effectiveChangedAt: number;
+    }) => {
+      const wasEnabled = notificationEnabledByTab.get(args.tabRootTerminalId) === true;
+      notificationEnabledByTab.set(args.tabRootTerminalId, args.enabled);
+
+      if (!args.enabled) {
+        lastNotifiedChangedAt.delete(args.tabRootTerminalId);
+        return;
+      }
+
+      const notifiedChangedAt = lastNotifiedChangedAt.get(args.tabRootTerminalId) ?? 0;
+      if (!wasEnabled) {
+        // Enabling notifications arms the current output generation instead of
+        // immediately alerting for a tab that was already idle.
+        lastNotifiedChangedAt.set(args.tabRootTerminalId, args.effectiveChangedAt);
+        return;
+      }
+
+      if (!shouldNotifyOnInaction({
+        enabled: args.enabled,
+        wasEnabled,
+        hasDetectedActivity: args.hasDetectedActivity,
+        now: args.now,
+        staleStartedAt: args.staleStartedAt,
+        effectiveChangedAt: args.effectiveChangedAt,
+        lastNotifiedChangedAt: notifiedChangedAt,
+      })) {
+        return;
+      }
+
+      lastNotifiedChangedAt.set(args.tabRootTerminalId, args.effectiveChangedAt);
+      debugLog("status.notification", "terminal became inactive", {
+        tabRootTerminalId: args.tabRootTerminalId,
+        title: args.title,
+        effectiveChangedAt: args.effectiveChangedAt,
+        staleStartedAt: args.staleStartedAt,
+      });
+      void notifyTerminalInaction();
     };
 
     const applyTimestampStatus = (args: {
@@ -583,6 +639,16 @@ export function useTerminalScreenshotMonitor() {
         wasLongInactive: latestSessions.some((session) => session.isLongInactive),
         inactivityMs: SCREENSHOT_INACTIVITY_MS,
         longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
+      });
+      const tabRootSession = latestStore.sessions[args.tabRootTerminalId];
+      maybeNotifyForInaction({
+        tabRootTerminalId: args.tabRootTerminalId,
+        title: tabRootSession?.title ?? "Terminal",
+        enabled: tabRootSession?.notifyOnInaction ?? false,
+        hasDetectedActivity,
+        now: args.now,
+        staleStartedAt,
+        effectiveChangedAt,
       });
       const statusDotSemantic = getStatusDotSemantic({
         hasDetectedActivity,
@@ -955,6 +1021,16 @@ export function useTerminalScreenshotMonitor() {
             inactivityMs: SCREENSHOT_INACTIVITY_MS,
             longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
           });
+          const tabRootSession = latestStore.sessions[tabRootTerminalId];
+          maybeNotifyForInaction({
+            tabRootTerminalId,
+            title: tabRootSession?.title ?? "Terminal",
+            enabled: tabRootSession?.notifyOnInaction ?? false,
+            hasDetectedActivity,
+            now,
+            staleStartedAt,
+            effectiveChangedAt,
+          });
           const statusDotSemantic = getStatusDotSemantic({
             hasDetectedActivity,
             nextNeedsAttention,
@@ -1227,6 +1303,19 @@ export function useTerminalScreenshotMonitor() {
       }
     };
     window.addEventListener("resize", markWindowResizeSuppression);
+    const prepareEnabledNotificationSound = () => {
+      const hasEnabledNotification = Object.values(
+        useTerminalStore.getState().sessions
+      ).some((session) => session.notifyOnInaction);
+      if (!hasEnabledNotification) {
+        return;
+      }
+      prepareInactionNotificationSound();
+      window.removeEventListener("pointerdown", prepareEnabledNotificationSound);
+      window.removeEventListener("keydown", prepareEnabledNotificationSound);
+    };
+    window.addEventListener("pointerdown", prepareEnabledNotificationSound);
+    window.addEventListener("keydown", prepareEnabledNotificationSound);
     acknowledgeTab(
       getActiveTabRootTerminalId(),
       new Set(Object.keys(useTerminalStore.getState().sessions)),
@@ -1268,6 +1357,8 @@ export function useTerminalScreenshotMonitor() {
       unsubscribeSessions();
       unsubscribeActiveTerminal();
       window.removeEventListener("resize", markWindowResizeSuppression);
+      window.removeEventListener("pointerdown", prepareEnabledNotificationSound);
+      window.removeEventListener("keydown", prepareEnabledNotificationSound);
       window.clearInterval(intervalId);
       for (const timeoutId of scheduledSamples) {
         window.clearTimeout(timeoutId);

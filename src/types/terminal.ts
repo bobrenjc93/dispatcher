@@ -16,6 +16,8 @@ export interface TerminalSession {
   isPossiblyDone: boolean;
   isLongInactive: boolean;
   isRecentlyFocused: boolean;
+  isPinnedGreen?: boolean;
+  notifyOnInaction?: boolean;
   backendKind: TerminalBackendKind;
   restoredFromBackendKind?: TerminalBackendKind;
   tmuxControlSessionId?: string;

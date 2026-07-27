@@ -6,6 +6,7 @@ import { useProjectStore } from "../../stores/useProjectStore";
 import { shouldIgnoreDragStartTarget, startDrag } from "../../lib/dragState";
 import { focusTerminalInstance } from "../../hooks/useTerminalBridge";
 import { renameTmuxTerminal } from "../../lib/tmuxControl";
+import { prepareInactionNotificationSound } from "../../lib/inactionNotification";
 
 interface TerminalNodeProps {
   terminalId: string;
@@ -20,6 +21,7 @@ interface TerminalNodeProps {
 export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isActive, onClick, onDelete }: TerminalNodeProps) {
   const session = useTerminalStore((s) => s.sessions[terminalId]);
   const updateTitle = useTerminalStore((s) => s.updateTitle);
+  const patchSession = useTerminalStore((s) => s.patchSession);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -83,7 +85,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
   const nodeClassName = [
     "sidebar-terminal-node",
     isActive ? "active" : "",
-    session.isNeedsAttention ? "needs-attention" : "",
+    session.isNeedsAttention || session.isPinnedGreen ? "needs-attention" : "",
   ].filter(Boolean).join(" ");
 
   return (
@@ -145,6 +147,34 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
           y={menu.y}
           onClose={() => setMenu(null)}
           items={[
+            {
+              label: "Pin Green",
+              icon: (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5 2.25H9L8.5 5L10.75 7.25V8.25H3.25V7.25L5.5 5L5 2.25ZM7 8.25V12" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ),
+              checked: session.isPinnedGreen ?? false,
+              onClick: () => patchSession(terminalId, {
+                isPinnedGreen: !(session.isPinnedGreen ?? false),
+              }),
+            },
+            {
+              label: "Notify on Inaction",
+              icon: (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M3.25 9.75H10.75L9.75 8.25V6A2.75 2.75 0 0 0 4.25 6V8.25L3.25 9.75ZM5.75 11.25C5.95 11.65 6.35 11.9 7 11.9C7.65 11.9 8.05 11.65 8.25 11.25" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ),
+              checked: session.notifyOnInaction ?? false,
+              onClick: () => {
+                const enabled = !(session.notifyOnInaction ?? false);
+                if (enabled) {
+                  prepareInactionNotificationSound();
+                }
+                patchSession(terminalId, { notifyOnInaction: enabled });
+              },
+            },
             {
               label: "Move to Top",
               icon: (
