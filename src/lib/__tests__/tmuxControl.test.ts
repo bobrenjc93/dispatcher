@@ -2167,6 +2167,61 @@ describe("tmuxControl", () => {
     await Promise.resolve();
   });
 
+  it("does not demote the active initial capture when a refresh rediscovers it", async () => {
+    const transportTerminalId = "transport-active-capture-refresh";
+    seedTransportTerminal(transportTerminalId);
+
+    routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.runOnlyPendingTimersAsync();
+
+    // This notification queues a window refresh before hydration has finished.
+    // The resulting upsert rediscovers the active pane as a non-priority pane,
+    // which previously moved it behind the background pane in the queue.
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @2\n");
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 1 0",
+        "@1\tone\t0\t-",
+        "@2\ttwo\t1\t*",
+        "%end 1 0",
+        "%begin 2 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/tmp/one\t0\t0\t0\t5",
+        "@2\t%2\t0\t0\t80\t24\t1\t/tmp/two\t0\t0\t0\t9",
+        "%end 2 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 3 0",
+        "@2\ttwo\t1\t*",
+        "%end 3 0",
+        "%begin 4 0",
+        "@2\t%2\t0\t0\t80\t24\t1\t/tmp/two\t0\t0\t0\t9",
+        "%end 4 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    writeTerminalMock.mockClear();
+
+    await vi.runOnlyPendingTimersAsync();
+    expect(writeTerminalMock).toHaveBeenLastCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -S -9 -t %2\n"
+    );
+  });
+
   it("syncs tmux window size when a pane viewport resizes", async () => {
     const transportTerminalId = "transport-pane-resize";
     seedTransportTerminal(transportTerminalId);
@@ -2905,6 +2960,31 @@ describe("tmuxControl", () => {
     });
   });
 
+  it("does not send bootstrap commands after tmux exits during a failed attach", async () => {
+    const transportTerminalId = "transport-failed-attach";
+    seedTransportTerminal(transportTerminalId);
+
+    routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 1 0",
+        "no sessions",
+        "%error 1 0",
+        "%exit",
+        TMUX_CONTROL_END,
+      ].join("\n")
+    );
+    await vi.runOnlyPendingTimersAsync();
+    await Promise.resolve();
+
+    expect(writeTerminalMock).not.toHaveBeenCalled();
+    expect(useTerminalStore.getState().sessions[transportTerminalId]).toMatchObject({
+      backendKind: "local",
+      tmuxControlSessionId: undefined,
+    });
+  });
+
   it("keeps existing tmux windows when a full refresh response is not a snapshot", async () => {
     const transportTerminalId = "transport-bad-refresh";
     seedTransportTerminal(transportTerminalId);
@@ -3039,6 +3119,101 @@ describe("tmuxControl", () => {
       "local-node",
       newWindowNodeId,
     ]);
+  });
+
+  it("preserves a historical tab when another tmux server recycles its window id", async () => {
+    const transportTerminalId = "transport-recycled-window-id";
+    seedTransportTerminal(transportTerminalId);
+
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        historical: makeTerminalSession("historical", {
+          title: "historical task",
+          notes: "keep me",
+          backendKind: "tmux-window",
+          tmuxWindowId: "@0",
+        }),
+        "historical-pane": makeTerminalSession("historical-pane", {
+          title: "historical task",
+          backendKind: "tmux-pane",
+          tmuxWindowId: "@0",
+          tmuxPaneId: "%0",
+        }),
+      },
+    }));
+    useProjectStore.setState((state) => ({
+      nodes: {
+        ...state.nodes,
+        root: {
+          ...state.nodes.root,
+          children: ["transport-node", "historical-node"],
+        },
+        "historical-node": {
+          id: "historical-node",
+          type: "terminal",
+          name: "historical task",
+          terminalId: "historical",
+          parentId: "root",
+        },
+      },
+    }));
+    useLayoutStore.setState((state) => ({
+      layouts: {
+        ...state.layouts,
+        historical: {
+          type: "terminal",
+          id: "layout-historical",
+          terminalId: "historical-pane",
+        },
+      },
+    }));
+
+    routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 1 0",
+        "@0\tbash\t1\t*\tnew-host\t/tmp/tmux/default\t$0\t1234",
+        "%end 1 0",
+        "%begin 2 0",
+        "@0\t%0\t0\t0\t80\t24\t1\t/tmp/new\t0\t0\t0\t0",
+        "%end 2 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const sessions = useTerminalStore.getState().sessions;
+    expect(sessions.historical).toMatchObject({
+      title: "historical task",
+      notes: "keep me",
+      backendKind: "tmux-window",
+      tmuxWindowId: "@0",
+    });
+    expect(sessions.historical.tmuxControlSessionId).toBeUndefined();
+    expect(useLayoutStore.getState().layouts.historical).toBeDefined();
+    expect(useProjectStore.getState().nodes["historical-node"]).toBeDefined();
+
+    const liveWindow = Object.values(sessions).find((session) =>
+      session.backendKind === "tmux-window"
+      && session.tmuxControlSessionId === transportTerminalId
+    );
+    expect(liveWindow).toMatchObject({
+      title: "bash",
+      tmuxWindowId: "@0",
+      tmuxConnectionKey: JSON.stringify([
+        "new-host",
+        "/tmp/tmux/default",
+        "$0",
+        "1234",
+      ]),
+    });
   });
 
   it("still removes the Dispatcher tab when tmux reports that the window closed", async () => {

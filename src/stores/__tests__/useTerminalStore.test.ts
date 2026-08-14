@@ -205,6 +205,7 @@ describe("useTerminalStore", () => {
             isRecentlyFocused: false,
             backendKind: "tmux-window",
             tmuxControlSessionId: "transport",
+            tmuxConnectionKey: "server-session-key",
             tmuxWindowId: "@1",
           },
           pane: {
@@ -220,6 +221,7 @@ describe("useTerminalStore", () => {
             isRecentlyFocused: false,
             backendKind: "tmux-pane",
             tmuxControlSessionId: "transport",
+            tmuxConnectionKey: "server-session-key",
             tmuxWindowId: "@1",
             tmuxPaneId: "%1",
           },
@@ -233,11 +235,13 @@ describe("useTerminalStore", () => {
       expect(result.sessions.window.backendKind).toBe("tmux-window");
       expect(result.sessions.window.restoredFromBackendKind).toBe("tmux-window");
       expect(result.sessions.window.tmuxControlSessionId).toBeUndefined();
+      expect(result.sessions.window.tmuxConnectionKey).toBe("server-session-key");
       expect(result.sessions.window.tmuxWindowId).toBe("@1");
       expect(result.sessions.pane).toBeDefined();
       expect(result.sessions.pane.backendKind).toBe("tmux-pane");
       expect(result.sessions.pane.restoredFromBackendKind).toBe("tmux-pane");
       expect(result.sessions.pane.tmuxControlSessionId).toBeUndefined();
+      expect(result.sessions.pane.tmuxConnectionKey).toBe("server-session-key");
       expect(result.sessions.pane.tmuxWindowId).toBe("@1");
       expect(result.sessions.pane.tmuxPaneId).toBe("%1");
       expect(result.activeTerminalId).toBe("pane");

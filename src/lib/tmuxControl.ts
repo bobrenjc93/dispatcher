@@ -78,6 +78,7 @@ interface TmuxWindowState {
   nodeId: string;
   title: string;
   flags: string;
+  connectionKey?: string;
   activePaneId: string | null;
 }
 
@@ -811,6 +812,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       nodeId,
       title: session.title,
       flags: "",
+      connectionKey: session.tmuxConnectionKey,
       activePaneId: null,
     });
     windowTerminalToSessionId.set(session.id, sessionId);
@@ -1245,9 +1247,9 @@ function isTmuxWindowUserPaneResizeLocked(
 
 function findDisconnectedWindowPlaceholder(
   session: TmuxControlSession,
-  windowId: string,
-  title?: string
+  snapshot: TmuxWindowSnapshot
 ): DisconnectedTmuxWindowPlaceholderRef | null {
+  const { windowId, title, connectionKey } = snapshot;
   const projectState = useProjectStore.getState();
   const terminalState = useTerminalStore.getState();
   const allCandidates = Object.entries(terminalState.sessions)
@@ -1270,6 +1272,7 @@ function findDisconnectedWindowPlaceholder(
       sessionId: session.id,
       windowId,
       title: title ?? null,
+      connectionKey: connectionKey ?? null,
       sessionParentNodeId: session.parentNodeId,
       sessionProjectId: session.projectId,
       candidates: allCandidates,
@@ -1285,6 +1288,7 @@ function findDisconnectedWindowPlaceholder(
       parentNodeId: session.parentNodeId,
       projectId: session.projectId,
       title,
+      connectionKey,
     }
   );
   if (!placeholder) {
@@ -1319,7 +1323,8 @@ function findDisconnectedWindowPlaceholder(
 
 function getDisconnectedPanePlaceholders(
   windowTerminalId: string,
-  windowId: string
+  windowId: string,
+  connectionKey?: string
 ): Map<string, string> {
   const layouts = useLayoutStore.getState().layouts;
   const layout = layouts[windowTerminalId];
@@ -1335,6 +1340,11 @@ function getDisconnectedPanePlaceholders(
       && !terminal.tmuxControlSessionId
       && terminal.tmuxWindowId === windowId
       && terminal.tmuxPaneId
+      && (
+        !connectionKey
+        || !terminal.tmuxConnectionKey
+        || terminal.tmuxConnectionKey === connectionKey
+      )
     ) {
       placeholders.set(terminal.tmuxPaneId, terminalId);
     }
@@ -1673,64 +1683,6 @@ function detachControlSessionProjections(session: TmuxControlSession, reason: st
   session.pendingPaneOutput.clear();
 }
 
-function removeOrphanedTmuxWindowPlaceholders(session: TmuxControlSession, windowId: string) {
-  const terminalState = useTerminalStore.getState();
-  const projectState = useProjectStore.getState();
-  const orphanTerminalIds: string[] = [];
-
-  for (const [terminalId, terminalSession] of Object.entries(terminalState.sessions)) {
-    if (
-      terminalSession.tmuxControlSessionId
-      || terminalSession.tmuxWindowId !== windowId
-    ) {
-      continue;
-    }
-    if (
-      terminalSession.backendKind !== "tmux-window"
-      && terminalSession.backendKind !== "tmux-pane"
-    ) {
-      continue;
-    }
-    orphanTerminalIds.push(terminalId);
-  }
-
-  if (orphanTerminalIds.length === 0) {
-    return;
-  }
-
-  const orphanSet = new Set(orphanTerminalIds);
-  const orphanNodeIds: string[] = [];
-
-  for (const [nodeId, node] of Object.entries(projectState.nodes)) {
-    if (node.type === "terminal" && node.terminalId && orphanSet.has(node.terminalId)) {
-      orphanNodeIds.push(nodeId);
-    }
-  }
-
-  debugLog("tmux.session", "remove orphaned window placeholders", {
-    sessionId: session.id,
-    windowId,
-    orphanTerminalIds,
-    orphanNodeIds,
-  });
-
-  for (const nodeId of orphanNodeIds) {
-    for (const [parentId, parentNode] of Object.entries(useProjectStore.getState().nodes)) {
-      if (parentNode.children?.includes(nodeId)) {
-        removeWindowNodeFromParent(parentId, nodeId);
-      }
-    }
-    useProjectStore.getState().removeNode(nodeId);
-  }
-
-  for (const terminalId of orphanTerminalIds) {
-    useLayoutStore.getState().removeLayout(terminalId);
-    disposeTerminalInstance(terminalId);
-    useTerminalStore.getState().removeSession(terminalId);
-    paneTerminalToSessionId.delete(terminalId);
-  }
-}
-
 function upsertWindowProjection(
   session: TmuxControlSession,
   snapshot: TmuxWindowSnapshot,
@@ -1751,12 +1703,9 @@ function upsertWindowProjection(
 
   let windowState = session.windows.get(snapshot.windowId);
   const disconnectedWindowPlaceholder = !windowState
-    ? findDisconnectedWindowPlaceholder(session, snapshot.windowId, snapshot.title)
+    ? findDisconnectedWindowPlaceholder(session, snapshot)
     : null;
   if (!windowState) {
-    if (!disconnectedWindowPlaceholder) {
-      removeOrphanedTmuxWindowPlaceholders(session, snapshot.windowId);
-    }
     const terminalId = disconnectedWindowPlaceholder?.terminalId ?? generateId();
     const nodeId = disconnectedWindowPlaceholder?.nodeId ?? generateId();
     windowState = {
@@ -1765,6 +1714,7 @@ function upsertWindowProjection(
       nodeId,
       title: snapshot.title,
       flags: snapshot.flags,
+      connectionKey: snapshot.connectionKey,
       activePaneId: null,
     };
     session.windows.set(snapshot.windowId, windowState);
@@ -1793,6 +1743,7 @@ function upsertWindowProjection(
         isRecentlyFocused: false,
         backendKind: "tmux-window",
         tmuxControlSessionId: session.id,
+        tmuxConnectionKey: snapshot.connectionKey,
         tmuxWindowId: snapshot.windowId,
       });
 
@@ -1810,6 +1761,7 @@ function upsertWindowProjection(
     title: snapshot.title,
     backendKind: "tmux-window",
     tmuxControlSessionId: session.id,
+    tmuxConnectionKey: snapshot.connectionKey,
     tmuxWindowId: snapshot.windowId,
   });
 
@@ -1820,6 +1772,7 @@ function upsertWindowProjection(
 
   windowState.title = snapshot.title;
   windowState.flags = snapshot.flags;
+  windowState.connectionKey = snapshot.connectionKey;
 
   const previousLayoutTerminalIds = (() => {
     const currentLayout = useLayoutStore.getState().layouts[windowState.terminalId];
@@ -1827,7 +1780,8 @@ function upsertWindowProjection(
   })();
   const disconnectedPanePlaceholders = getDisconnectedPanePlaceholders(
     windowState.terminalId,
-    snapshot.windowId
+    snapshot.windowId,
+    snapshot.connectionKey
   );
   const paneIds = new Set(panes.map((pane) => pane.paneId));
   for (const pane of [...session.panes.values()]) {
@@ -1911,6 +1865,7 @@ function upsertWindowProjection(
           isRecentlyFocused: false,
           backendKind: "tmux-pane",
           tmuxControlSessionId: session.id,
+          tmuxConnectionKey: snapshot.connectionKey,
           tmuxWindowId: paneSnapshot.windowId,
           tmuxPaneId: paneSnapshot.paneId,
         });
@@ -1978,6 +1933,7 @@ function upsertWindowProjection(
       cwd: paneSnapshot.cwd,
       backendKind: "tmux-pane",
       tmuxControlSessionId: session.id,
+      tmuxConnectionKey: snapshot.connectionKey,
       tmuxWindowId: paneSnapshot.windowId,
       tmuxPaneId: paneSnapshot.paneId,
     });
@@ -2727,6 +2683,18 @@ function schedulePaneVisibleRedraw(
 }
 
 async function sendCommand(session: TmuxControlSession, command: string): Promise<string[]> {
+  if (
+    !session.controlModeActive
+    || controlSessions.get(session.id) !== session
+  ) {
+    debugLog("tmux.command", "skip inactive session", {
+      sessionId: session.id,
+      transportTerminalId: session.transportTerminalId,
+      command,
+    });
+    throw new Error(`tmux control session is no longer active: ${session.id}`);
+  }
+
   debugLog("tmux.command", "queue", {
     sessionId: session.id,
     transportTerminalId: session.transportTerminalId,
@@ -2976,7 +2944,19 @@ function queueInitialPaneContentCapture(
 
   const existingIndex = session.pendingInitialPaneCaptures.indexOf(pane.paneId);
   if (existingIndex !== -1) {
-    session.pendingInitialPaneCaptures.splice(existingIndex, 1);
+    // Repeated layout/window refreshes commonly rediscover a pane while its
+    // initial capture is queued. A background rediscovery must not demote the
+    // active pane from the head of the queue; priority may only be upgraded.
+    if (options?.priority && existingIndex > 0) {
+      session.pendingInitialPaneCaptures.splice(existingIndex, 1);
+      session.pendingInitialPaneCaptures.unshift(pane.paneId);
+    }
+    scheduleInitialPaneCaptureFlush(
+      session,
+      options?.delayMs
+        ?? (options?.priority ? 0 : TMUX_INITIAL_CAPTURE_BACKGROUND_DELAY_MS)
+    );
+    return;
   }
 
   if (options?.priority) {
@@ -3732,6 +3712,17 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
 }
 
 async function hydrateControlSession(session: TmuxControlSession) {
+  if (
+    !session.controlModeActive
+    || controlSessions.get(session.id) !== session
+  ) {
+    debugLog("tmux.session", "hydrate skipped inactive session", {
+      sessionId: session.id,
+      transportTerminalId: session.transportTerminalId,
+    });
+    return;
+  }
+
   if (session.hydrationPromise) {
     debugLog("tmux.session", "hydrate reused", {
       sessionId: session.id,
@@ -3912,6 +3903,17 @@ function adoptTransportMetadataForWindow(session: TmuxControlSession, windowId: 
 }
 
 function scheduleRefresh(session: TmuxControlSession, windowId?: string) {
+  if (
+    !session.controlModeActive
+    || controlSessions.get(session.id) !== session
+  ) {
+    debugLog("tmux.refresh", "skip inactive session", {
+      sessionId: session.id,
+      windowId: windowId ?? null,
+    });
+    return;
+  }
+
   debugLog("tmux.refresh", "schedule", {
     sessionId: session.id,
     windowId: windowId ?? null,
@@ -3931,6 +3933,12 @@ function scheduleRefresh(session: TmuxControlSession, windowId?: string) {
 
   session.refreshTimer = window.setTimeout(() => {
     session.refreshTimer = null;
+    if (
+      !session.controlModeActive
+      || controlSessions.get(session.id) !== session
+    ) {
+      return;
+    }
     const fullRefresh = session.fullRefreshPending;
     const windowIds = [...session.pendingWindowRefreshes];
     session.fullRefreshPending = false;
@@ -3962,7 +3970,11 @@ function scheduleRefresh(session: TmuxControlSession, windowId?: string) {
 }
 
 function flushBootstrapRefresh(session: TmuxControlSession) {
-  if (!session.needsBootstrapRefresh) {
+  if (
+    !session.needsBootstrapRefresh
+    || !session.controlModeActive
+    || controlSessions.get(session.id) !== session
+  ) {
     return;
   }
 
@@ -4008,6 +4020,11 @@ function teardownControlSession(session: TmuxControlSession, reason: string) {
     panes: session.panes.size,
   });
 
+  session.controlModeActive = false;
+  session.needsBootstrapRefresh = false;
+  session.fullRefreshPending = false;
+  session.pendingWindowRefreshes.clear();
+
   if (session.refreshTimer !== null) {
     window.clearTimeout(session.refreshTimer);
     session.refreshTimer = null;
@@ -4030,6 +4047,7 @@ function teardownControlSession(session: TmuxControlSession, reason: string) {
   useTerminalStore.getState().patchSession(session.transportTerminalId, {
     backendKind: "local",
     tmuxControlSessionId: undefined,
+    tmuxConnectionKey: undefined,
     tmuxWindowId: undefined,
     tmuxPaneId: undefined,
   });

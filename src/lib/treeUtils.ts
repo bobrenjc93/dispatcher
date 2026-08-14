@@ -143,6 +143,7 @@ export function findDisconnectedTmuxWindowPlaceholder(
     parentNodeId?: string;
     projectId?: string;
     title?: string;
+    connectionKey?: string;
   }
 ): DisconnectedTmuxWindowPlaceholderRef | null {
   const candidates: DisconnectedTmuxWindowPlaceholderRef[] = [];
@@ -175,33 +176,62 @@ export function findDisconnectedTmuxWindowPlaceholder(
     return null;
   }
 
-  if (options?.parentNodeId) {
-    const sameParentCandidate = candidates.find(
-      (candidate) => candidate.parentNodeId === options.parentNodeId
+  const rankByPlacement = (rankedCandidates: DisconnectedTmuxWindowPlaceholderRef[]) => {
+    if (options?.parentNodeId) {
+      const sameParentCandidate = rankedCandidates.find(
+        (candidate) => candidate.parentNodeId === options.parentNodeId
+      );
+      if (sameParentCandidate) {
+        return sameParentCandidate;
+      }
+    }
+    if (options?.projectId) {
+      const sameProjectCandidate = rankedCandidates.find(
+        (candidate) => candidate.projectId === options.projectId
+      );
+      if (sameProjectCandidate) {
+        return sameProjectCandidate;
+      }
+    }
+    return rankedCandidates[0] ?? null;
+  };
+
+  // Prefer the durable tmux server/session identity over all mutable metadata.
+  // A title can legitimately change while Dispatcher is closed, but a known
+  // identity mismatch means this is an unrelated server that recycled @N.
+  if (options?.connectionKey) {
+    const identityMatches = candidates.filter((candidate) =>
+      sessions[candidate.terminalId]?.tmuxConnectionKey === options.connectionKey
     );
-    if (sameParentCandidate) {
-      return sameParentCandidate;
+    if (identityMatches.length > 0) {
+      const titleAndIdentityMatches = options.title
+        ? identityMatches.filter((candidate) => {
+            const session = sessions[candidate.terminalId];
+            return session?.title === options.title || candidate.node.name === options.title;
+          })
+        : [];
+      return rankByPlacement(
+        titleAndIdentityMatches.length > 0 ? titleAndIdentityMatches : identityMatches
+      );
     }
   }
 
+  // Legacy placeholders have no durable identity. Never match one whose saved
+  // title disagrees: IDs alone are not safe because tmux recycles them. Exact
+  // title must outrank placement; the previous same-parent-first behavior is
+  // what caused unrelated historical tabs in one sidebar group to be adopted.
+  const legacyCandidates = candidates.filter((candidate) =>
+    !sessions[candidate.terminalId]?.tmuxConnectionKey
+  );
   if (options?.title) {
-    const titleMatches = candidates.filter((candidate) => {
+    const titleMatches = legacyCandidates.filter((candidate) => {
       const session = sessions[candidate.terminalId];
       return session?.title === options.title || candidate.node.name === options.title;
     });
     if (titleMatches.length > 0) {
-      return titleMatches[0];
+      return rankByPlacement(titleMatches);
     }
   }
 
-  if (options?.projectId) {
-    const sameProjectCandidate = candidates.find(
-      (candidate) => candidate.projectId === options.projectId
-    );
-    if (sameProjectCandidate) {
-      return sameProjectCandidate;
-    }
-  }
-
-  return candidates[0] ?? null;
+  return null;
 }

@@ -108,6 +108,7 @@ function clearRestoreMarker(session: TerminalSession): TerminalSession {
     backendKind: "local",
     restoredFromBackendKind: undefined,
     tmuxControlSessionId: undefined,
+    tmuxConnectionKey: undefined,
     tmuxWindowId: undefined,
     tmuxPaneId: undefined,
   };

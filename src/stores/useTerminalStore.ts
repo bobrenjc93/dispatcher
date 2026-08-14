@@ -299,6 +299,10 @@ export const useTerminalStore = create<TerminalStore>()(
                 ? session.backendKind
                 : undefined,
             tmuxControlSessionId: undefined,
+            tmuxConnectionKey:
+              isRestoredTmuxWindow || isRestoredTmuxPane
+                ? session.tmuxConnectionKey
+                : undefined,
             tmuxWindowId: isRestoredTmuxWindow || isRestoredTmuxPane ? session.tmuxWindowId : undefined,
             tmuxPaneId: isRestoredTmuxPane ? session.tmuxPaneId : undefined,
           };

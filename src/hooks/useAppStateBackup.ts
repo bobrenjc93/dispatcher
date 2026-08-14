@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   buildAppStateSnapshot,
   getLiveAppStateCounts,
@@ -14,11 +14,12 @@ import { useLayoutStore } from "../stores/useLayoutStore";
 import { useProjectStore } from "../stores/useProjectStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 
-const BACKUP_LOAD_DELAY_MS = 250;
 const BACKUP_SAVE_DEBOUNCE_MS = 1_000;
 const BACKUP_SAVE_LOG_INTERVAL_MS = 15_000;
 
 export function useAppStateBackup() {
+  const [bootstrapComplete, setBootstrapComplete] = useState(false);
+
   useEffect(() => {
     let disposed = false;
     let readyToSave = false;
@@ -94,11 +95,6 @@ export function useAppStateBackup() {
     };
 
     const initialize = async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, BACKUP_LOAD_DELAY_MS));
-      if (disposed) {
-        return;
-      }
-
       if (!hasLiveAppState()) {
         try {
           const raw = await readAppStateBackup();
@@ -125,6 +121,7 @@ export function useAppStateBackup() {
       readyToSave = true;
       hasSeenAppState = hasSeenAppState || hasLiveAppState();
       startSubscriptions();
+      setBootstrapComplete(true);
       void saveNow();
     };
 
@@ -138,4 +135,6 @@ export function useAppStateBackup() {
       }
     };
   }, []);
+
+  return bootstrapComplete;
 }

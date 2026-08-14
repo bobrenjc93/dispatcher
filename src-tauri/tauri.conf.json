@@ -23,6 +23,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "Dispatcher",
         "width": 1200,
         "height": 800,

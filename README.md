@@ -14,7 +14,7 @@ A desktop terminal multiplexer built with Tauri, React, and xterm.js. Organize s
 - **tmux `-CC` integration** — run `tmux -CC` locally or over SSH and map tmux windows to Dispatcher tabs and tmux panes to Dispatcher splits
 - **tmux-aware shortcuts** — `Cmd+T`, split, close, focus, and rename route to tmux when the active tab is backed by a live control-mode session
 - **Restart-safe tmux placeholders** — if Dispatcher restarts, saved tmux tabs keep their titles and notes and come back with reconnect instructions instead of disappearing
-- **Built-in diagnostics** — tmux control-mode events are logged to `/tmp/dispatcher-debug.log` for debugging
+- **Built-in diagnostics** — startup, crash, renderer, and tmux events are written to a rotating persistent log (`~/Library/Logs/com.dispatcher.desktop/dispatcher-debug.log` on macOS)
 - **Cross-platform** — macOS (Apple Silicon + Intel), Linux, and Windows
 
 ## Install

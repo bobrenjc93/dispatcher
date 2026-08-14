@@ -1,6 +1,7 @@
 export const TMUX_CONTROL_START = "\u001bP1000p";
 export const TMUX_CONTROL_END = "\u001b\\";
-const TMUX_WINDOW_SNAPSHOT_FORMAT = '"#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}"';
+const TMUX_WINDOW_SNAPSHOT_FORMAT =
+  '"#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}\\t#{host}\\t#{socket_path}\\t#{session_id}\\t#{session_created}"';
 const TMUX_PANE_SNAPSHOT_FORMAT =
   '"#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"';
 const TMUX_PANE_CURSOR_FORMAT = '"#{cursor_x}\\t#{cursor_y}"';
@@ -11,6 +12,7 @@ export interface TmuxWindowSnapshot {
   title: string;
   isActive: boolean;
   flags: string;
+  connectionKey?: string;
 }
 
 export interface TmuxPaneSnapshot {
@@ -43,7 +45,9 @@ export function buildTmuxPaneSnapshotCommand(options?: {
   }
 
   if (options?.allWindows) {
-    return `list-panes -a -F ${TMUX_PANE_SNAPSHOT_FORMAT}`;
+    // -s scopes enumeration to every window in the attached session. -a is
+    // server-wide and can mix panes from unrelated sessions into hydration.
+    return `list-panes -s -F ${TMUX_PANE_SNAPSHOT_FORMAT}`;
   }
 
   return `list-panes -F ${TMUX_PANE_SNAPSHOT_FORMAT}`;
@@ -187,16 +191,30 @@ export function normalizeTmuxPasteBufferText(data: string): string {
 }
 
 export function parseTmuxWindowSnapshot(line: string): TmuxWindowSnapshot | null {
-  const [windowId, title, activeFlag, flags = ""] = line.split("\t");
+  const [
+    windowId,
+    title,
+    activeFlag,
+    flags = "",
+    host = "",
+    socketPath = "",
+    sessionId = "",
+    sessionCreated = "",
+  ] = line.split("\t");
   if (!windowId || title === undefined || activeFlag === undefined) {
     return null;
   }
+
+  const connectionKey = host && socketPath && sessionId && sessionCreated
+    ? JSON.stringify([host, socketPath, sessionId, sessionCreated])
+    : undefined;
 
   return {
     windowId,
     title,
     isActive: activeFlag === "1",
     flags,
+    ...(connectionKey ? { connectionKey } : {}),
   };
 }
 

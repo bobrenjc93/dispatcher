@@ -7,20 +7,47 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static DEBUG_LOG_LOCK: Mutex<()> = Mutex::new(());
 
-#[cfg(unix)]
-const DEBUG_LOG_PATH: &str = "/tmp/dispatcher-debug.log";
 const DEBUG_LOG_MAX_BYTES: u64 = 20 * 1024 * 1024;
 
 pub fn debug_log_path() -> PathBuf {
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     {
-        PathBuf::from(DEBUG_LOG_PATH)
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Logs")
+                .join("com.dispatcher.desktop")
+                .join("dispatcher-debug.log");
+        }
     }
 
-    #[cfg(not(unix))]
+    #[cfg(target_os = "windows")]
     {
-        std::env::temp_dir().join("dispatcher-debug.log")
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(local_app_data)
+                .join("Dispatcher")
+                .join("Logs")
+                .join("dispatcher-debug.log");
+        }
     }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+            return PathBuf::from(state_home)
+                .join("dispatcher")
+                .join("dispatcher-debug.log");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("state")
+                .join("dispatcher")
+                .join("dispatcher-debug.log");
+        }
+    }
+
+    std::env::temp_dir().join("dispatcher-debug.log")
 }
 
 fn timestamp_prefix() -> String {

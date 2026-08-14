@@ -124,4 +124,175 @@ describe("treeUtils", () => {
       projectId: "projectA",
     });
   });
+
+  it("prefers an exact legacy title over a same-parent recycled window id", () => {
+    const projects = {
+      project: { id: "project", name: "Project", cwd: "/", rootGroupId: "root", expanded: true },
+    };
+    const nodes = {
+      root: {
+        id: "root",
+        type: "group" as const,
+        name: "Root",
+        children: ["wrong-node", "right-node"],
+        parentId: null,
+      },
+      "wrong-node": {
+        id: "wrong-node",
+        type: "terminal" as const,
+        name: "Any fixer",
+        terminalId: "wrong",
+        parentId: "root",
+      },
+      "right-node": {
+        id: "right-node",
+        type: "terminal" as const,
+        name: "burner pytorch-rs",
+        terminalId: "right",
+        parentId: "root",
+      },
+    };
+    const sessions = {
+      wrong: {
+        id: "wrong",
+        title: "Any fixer",
+        notes: "",
+        hasDetectedActivity: false,
+        lastUserInputAt: 0,
+        lastOutputAt: 0,
+        isNeedsAttention: false,
+        isPossiblyDone: false,
+        isLongInactive: false,
+        isRecentlyFocused: false,
+        backendKind: "tmux-window" as const,
+        tmuxWindowId: "@1",
+      },
+      right: {
+        id: "right",
+        title: "burner pytorch-rs",
+        notes: "",
+        hasDetectedActivity: false,
+        lastUserInputAt: 0,
+        lastOutputAt: 0,
+        isNeedsAttention: false,
+        isPossiblyDone: false,
+        isLongInactive: false,
+        isRecentlyFocused: false,
+        backendKind: "tmux-window" as const,
+        tmuxWindowId: "@1",
+      },
+    };
+
+    expect(findDisconnectedTmuxWindowPlaceholder(
+      projects,
+      ["project"],
+      nodes,
+      sessions,
+      "@1",
+      { parentNodeId: "root", projectId: "project", title: "burner pytorch-rs" }
+    )?.terminalId).toBe("right");
+  });
+
+  it("uses connection identity across title changes and rejects known mismatches", () => {
+    const projects = {
+      project: { id: "project", name: "Project", cwd: "/", rootGroupId: "root", expanded: true },
+    };
+    const nodes = {
+      root: {
+        id: "root",
+        type: "group" as const,
+        name: "Root",
+        children: ["node-a", "node-b"],
+        parentId: null,
+      },
+      "node-a": {
+        id: "node-a",
+        type: "terminal" as const,
+        name: "old title",
+        terminalId: "term-a",
+        parentId: "root",
+      },
+      "node-b": {
+        id: "node-b",
+        type: "terminal" as const,
+        name: "same current title",
+        terminalId: "term-b",
+        parentId: "root",
+      },
+    };
+    const base = {
+      notes: "",
+      hasDetectedActivity: false,
+      lastUserInputAt: 0,
+      lastOutputAt: 0,
+      isNeedsAttention: false,
+      isPossiblyDone: false,
+      isLongInactive: false,
+      isRecentlyFocused: false,
+      backendKind: "tmux-window" as const,
+      tmuxWindowId: "@1",
+    };
+    const sessions = {
+      "term-a": { ...base, id: "term-a", title: "old title", tmuxConnectionKey: "server-a" },
+      "term-b": { ...base, id: "term-b", title: "same current title", tmuxConnectionKey: "server-b" },
+    };
+
+    expect(findDisconnectedTmuxWindowPlaceholder(
+      projects,
+      ["project"],
+      nodes,
+      sessions,
+      "@1",
+      { title: "same current title", connectionKey: "server-a" }
+    )?.terminalId).toBe("term-a");
+    expect(findDisconnectedTmuxWindowPlaceholder(
+      projects,
+      ["project"],
+      nodes,
+      sessions,
+      "@1",
+      { title: "same current title", connectionKey: "server-c" }
+    )).toBeNull();
+  });
+
+  it("does not adopt a legacy recycled id when its title disagrees", () => {
+    const projects = {
+      project: { id: "project", name: "Project", cwd: "/", rootGroupId: "root", expanded: true },
+    };
+    const nodes = {
+      root: { id: "root", type: "group" as const, name: "Root", children: ["node"], parentId: null },
+      node: {
+        id: "node",
+        type: "terminal" as const,
+        name: "historical task",
+        terminalId: "term",
+        parentId: "root",
+      },
+    };
+    const sessions = {
+      term: {
+        id: "term",
+        title: "historical task",
+        notes: "",
+        hasDetectedActivity: false,
+        lastUserInputAt: 0,
+        lastOutputAt: 0,
+        isNeedsAttention: false,
+        isPossiblyDone: false,
+        isLongInactive: false,
+        isRecentlyFocused: false,
+        backendKind: "tmux-window" as const,
+        tmuxWindowId: "@0",
+      },
+    };
+
+    expect(findDisconnectedTmuxWindowPlaceholder(
+      projects,
+      ["project"],
+      nodes,
+      sessions,
+      "@0",
+      { parentNodeId: "root", projectId: "project", title: "bash" }
+    )).toBeNull();
+  });
 });

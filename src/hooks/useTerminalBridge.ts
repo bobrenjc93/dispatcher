@@ -1513,20 +1513,24 @@ export function refreshAllTerminalFrontends(reason: string) {
     const isParked = !mountPoint || mountPoint.id === PARKING_ROOT_ID;
     if (isParked) {
       parked += 1;
-    } else {
-      attached += 1;
-      const backendKind = sessions[terminalId]?.backendKind;
-      if (shouldFitFrontendToViewport(backendKind)) {
-        try {
-          instance.fitAddon.fit();
-          fit += 1;
-        } catch (error) {
-          debugLog("terminal.frontend", "wake fit failed", {
-            terminalId,
-            reason,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
+      // A parked terminal has no visible canvas. Repainting every parked xterm
+      // on focus caused a large synchronous burst for restored workspaces; the
+      // attach path already refreshes a terminal before it becomes visible.
+      continue;
+    }
+
+    attached += 1;
+    const backendKind = sessions[terminalId]?.backendKind;
+    if (shouldFitFrontendToViewport(backendKind)) {
+      try {
+        instance.fitAddon.fit();
+        fit += 1;
+      } catch (error) {
+        debugLog("terminal.frontend", "wake fit failed", {
+          terminalId,
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 

@@ -98,7 +98,7 @@ export default function App() {
 
   useFileDrop();
   useStartupStoreNormalization();
-  useAppStateBackup();
+  const appStateBootstrapComplete = useAppStateBackup();
   useRecoveryBootstrap();
   useTerminalScreenshotMonitor();
   useWakeRecovery();
@@ -219,11 +219,17 @@ export default function App() {
   }, [sidebarWidth]);
 
   // Pre-spawn PTY pool for instant terminal creation, and refresh
-  // periodically so pooled shells have up-to-date history/env.
+  // periodically so pooled shells have up-to-date history/env. Give the first
+  // render priority over starting three login shells during a cold launch.
   useEffect(() => {
-    warmPool(3).catch(() => {});
+    const warmTimer = window.setTimeout(() => {
+      warmPool(3).catch(() => {});
+    }, 1_500);
     const id = setInterval(() => refreshPool().catch(() => {}), 5 * 60 * 1000);
-    return () => clearInterval(id);
+    return () => {
+      clearTimeout(warmTimer);
+      clearInterval(id);
+    };
   }, []);
 
   useEffect(() => {
@@ -711,12 +717,13 @@ export default function App() {
     }
   }, [activeProject, activeLayoutKey, nodes, sessions]);
 
-  // Auto-create first project on launch
+  // Only offer first-project creation after the native backup has had a chance
+  // to restore a workspace when WebKit storage is empty or was reset.
   useEffect(() => {
-    if (Object.keys(projects).length === 0) {
+    if (appStateBootstrapComplete && Object.keys(projects).length === 0) {
       setDialog({ type: "new-project-with-terminal" });
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [appStateBootstrapComplete, projects]);
 
   // Keyboard shortcuts — use a ref so the listener is registered once and never
   // torn down/re-added when dependencies like activeProject change.  This

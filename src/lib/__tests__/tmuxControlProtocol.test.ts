@@ -70,6 +70,23 @@ describe("tmuxControlProtocol", () => {
     });
   });
 
+  it("parses a durable tmux connection identity for restored-tab matching", () => {
+    expect(parseTmuxWindowSnapshot(
+      "@1\tshell\t1\t*\tremote-host\t/tmp/tmux-501/default\t$2\t1786482454"
+    )).toEqual({
+      windowId: "@1",
+      title: "shell",
+      isActive: true,
+      flags: "*",
+      connectionKey: JSON.stringify([
+        "remote-host",
+        "/tmp/tmux-501/default",
+        "$2",
+        "1786482454",
+      ]),
+    });
+  });
+
   it("parses tmux pane snapshots", () => {
     expect(parseTmuxPaneSnapshot("@1\t%3\t0\t12\t80\t24\t0\t/tmp/project")).toEqual({
       windowId: "@1",
@@ -118,13 +135,13 @@ describe("tmuxControlProtocol", () => {
 
   it("builds hydrate pane commands across all windows for attach flows", () => {
     expect(buildTmuxWindowSnapshotCommand()).toBe(
-      'list-windows -F "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}"'
+      'list-windows -F "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}\\t#{host}\\t#{socket_path}\\t#{session_id}\\t#{session_created}"'
     );
     expect(buildTmuxWindowSnapshotCommand("@24")).toBe(
-      'display-message -p -t @24 "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}"'
+      'display-message -p -t @24 "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}\\t#{host}\\t#{socket_path}\\t#{session_id}\\t#{session_created}"'
     );
     expect(buildTmuxPaneSnapshotCommand({ allWindows: true })).toBe(
-      'list-panes -a -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"'
+      'list-panes -s -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"'
     );
     expect(buildTmuxPaneSnapshotCommand({ targetWindowId: "@24" })).toBe(
       'list-panes -t @24 -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"'

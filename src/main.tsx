@@ -28,7 +28,7 @@ class RootErrorBoundary extends React.Component<
     if (this.state.error) {
       return (
         <div className="empty-view">
-          <p>Dispatcher failed to render. Check /tmp/dispatcher-debug.log.</p>
+          <p>Dispatcher failed to render. Check the Dispatcher diagnostic log.</p>
         </div>
       );
     }
