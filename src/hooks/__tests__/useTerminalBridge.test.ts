@@ -17,9 +17,17 @@ const {
   appendDebugLogMock: vi.fn(async () => {}),
   createdTerminals: [] as Array<{
     scrollToBottom: ReturnType<typeof vi.fn>;
+    scrollToLine: ReturnType<typeof vi.fn>;
     write: ReturnType<typeof vi.fn>;
     resize: ReturnType<typeof vi.fn>;
     clear: ReturnType<typeof vi.fn>;
+    buffer: {
+      active: {
+        baseY: number;
+        viewportY: number;
+        getLine: ReturnType<typeof vi.fn>;
+      };
+    };
     cols: number;
     rows: number;
   }>,
@@ -38,6 +46,7 @@ vi.mock("@xterm/xterm", () => {
     options: Record<string, unknown>;
     buffer = {
       active: {
+        baseY: 0,
         viewportY: 0,
         getLine: vi.fn(() => null),
       },
@@ -47,7 +56,12 @@ vi.mock("@xterm/xterm", () => {
     loadAddon = vi.fn();
     registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
     attachCustomKeyEventHandler = vi.fn();
-    scrollToBottom = vi.fn();
+    scrollToBottom = vi.fn(() => {
+      this.buffer.active.viewportY = this.buffer.active.baseY;
+    });
+    scrollToLine = vi.fn((line: number) => {
+      this.buffer.active.viewportY = line;
+    });
     write = vi.fn((_data: string, callback?: () => void) => {
       callback?.();
     });
@@ -493,6 +507,49 @@ describe("useTerminalBridge synthetic input", () => {
     );
     expect(createdTerminals[0].clear.mock.invocationCallOrder[0]).toBeLessThan(
       createdTerminals[0].write.mock.invocationCallOrder[0]
+    );
+
+    disposeTerminalInstance("tmux-pane-test");
+  });
+
+  it("releases xterm's scroll lock and restores the viewport after tmux history replay", async () => {
+    useTerminalStore.getState().addSession("tmux-pane-test", "A");
+    useTerminalStore.getState().patchSession("tmux-pane-test", {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+
+    ensureTerminalScreenshotTarget("tmux-pane-test");
+    const terminal = createdTerminals[0];
+    terminal.buffer.active.baseY = 120;
+    terminal.buffer.active.viewportY = 45;
+    terminal.clear.mockImplementationOnce(() => {
+      terminal.buffer.active.baseY = 0;
+      terminal.buffer.active.viewportY = 0;
+    });
+    terminal.write.mockImplementationOnce((_data: string, callback?: () => void) => {
+      terminal.buffer.active.baseY = 150;
+      terminal.buffer.active.viewportY = 150;
+      callback?.();
+    });
+
+    queueTerminalOutput("tmux-pane-test", "authoritative capture\n", {
+      recordActivity: false,
+      allowParkedWrite: true,
+      replaceBufferedOutput: true,
+      clearScrollbackBeforeWrite: true,
+    });
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    expect(terminal.scrollToBottom).toHaveBeenCalledTimes(1);
+    expect(terminal.scrollToBottom.mock.invocationCallOrder[0]).toBeLessThan(
+      terminal.clear.mock.invocationCallOrder[0]
+    );
+    expect(terminal.scrollToLine).toHaveBeenCalledWith(75);
+    expect(terminal.scrollToLine.mock.invocationCallOrder[0]).toBeGreaterThan(
+      terminal.write.mock.invocationCallOrder[0]
     );
 
     disposeTerminalInstance("tmux-pane-test");

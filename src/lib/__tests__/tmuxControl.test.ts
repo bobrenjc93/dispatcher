@@ -1366,6 +1366,66 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("does not apply a deferred history replay after the pane is hidden", async () => {
+    const transportTerminalId = "transport-history-refresh-hidden-before-replay";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "@1\thappy\t1\t*",
+        "%end 4 0",
+        "%begin 5 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren\t4\t7\t0\t88",
+        "%end 5 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+    handleTmuxTerminalFocus(paneTerminalId);
+    completeTmuxCommandWithLines(transportTerminalId, 6, []);
+    completeTmuxCommandWithLines(transportTerminalId, 7, ["current viewport"]);
+    completeTmuxCommandWithLines(transportTerminalId, 8, []);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -S -88 -t %1\n"
+    );
+
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+    completeTmuxCommandWithLines(transportTerminalId, 9, ["history row", "current row"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("history row"),
+      expect.anything()
+    );
+  });
+
   it("recaptures fallback tmux history on focus after hidden pane output", async () => {
     const transportTerminalId = "transport-hidden-output-history";
     seedTransportTerminal(transportTerminalId);

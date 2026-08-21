@@ -527,10 +527,28 @@ function drainTerminalWriteBuffer(terminalId: string) {
   }
 
   writeInFlight.add(terminalId);
+  let viewportOffsetFromBottom: number | null = null;
   if (clearScrollbackBeforeWrite) {
+    const activeBuffer = xterm.buffer.active;
+    viewportOffsetFromBottom = Math.max(0, activeBuffer.baseY - activeBuffer.viewportY);
+
+    // xterm.clear() resets ybase/ydisp but leaves its internal
+    // isUserScrolling flag alone. If a pane was ever scrolled up, rebuilding
+    // tmux history from that state keeps ydisp pinned at zero while the replay
+    // grows below it, leaving the pane at the very top of scrollback. Moving to
+    // the bottom first releases that scroll lock; restore the user's relative
+    // viewport after the authoritative replay has finished parsing.
+    xterm.scrollToBottom();
     xterm.clear();
   }
   xterm.write(combined, () => {
+    if (viewportOffsetFromBottom !== null) {
+      if (viewportOffsetFromBottom === 0) {
+        xterm.scrollToBottom();
+      } else {
+        xterm.scrollToLine(Math.max(0, xterm.buffer.active.baseY - viewportOffsetFromBottom));
+      }
+    }
     const durationMs = performance.now() - drainStartedAt;
     writeInFlight.delete(terminalId);
     writeStatusRecorded.delete(terminalId);

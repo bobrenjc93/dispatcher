@@ -3126,6 +3126,7 @@ async function capturePaneFullContent(
   pane.historyCaptureInFlight = true;
   const captureGeneration = pane.contentClearGeneration;
   const outputGeneration = pane.outputGeneration;
+  const inputGeneration = pane.inputGeneration;
   const useFallbackHistory =
     options.forceFallbackHistory === true
     && !pane.alternateOn
@@ -3171,6 +3172,24 @@ async function capturePaneFullContent(
       return;
     }
     ensurePaneHistoryCaptureState(currentPane);
+    if (
+      !options.initial
+      && (
+        currentPane.inputGeneration !== inputGeneration
+        || !isPaneVisibleInActiveWindow(session, currentPane)
+      )
+    ) {
+      debugLog("tmux.capture", "skip pane history replay after display changed", {
+        sessionId: session.id,
+        paneId: pane.paneId,
+        terminalId: pane.terminalId,
+        reason: options.reason,
+        inputGeneration,
+        currentInputGeneration: currentPane.inputGeneration,
+        visible: isPaneVisibleInActiveWindow(session, currentPane),
+      });
+      return;
+    }
     if (currentPane.contentClearGeneration !== captureGeneration) {
       debugLog("tmux.capture", "skip stale pane full content after clear", {
         sessionId: session.id,
@@ -3240,6 +3259,24 @@ async function capturePaneFullContent(
       { outputRaceRepair: "history", acceptRacedCursor: acceptRacedCapture }
     );
     if (!cursor) {
+      return;
+    }
+    if (
+      !options.initial
+      && (
+        currentPane.inputGeneration !== inputGeneration
+        || !isPaneVisibleInActiveWindow(session, currentPane)
+      )
+    ) {
+      debugLog("tmux.capture", "skip pane history replay after cursor refresh changed display", {
+        sessionId: session.id,
+        paneId: pane.paneId,
+        terminalId: pane.terminalId,
+        reason: options.reason,
+        inputGeneration,
+        currentInputGeneration: currentPane.inputGeneration,
+        visible: isPaneVisibleInActiveWindow(session, currentPane),
+      });
       return;
     }
 
