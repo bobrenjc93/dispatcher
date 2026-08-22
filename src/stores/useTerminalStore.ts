@@ -59,6 +59,7 @@ export const useTerminalStore = create<TerminalStore>()(
               isLongInactive: false,
               isRecentlyFocused: false,
               isPinnedGreen: false,
+              isPinnedGray: false,
               notifyOnInaction: false,
               backendKind: "local",
               ...patch,
@@ -254,10 +255,15 @@ export const useTerminalStore = create<TerminalStore>()(
         set((state) => {
           const session = state.sessions[id];
           if (!session) return state;
+          const normalizedPatch = patch.isPinnedGray === true
+            ? { ...patch, isPinnedGreen: false }
+            : patch.isPinnedGreen === true
+              ? { ...patch, isPinnedGray: false }
+              : patch;
           return {
             sessions: {
               ...state.sessions,
-              [id]: { ...session, ...patch },
+              [id]: { ...session, ...normalizedPatch },
             },
           };
         }),
@@ -288,7 +294,10 @@ export const useTerminalStore = create<TerminalStore>()(
             isPossiblyDone: false,
             isLongInactive: false,
             isRecentlyFocused: false,
-            isPinnedGreen: session.isPinnedGreen ?? false,
+            isPinnedGreen: (session.isPinnedGray ?? false)
+              ? false
+              : (session.isPinnedGreen ?? false),
+            isPinnedGray: session.isPinnedGray ?? false,
             notifyOnInaction: session.notifyOnInaction ?? false,
             backendKind:
               isRestoredTmuxWindow || isRestoredTmuxPane

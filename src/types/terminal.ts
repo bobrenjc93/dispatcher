@@ -17,6 +17,7 @@ export interface TerminalSession {
   isLongInactive: boolean;
   isRecentlyFocused: boolean;
   isPinnedGreen?: boolean;
+  isPinnedGray?: boolean;
   notifyOnInaction?: boolean;
   backendKind: TerminalBackendKind;
   restoredFromBackendKind?: TerminalBackendKind;

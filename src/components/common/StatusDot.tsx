@@ -10,7 +10,11 @@ export function resolveStatusDotColor(status: {
   isPossiblyDone: boolean;
   isLongInactive: boolean;
   isPinnedGreen: boolean;
+  isPinnedGray: boolean;
 }): string {
+  if (status.isPinnedGray) {
+    return GRAY;
+  }
   if (status.isPinnedGreen) {
     return GREEN;
   }
@@ -32,6 +36,7 @@ export function StatusDot({ terminalId }: { terminalId: string }) {
   const isPossiblyDone = useTerminalStore((state) => state.sessions[terminalId]?.isPossiblyDone ?? false);
   const isLongInactive = useTerminalStore((state) => state.sessions[terminalId]?.isLongInactive ?? false);
   const isPinnedGreen = useTerminalStore((state) => state.sessions[terminalId]?.isPinnedGreen ?? false);
+  const isPinnedGray = useTerminalStore((state) => state.sessions[terminalId]?.isPinnedGray ?? false);
   // Color meaning is owned by terminalScreenshotStatus.ts. Keep this component
   // as a dumb renderer so future changes do not split the state machine across
   // UI and monitor code.
@@ -41,6 +46,7 @@ export function StatusDot({ terminalId }: { terminalId: string }) {
     isPossiblyDone,
     isLongInactive,
     isPinnedGreen,
+    isPinnedGray,
   });
   return (
     <span

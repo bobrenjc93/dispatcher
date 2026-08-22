@@ -15,6 +15,7 @@ describe("useTerminalStore", () => {
       expect(session.isLongInactive).toBe(false);
       expect(session.isRecentlyFocused).toBe(false);
       expect(session.isPinnedGreen).toBe(false);
+      expect(session.isPinnedGray).toBe(false);
       expect(session.notifyOnInaction).toBe(false);
       expect(session.title).toBe("My Term");
     });
@@ -141,13 +142,31 @@ describe("useTerminalStore", () => {
     });
   });
 
+  describe("pinned status", () => {
+    it("keeps green and gray pins mutually exclusive", () => {
+      useTerminalStore.getState().addSession("t1", "First");
+
+      useTerminalStore.getState().patchSession("t1", { isPinnedGreen: true });
+      expect(useTerminalStore.getState().sessions["t1"]).toMatchObject({
+        isPinnedGreen: true,
+        isPinnedGray: false,
+      });
+
+      useTerminalStore.getState().patchSession("t1", { isPinnedGray: true });
+      expect(useTerminalStore.getState().sessions["t1"]).toMatchObject({
+        isPinnedGreen: false,
+        isPinnedGray: true,
+      });
+    });
+  });
+
   describe("persist merge", () => {
     it("preserves notes and resets runtime screenshot state", () => {
       const { merge } = (useTerminalStore as any).persist.getOptions();
       const persisted = {
         sessions: {
-          t1: { id: "t1", title: "T1", notes: "hello", hasDetectedActivity: true, lastUserInputAt: 123, lastOutputAt: 321, isNeedsAttention: true, isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true, isPinnedGreen: true, notifyOnInaction: true },
-          t2: { id: "t2", title: "T2", notes: "", hasDetectedActivity: true, lastUserInputAt: 456, lastOutputAt: 654, isNeedsAttention: true, isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true },
+          t1: { id: "t1", title: "T1", notes: "hello", hasDetectedActivity: true, lastUserInputAt: 123, lastOutputAt: 321, isNeedsAttention: true, isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true, isPinnedGreen: true, isPinnedGray: false, notifyOnInaction: true },
+          t2: { id: "t2", title: "T2", notes: "", hasDetectedActivity: true, lastUserInputAt: 456, lastOutputAt: 654, isNeedsAttention: true, isPossiblyDone: true, isLongInactive: true, isRecentlyFocused: true, isPinnedGray: true },
         },
         activeTerminalId: "t1",
       };
@@ -169,8 +188,10 @@ describe("useTerminalStore", () => {
       expect(result.sessions["t1"].isRecentlyFocused).toBe(false);
       expect(result.sessions["t2"].isRecentlyFocused).toBe(false);
       expect(result.sessions["t1"].isPinnedGreen).toBe(true);
+      expect(result.sessions["t1"].isPinnedGray).toBe(false);
       expect(result.sessions["t1"].notifyOnInaction).toBe(true);
       expect(result.sessions["t2"].isPinnedGreen).toBe(false);
+      expect(result.sessions["t2"].isPinnedGray).toBe(true);
       expect(result.sessions["t2"].notifyOnInaction).toBe(false);
     });
 

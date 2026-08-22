@@ -85,7 +85,9 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
   const nodeClassName = [
     "sidebar-terminal-node",
     isActive ? "active" : "",
-    session.isNeedsAttention || session.isPinnedGreen ? "needs-attention" : "",
+    !session.isPinnedGray && (session.isNeedsAttention || session.isPinnedGreen)
+      ? "needs-attention"
+      : "",
   ].filter(Boolean).join(" ");
 
   return (
@@ -155,9 +157,23 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
                 </svg>
               ),
               checked: session.isPinnedGreen ?? false,
-              onClick: () => patchSession(terminalId, {
-                isPinnedGreen: !(session.isPinnedGreen ?? false),
-              }),
+              onClick: () => {
+                const enabled = !(session.isPinnedGreen ?? false);
+                patchSession(terminalId, { isPinnedGreen: enabled });
+              },
+            },
+            {
+              label: "Pin Gray",
+              icon: (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M5 2.25H9L8.5 5L10.75 7.25V8.25H3.25V7.25L5.5 5L5 2.25ZM7 8.25V12" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ),
+              checked: session.isPinnedGray ?? false,
+              onClick: () => {
+                const enabled = !(session.isPinnedGray ?? false);
+                patchSession(terminalId, { isPinnedGray: enabled });
+              },
             },
             {
               label: "Notify on Inaction",
