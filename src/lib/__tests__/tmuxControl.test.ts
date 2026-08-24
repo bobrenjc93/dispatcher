@@ -35,6 +35,7 @@ import type { TerminalSession } from "../../types/terminal";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
+import { findTerminalIds } from "../layoutUtils";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
 import {
   clearStatusResizeSuppressionsForTests,
@@ -43,6 +44,7 @@ import {
 import {
   beginTmuxPaneResizeByTerminal,
   clearTmuxTerminal,
+  closeTmuxTerminal,
   createTmuxWindowForTerminal,
   handleTmuxTerminalFocus,
   resizeTmuxPaneByTerminal,
@@ -3274,6 +3276,78 @@ describe("tmuxControl", () => {
         "1234",
       ]),
     });
+  });
+
+  it("closes a tmux window locally without waiting for an unresponsive SSH server", async () => {
+    const transportTerminalId = "transport-optimistic-window-close";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+    const windowNodeId = getNodeIdForTerminalId(windowTerminalId);
+    writeTerminalMock.mockClear();
+
+    const closePromise = closeTmuxTerminal(windowTerminalId);
+
+    expect(useTerminalStore.getState().sessions[windowTerminalId]).toBeUndefined();
+    expect(useTerminalStore.getState().sessions[paneTerminalId]).toBeUndefined();
+    expect(useLayoutStore.getState().layouts[windowTerminalId]).toBeUndefined();
+    expect(useProjectStore.getState().nodes[windowNodeId]).toBeUndefined();
+    expect(writeTerminalMock).toHaveBeenCalledTimes(1);
+    expect(getWrittenTmuxCommand(0)).toBe("kill-window -t @1\n");
+    await expect(closePromise).resolves.toBe(true);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(writeTerminalMock).toHaveBeenCalledTimes(2);
+    expect(getWrittenTmuxCommand(1)).toBe("kill-window -t @1\n");
+  });
+
+  it("keeps an optimistically closed tmux pane hidden from a stale refresh", async () => {
+    const transportTerminalId = "transport-optimistic-pane-close";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSplitWindow(transportTerminalId);
+    const windowTerminalId = getWindowTerminalIdByWindowId("@1");
+    const leftPaneTerminalId = getPaneTerminalIdByPaneId("%1");
+    const rightPaneTerminalId = getPaneTerminalIdByPaneId("%2");
+    writeTerminalMock.mockClear();
+
+    // Start a refresh before closing. Its response still contains the pane,
+    // exactly like a delayed SSH connection delivering an old snapshot.
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(writeTerminalMock).toHaveBeenCalledTimes(2);
+
+    const closePromise = closeTmuxTerminal(leftPaneTerminalId);
+    expect(useTerminalStore.getState().sessions[leftPaneTerminalId]).toBeUndefined();
+    expect(findTerminalIds(useLayoutStore.getState().layouts[windowTerminalId])).toEqual([
+      rightPaneTerminalId,
+    ]);
+    expect(getWrittenTmuxCommand(2)).toBe("kill-pane -t %1\n");
+    await expect(closePromise).resolves.toBe(true);
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 40 0",
+        "@1\thappy\t1\t*",
+        "%end 40 0",
+        "%begin 41 0",
+        "@1\t%1\t0\t0\t40\t24\t1\t/Users/bobren/left\t4\t7\t0\t0",
+        "@1\t%2\t40\t0\t40\t24\t0\t/Users/bobren/right\t1\t2\t0\t0",
+        "%end 41 0",
+        "%begin 42 0",
+        "%end 42 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(useTerminalStore.getState().sessions[leftPaneTerminalId]).toBeUndefined();
+    expect(findTerminalIds(useLayoutStore.getState().layouts[windowTerminalId])).toEqual([
+      rightPaneTerminalId,
+    ]);
   });
 
   it("still removes the Dispatcher tab when tmux reports that the window closed", async () => {

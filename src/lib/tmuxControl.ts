@@ -62,9 +62,22 @@ interface PendingCommand {
   reject: (error: Error) => void;
 }
 
+class TmuxCommandResponseError extends Error {}
+
 interface CommandCapture {
   pending: PendingCommand | null;
   lines: string[];
+}
+
+interface PendingTmuxCloseCleanup {
+  key: string;
+  command: string;
+  kind: "window" | "pane";
+  targetId: string;
+  windowId: string;
+  paneIds: string[];
+  attempts: number;
+  retryTimerIds: Set<number>;
 }
 
 interface PendingNewWindowAnchor {
@@ -209,6 +222,9 @@ interface TmuxControlSession {
   initialPaneCaptureActive: boolean;
   paneOutputActivitySuppressionUntil: Map<string, number>;
   suppressedPaneOutputActivitySummaries: Map<string, SuppressedPaneOutputActivitySummary>;
+  optimisticallyClosedWindowIds: Set<string>;
+  optimisticallyClosedPaneIds: Set<string>;
+  pendingCloseCleanups: Map<string, PendingTmuxCloseCleanup>;
 }
 
 interface SuppressedPaneOutputActivitySummary {
@@ -300,6 +316,7 @@ const TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS = 1_000;
 const TMUX_LAYOUT_REDRAW_BARRIER_MS = 1_500;
 const TMUX_LAYOUT_REDRAW_SUPPRESSION_SUMMARY_INTERVAL_MS = 1_000;
 const TMUX_PASTE_BUFFER_CHUNK_SIZE = 8_000;
+const TMUX_CLOSE_CLEANUP_RETRY_DELAYS_MS = [0, 1_000, 5_000, 15_000, 45_000] as const;
 const BRACKETED_PASTE_START = "\u001b[200~";
 const BRACKETED_PASTE_END = "\u001b[201~";
 let tmuxPasteBufferSequence = 0;
@@ -373,6 +390,12 @@ function ensureTmuxClientSizeState(session: TmuxControlSession) {
   session.clientResizeLayoutSuppressionUntil ??= 0;
   session.clientResizeLayoutSuppressedCount ??= 0;
   session.gridOverflowCorrections ??= new Map();
+}
+
+function ensureOptimisticCloseState(session: TmuxControlSession) {
+  session.optimisticallyClosedWindowIds ??= new Set();
+  session.optimisticallyClosedPaneIds ??= new Set();
+  session.pendingCloseCleanups ??= new Map();
 }
 
 function suppressPaneOutputActivity(
@@ -789,6 +812,9 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     initialPaneCaptureActive: false,
     paneOutputActivitySuppressionUntil: new Map(),
     suppressedPaneOutputActivitySummaries: new Map(),
+    optimisticallyClosedWindowIds: new Set(),
+    optimisticallyClosedPaneIds: new Set(),
+    pendingCloseCleanups: new Map(),
   };
 
   for (const [nodeId, node] of Object.entries(projectState.nodes)) {
@@ -1540,6 +1566,211 @@ function disposePaneTerminal(
   paneTerminalToSessionId.delete(terminalId);
 }
 
+function getTmuxCloseCleanupKey(kind: "window" | "pane", targetId: string): string {
+  return `${kind}:${targetId}`;
+}
+
+function finishOptimisticTmuxClose(
+  session: TmuxControlSession,
+  kind: "window" | "pane",
+  targetId: string,
+  reason: string
+) {
+  ensureOptimisticCloseState(session);
+  const key = getTmuxCloseCleanupKey(kind, targetId);
+  const cleanup = session.pendingCloseCleanups.get(key);
+  if (cleanup) {
+    for (const timerId of cleanup.retryTimerIds) {
+      window.clearTimeout(timerId);
+    }
+    session.pendingCloseCleanups.delete(key);
+  }
+
+  const paneIds = cleanup?.paneIds ?? [];
+  const releaseProjectionTombstones = () => {
+    if (kind === "window") {
+      session.optimisticallyClosedWindowIds.delete(targetId);
+      for (const paneId of paneIds) {
+        session.optimisticallyClosedPaneIds.delete(paneId);
+        session.pendingPaneOutput.delete(paneId);
+      }
+    } else {
+      session.optimisticallyClosedPaneIds.delete(targetId);
+    }
+  };
+  if (reason === "snapshot-confirmed") {
+    releaseProjectionTombstones();
+  } else {
+    // Promise continuations for an older snapshot can run after tmux's kill
+    // response when both arrive in one transport chunk. Keep the tombstone
+    // through that microtask checkpoint so the stale snapshot stays hidden.
+    window.setTimeout(releaseProjectionTombstones, 0);
+  }
+
+  debugLog("tmux.action", "optimistic close cleanup finished", {
+    sessionId: session.id,
+    kind,
+    targetId,
+    reason,
+    attempts: cleanup?.attempts ?? 0,
+  });
+}
+
+function scheduleOptimisticTmuxCloseCleanup(
+  session: TmuxControlSession,
+  kind: "window" | "pane",
+  targetId: string,
+  windowId: string,
+  command: string,
+  paneIds: readonly string[] = []
+) {
+  ensureOptimisticCloseState(session);
+  const key = getTmuxCloseCleanupKey(kind, targetId);
+  const cleanup: PendingTmuxCloseCleanup = {
+    key,
+    command,
+    kind,
+    targetId,
+    windowId,
+    paneIds: [...paneIds],
+    attempts: 0,
+    retryTimerIds: new Set(),
+  };
+  session.pendingCloseCleanups.set(key, cleanup);
+
+  const issueCleanup = () => {
+    if (
+      session.pendingCloseCleanups.get(key) !== cleanup
+      || !session.controlModeActive
+      || controlSessions.get(session.id) !== session
+    ) {
+      return;
+    }
+
+    cleanup.attempts += 1;
+    debugLog("tmux.action", "optimistic close cleanup attempt", {
+      sessionId: session.id,
+      kind,
+      targetId,
+      command,
+      attempt: cleanup.attempts,
+    });
+    void sendCommand(session, command).then(() => {
+      finishOptimisticTmuxClose(session, kind, targetId, "command-complete");
+    }).catch((error) => {
+      if (error instanceof TmuxCommandResponseError) {
+        // kill-window/kill-pane only fail after tmux is responsive again. The
+        // usual reason is that an earlier retry already removed the target.
+        finishOptimisticTmuxClose(session, kind, targetId, "command-rejected");
+        return;
+      }
+      debugLog("tmux.action", "optimistic close cleanup attempt failed", {
+        sessionId: session.id,
+        kind,
+        targetId,
+        command,
+        attempt: cleanup.attempts,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  for (const delayMs of TMUX_CLOSE_CLEANUP_RETRY_DELAYS_MS) {
+    if (delayMs === 0) {
+      issueCleanup();
+      continue;
+    }
+    const timerId = window.setTimeout(() => {
+      cleanup.retryTimerIds.delete(timerId);
+      issueCleanup();
+    }, delayMs);
+    cleanup.retryTimerIds.add(timerId);
+  }
+}
+
+function reconcileOptimisticTmuxClosesFromSnapshot(
+  session: TmuxControlSession,
+  windowSnapshots: readonly TmuxWindowSnapshot[],
+  paneSnapshots: readonly TmuxPaneSnapshot[],
+  scopedWindowId?: string
+) {
+  ensureOptimisticCloseState(session);
+  const windowIds = new Set(windowSnapshots.map((snapshot) => snapshot.windowId));
+  const paneIds = new Set(paneSnapshots.map((snapshot) => snapshot.paneId));
+
+  for (const cleanup of [...session.pendingCloseCleanups.values()]) {
+    if (cleanup.kind === "window") {
+      if (
+        (!scopedWindowId || cleanup.targetId === scopedWindowId)
+        && !windowIds.has(cleanup.targetId)
+      ) {
+        finishOptimisticTmuxClose(session, "window", cleanup.targetId, "snapshot-confirmed");
+      }
+      continue;
+    }
+
+    if (
+      (!scopedWindowId || cleanup.windowId === scopedWindowId)
+      && !paneIds.has(cleanup.targetId)
+    ) {
+      finishOptimisticTmuxClose(session, "pane", cleanup.targetId, "snapshot-confirmed");
+    }
+  }
+}
+
+function removePaneProjection(session: TmuxControlSession, paneId: string) {
+  const pane = session.panes.get(paneId);
+  if (!pane) {
+    return;
+  }
+
+  const windowState = session.windows.get(pane.windowId);
+  const remainingPanes = [...session.panes.values()].filter(
+    (candidate) => candidate.windowId === pane.windowId && candidate.paneId !== paneId
+  );
+  if (!windowState || remainingPanes.length === 0) {
+    removeWindowProjection(session, pane.windowId);
+    return;
+  }
+
+  const activeTerminalId = useTerminalStore.getState().activeTerminalId;
+  clearPaneRenderingTimers(pane);
+  session.panes.delete(paneId);
+  session.pendingPaneOutput.delete(paneId);
+  session.pendingInitialPaneCaptures = session.pendingInitialPaneCaptures.filter(
+    (pendingPaneId) => pendingPaneId !== paneId
+  );
+  session.paneOutputActivitySuppressionUntil.delete(paneId);
+  session.suppressedPaneOutputActivitySummaries.delete(paneId);
+  disposePaneTerminal(pane.terminalId, {
+    sessionId: session.id,
+    windowId: pane.windowId,
+    paneId,
+    reason: "optimistic-close-pane",
+  });
+
+  const fallbackPane = remainingPanes.find((candidate) => candidate.isActive) ?? remainingPanes[0];
+  windowState.activePaneId = fallbackPane.paneId;
+  setLayout(
+    windowState.terminalId,
+    buildLayoutFromTmuxPanes(
+      remainingPanes.map((candidate) => ({
+        paneId: candidate.paneId,
+        terminalId: candidate.terminalId,
+        left: candidate.left,
+        top: candidate.top,
+        width: candidate.width,
+        height: candidate.height,
+      }))
+    )
+  );
+
+  if (activeTerminalId === pane.terminalId) {
+    useTerminalStore.getState().setActiveTerminal(fallbackPane.terminalId);
+    focusTerminalInstance(fallbackPane.terminalId);
+  }
+}
+
 function removeWindowProjection(session: TmuxControlSession, windowId: string) {
   const window = session.windows.get(windowId);
   if (!window) {
@@ -1556,6 +1787,9 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
   const paneTerminalIds = [...session.panes.values()]
     .filter((pane) => pane.windowId === windowId)
     .map((pane) => pane.terminalId);
+  const paneIds = [...session.panes.values()]
+    .filter((pane) => pane.windowId === windowId)
+    .map((pane) => pane.paneId);
   const activeTerminalIdBeforeRemoval = useTerminalStore.getState().activeTerminalId;
   const shouldFocusAfterRemoval = Boolean(
     activeTerminalIdBeforeRemoval
@@ -1576,6 +1810,9 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
     if (pane.windowId === windowId) {
       clearPaneRenderingTimers(pane);
       session.panes.delete(pane.paneId);
+      session.pendingPaneOutput.delete(pane.paneId);
+      session.paneOutputActivitySuppressionUntil.delete(pane.paneId);
+      session.suppressedPaneOutputActivitySummaries.delete(pane.paneId);
       disposePaneTerminal(pane.terminalId, {
         sessionId: session.id,
         windowId,
@@ -1584,6 +1821,9 @@ function removeWindowProjection(session: TmuxControlSession, windowId: string) {
       });
     }
   }
+  session.pendingInitialPaneCaptures = session.pendingInitialPaneCaptures.filter(
+    (paneId) => !paneIds.includes(paneId)
+  );
 
   removeWindowNodeFromAllParents(window.nodeId);
   useProjectStore.getState().removeNode(window.nodeId);
@@ -1692,11 +1932,25 @@ function upsertWindowProjection(
     captureInitialContent?: boolean;
   }
 ): WindowProjectionResult | null {
-  if (panes.length === 0) {
+  ensureOptimisticCloseState(session);
+  if (session.optimisticallyClosedWindowIds.has(snapshot.windowId)) {
+    debugLog("tmux.session", "suppress optimistically closed window projection", {
+      sessionId: session.id,
+      windowId: snapshot.windowId,
+      title: snapshot.title,
+    });
+    return null;
+  }
+
+  const projectedPanes = panes.filter(
+    (pane) => !session.optimisticallyClosedPaneIds.has(pane.paneId)
+  );
+  if (projectedPanes.length === 0) {
     debugLog("tmux.session", "skip window projection with no panes", {
       sessionId: session.id,
       windowId: snapshot.windowId,
       title: snapshot.title,
+      suppressedPanes: panes.length - projectedPanes.length,
     });
     return null;
   }
@@ -1783,7 +2037,10 @@ function upsertWindowProjection(
     snapshot.windowId,
     snapshot.connectionKey
   );
-  const paneIds = new Set(panes.map((pane) => pane.paneId));
+  const paneIds = new Set(projectedPanes.map((pane) => pane.paneId));
+  if (windowState.activePaneId && !paneIds.has(windowState.activePaneId)) {
+    windowState.activePaneId = null;
+  }
   for (const pane of [...session.panes.values()]) {
     if (pane.windowId === snapshot.windowId && !paneIds.has(pane.paneId)) {
       clearPaneRenderingTimers(pane);
@@ -1795,7 +2052,7 @@ function upsertWindowProjection(
   const layoutPanes: TmuxPaneLayoutRecord[] = [];
   const changedPaneIds = new Set<string>();
   const paneIdsNeedingInitialContent: string[] = [];
-  for (const paneSnapshot of panes) {
+  for (const paneSnapshot of projectedPanes) {
     let paneState = session.panes.get(paneSnapshot.paneId);
     const existingPaneState = paneState;
     if (!paneState) {
@@ -1956,8 +2213,8 @@ function upsertWindowProjection(
     }
   }
 
-  if (!windowState.activePaneId && panes.length > 0) {
-    windowState.activePaneId = panes[0].paneId;
+  if (!windowState.activePaneId && projectedPanes.length > 0) {
+    windowState.activePaneId = projectedPanes[0].paneId;
   }
 
   const nextPaneTerminalIds = new Set(layoutPanes.map((pane) => pane.terminalId));
@@ -3655,14 +3912,28 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
     if (windowLines.length > 0) {
       return;
     }
+    reconcileOptimisticTmuxClosesFromSnapshot(session, [], [], windowId);
     removeWindowProjection(session, windowId);
     syncWindowNodeOrder(session);
     return;
   }
 
-  const paneSnapshots = paneLines
+  const rawPaneSnapshots = paneLines
     .map(parseTmuxPaneSnapshot)
     .filter((value): value is TmuxPaneSnapshot => Boolean(value));
+  reconcileOptimisticTmuxClosesFromSnapshot(
+    session,
+    [snapshot],
+    rawPaneSnapshots,
+    windowId
+  );
+  ensureOptimisticCloseState(session);
+  if (session.optimisticallyClosedWindowIds.has(windowId)) {
+    return;
+  }
+  const paneSnapshots = rawPaneSnapshots.filter(
+    (pane) => !session.optimisticallyClosedPaneIds.has(pane.paneId)
+  );
   if (paneSnapshots.length === 0) {
     debugLog("tmux.refresh", "refresh window missing panes", {
       sessionId: session.id,
@@ -3783,26 +4054,43 @@ async function hydrateControlSession(session: TmuxControlSession) {
       sendCommand(session, buildTmuxPaneSnapshotCommand({ allWindows: true })),
     ]);
 
-    const windowSnapshots = windowLines
+    const rawWindowSnapshots = windowLines
       .map(parseTmuxWindowSnapshot)
       .filter((value): value is TmuxWindowSnapshot => Boolean(value));
-    const paneSnapshots = paneLines
+    const rawPaneSnapshots = paneLines
       .map(parseTmuxPaneSnapshot)
       .filter((value): value is TmuxPaneSnapshot => Boolean(value));
 
-    if (windowSnapshots.length === 0 || paneSnapshots.length === 0) {
+    if (rawWindowSnapshots.length === 0 || rawPaneSnapshots.length === 0) {
       debugLog("tmux.session", "hydrate skipped unsafe snapshot", {
         sessionId: session.id,
         transportTerminalId: session.transportTerminalId,
         windowLineCount: windowLines.length,
         paneLineCount: paneLines.length,
-        parsedWindows: windowSnapshots.length,
-        parsedPanes: paneSnapshots.length,
+        parsedWindows: rawWindowSnapshots.length,
+        parsedPanes: rawPaneSnapshots.length,
         windowLines: windowLines.slice(0, 5).map((line) => previewDebugText(line, 120)),
         paneLines: paneLines.slice(0, 5).map((line) => previewDebugText(line, 120)),
       });
       return;
     }
+
+    reconcileOptimisticTmuxClosesFromSnapshot(
+      session,
+      rawWindowSnapshots,
+      rawPaneSnapshots
+    );
+    ensureOptimisticCloseState(session);
+    const windowSnapshots = rawWindowSnapshots.filter(
+      (snapshot) => !session.optimisticallyClosedWindowIds.has(snapshot.windowId)
+    );
+    const visibleWindowIds = new Set(windowSnapshots.map((snapshot) => snapshot.windowId));
+    const paneSnapshots = rawPaneSnapshots.filter(
+      (snapshot) => (
+        visibleWindowIds.has(snapshot.windowId)
+        && !session.optimisticallyClosedPaneIds.has(snapshot.paneId)
+      )
+    );
 
     const panesByWindowId = new Map<string, TmuxPaneSnapshot[]>();
     for (const pane of paneSnapshots) {
@@ -4070,6 +4358,15 @@ function teardownControlSession(session: TmuxControlSession, reason: string) {
     window.clearTimeout(session.bootstrapRefreshTimer);
     session.bootstrapRefreshTimer = null;
   }
+  ensureOptimisticCloseState(session);
+  for (const cleanup of session.pendingCloseCleanups.values()) {
+    for (const timerId of cleanup.retryTimerIds) {
+      window.clearTimeout(timerId);
+    }
+  }
+  session.pendingCloseCleanups.clear();
+  session.optimisticallyClosedWindowIds.clear();
+  session.optimisticallyClosedPaneIds.clear();
 
   const activeTerminalId = useTerminalStore.getState().activeTerminalId;
   const activeSession = activeTerminalId ? getTerminalSession(activeTerminalId) : null;
@@ -4135,6 +4432,15 @@ function handleNotification(session: TmuxControlSession, line: string) {
     }
     const pane = session.panes.get(parsed.paneId);
     if (!pane) {
+      ensureOptimisticCloseState(session);
+      if (session.optimisticallyClosedPaneIds.has(parsed.paneId)) {
+        debugLog("tmux.notify", "drop output for optimistically closed pane", {
+          sessionId: session.id,
+          paneId: parsed.paneId,
+          bytes: parsed.value.length,
+        });
+        return;
+      }
       const pending = pushPendingPaneOutput(session, parsed.paneId, parsed.value);
       debugLog("tmux.notify", "buffer output for pending pane", {
         sessionId: session.id,
@@ -4239,6 +4545,7 @@ function handleNotification(session: TmuxControlSession, line: string) {
       : "%unlinked-window-close ";
     const windowId = line.slice(prefix.length).trim();
     if (windowId) {
+      finishOptimisticTmuxClose(session, "window", windowId, "window-close-notification");
       removeWindowProjection(session, windowId);
       syncWindowNodeOrder(session);
     }
@@ -4327,7 +4634,11 @@ function processControlLine(session: TmuxControlSession, line: string) {
         responseLines: current.lines.length,
         responsePreview: previewDebugText(current.lines.join("\n"), 200),
       });
-      current.pending?.reject(new Error(current.lines.join("\n") || `tmux command failed: ${failedCommand}`));
+      current.pending?.reject(
+        new TmuxCommandResponseError(
+          current.lines.join("\n") || `tmux command failed: ${failedCommand}`
+        )
+      );
       return;
     }
     session.currentCommand.lines.push(line);
@@ -4473,6 +4784,9 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     initialPaneCaptureActive: false,
     paneOutputActivitySuppressionUntil: new Map(),
     suppressedPaneOutputActivitySummaries: new Map(),
+    optimisticallyClosedWindowIds: new Set(),
+    optimisticallyClosedPaneIds: new Set(),
+    pendingCloseCleanups: new Map(),
   };
 
   controlSessions.set(session.id, session);
@@ -4954,31 +5268,75 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
   if (!terminal || !session) {
     return false;
   }
+  ensureOptimisticCloseState(session);
 
   if (terminal.backendKind === "tmux-window" && terminal.tmuxWindowId) {
-    debugLog("tmux.action", "close window", {
+    const windowId = terminal.tmuxWindowId;
+    const paneIds = [...session.panes.values()]
+      .filter((pane) => pane.windowId === windowId)
+      .map((pane) => pane.paneId);
+    debugLog("tmux.action", "close window optimistically", {
       terminalId,
       sessionId: session.id,
-      windowId: terminal.tmuxWindowId,
+      windowId,
     });
-    await sendCommand(session, `kill-window -t ${terminal.tmuxWindowId}`);
+    session.optimisticallyClosedWindowIds.add(windowId);
+    for (const paneId of paneIds) {
+      session.optimisticallyClosedPaneIds.add(paneId);
+    }
+    removeWindowProjection(session, windowId);
+    syncWindowNodeOrder(session);
+    scheduleOptimisticTmuxCloseCleanup(
+      session,
+      "window",
+      windowId,
+      windowId,
+      `kill-window -t ${windowId}`,
+      paneIds
+    );
     return true;
   }
 
   if (terminal.backendKind === "tmux-pane" && terminal.tmuxPaneId && terminal.tmuxWindowId) {
-    const paneCount = [...session.panes.values()].filter((pane) => pane.windowId === terminal.tmuxWindowId).length;
-    debugLog("tmux.action", "close pane", {
+    const paneId = terminal.tmuxPaneId;
+    const windowId = terminal.tmuxWindowId;
+    const paneCount = [...session.panes.values()].filter((pane) => pane.windowId === windowId).length;
+    debugLog("tmux.action", "close pane optimistically", {
       terminalId,
       sessionId: session.id,
-      windowId: terminal.tmuxWindowId,
-      paneId: terminal.tmuxPaneId,
+      windowId,
+      paneId,
       paneCount,
       closesWindow: paneCount <= 1,
     });
     if (paneCount <= 1) {
-      await sendCommand(session, `kill-window -t ${terminal.tmuxWindowId}`);
+      const paneIds = [...session.panes.values()]
+        .filter((pane) => pane.windowId === windowId)
+        .map((pane) => pane.paneId);
+      session.optimisticallyClosedWindowIds.add(windowId);
+      for (const closedPaneId of paneIds) {
+        session.optimisticallyClosedPaneIds.add(closedPaneId);
+      }
+      removeWindowProjection(session, windowId);
+      syncWindowNodeOrder(session);
+      scheduleOptimisticTmuxCloseCleanup(
+        session,
+        "window",
+        windowId,
+        windowId,
+        `kill-window -t ${windowId}`,
+        paneIds
+      );
     } else {
-      await sendCommand(session, `kill-pane -t ${terminal.tmuxPaneId}`);
+      session.optimisticallyClosedPaneIds.add(paneId);
+      removePaneProjection(session, paneId);
+      scheduleOptimisticTmuxCloseCleanup(
+        session,
+        "pane",
+        paneId,
+        windowId,
+        `kill-pane -t ${paneId}`
+      );
     }
     return true;
   }
