@@ -1689,6 +1689,10 @@ function readTerminalVisualTextSnapshot(
 /** Focus the xterm instance for a given terminal (e.g. after renaming). */
 export function focusTerminalInstance(terminalId: string) {
   instances.get(terminalId)?.xterm.focus();
+  // Focusing on a phone is what raises the keyboard, which shrinks the box the
+  // terminal lives in. Pin here as well as on the viewport change, so the
+  // prompt is already in view rather than needing a scroll afterwards.
+  scrollTerminalToBottom(terminalId);
 }
 
 export function refreshAllTerminalFrontends(reason: string) {
@@ -1801,16 +1805,59 @@ export function isTerminalScrolledToBottom(terminalId: string): boolean {
 }
 
 /**
- * Show the newest output. Deferred a frame because a write queued through
- * `batchedWrite` has not reached xterm yet, so scrolling now would land on the
- * old bottom.
+ * Show the newest output.
+ *
+ * Two different boxes can be scrolled away from the bottom and both have to be
+ * dealt with. xterm has its own scrollback, and on a narrow screen the grid is
+ * wider and taller than the screen, so `.terminal-container` scrolls the
+ * element itself — that second one is what leaves the prompt off screen when a
+ * soft keyboard opens.
+ *
+ * Repeated on the next frame and again after the keyboard animation, because a
+ * write queued through `batchedWrite` has not reached xterm yet, and because
+ * iOS keeps resizing and scrolling for a few hundred milliseconds after the
+ * keyboard starts moving.
  */
 export function scrollTerminalToBottom(terminalId: string) {
-  const scroll = () => instances.get(terminalId)?.xterm.scrollToBottom();
+  const scroll = () => {
+    const instance = instances.get(terminalId);
+    if (!instance) {
+      return;
+    }
+    instance.xterm.scrollToBottom();
+    const scroller = findScrollContainer(instance.element);
+    if (scroller) {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+  };
+
   scroll();
   if (typeof requestAnimationFrame === "function") {
     requestAnimationFrame(scroll);
   }
+  if (typeof window !== "undefined") {
+    window.setTimeout(scroll, KEYBOARD_SETTLE_MS);
+  }
+}
+
+/** How long iOS keeps moving things after the keyboard begins to open. */
+const KEYBOARD_SETTLE_MS = 300;
+
+/** The nearest ancestor that actually scrolls, if any. */
+export function findScrollContainer(element: HTMLElement | null): HTMLElement | null {
+  let current: HTMLElement | null = element;
+  while (current) {
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(current) : null;
+    const overflowY = style?.overflowY ?? "";
+    if (
+      (overflowY === "auto" || overflowY === "scroll")
+      && current.scrollHeight > current.clientHeight
+    ) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
 }
 
 /** Clear a replica's terminal before the desktop replays its current screen. */

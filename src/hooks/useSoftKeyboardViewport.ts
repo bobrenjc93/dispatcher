@@ -26,6 +26,11 @@ export function useSoftKeyboardViewport(isCompact: boolean, onViewportChange: ()
         return;
       }
       lastHeight = height;
+      // The app now fits the visual viewport exactly, so any page scroll iOS
+      // did to reveal the focused element is just an offset we do not want.
+      if (window.scrollY !== 0) {
+        window.scrollTo(0, 0);
+      }
       // Consumed by the compact layout, which uses it instead of 100dvh so the
       // terminal stops where the keyboard starts.
       document.documentElement.style.setProperty("--app-viewport-height", `${height}px`);

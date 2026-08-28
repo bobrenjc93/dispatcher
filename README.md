@@ -146,6 +146,11 @@ would change what the desktop shows. The **Fit** button chooses how to lose:
 
 The choice is per-device, so a phone can differ from the desktop.
 
+Two boxes can be scrolled away from the prompt and both are handled: xterm's
+own scrollback, and — because in readable mode the grid is larger than the
+screen — the `.terminal-container` that scrolls the element itself. The second
+is the one a soft keyboard pushes off screen.
+
 The terminal opens on the newest output and stays there as output arrives,
 unless you scroll up — then it leaves you where you put it until you scroll
 back down. Opening the keyboard does not cost you that position: a soft
