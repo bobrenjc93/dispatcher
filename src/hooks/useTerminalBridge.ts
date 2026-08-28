@@ -1780,7 +1780,37 @@ export function applyMirroredTerminalSize(terminalId: string, cols: number, rows
 /** Write mirrored output into the replica's copy of a terminal. */
 export function applyMirroredTerminalOutput(terminalId: string, data: string) {
   ensureTerminalFrontend(terminalId);
+  // Follow the tail unless the reader has deliberately scrolled up. A replica
+  // is handed a screenful of replay the moment it connects, and landing
+  // halfway up it is useless — the prompt is what you came for.
+  const wasAtBottom = isTerminalScrolledToBottom(terminalId);
   batchedWrite(terminalId, data, { allowParkedWrite: true });
+  if (wasAtBottom) {
+    scrollTerminalToBottom(terminalId);
+  }
+}
+
+/** True when the viewport is showing the newest line. */
+export function isTerminalScrolledToBottom(terminalId: string): boolean {
+  const xterm = instances.get(terminalId)?.xterm;
+  if (!xterm) {
+    return true;
+  }
+  const buffer = xterm.buffer.active;
+  return buffer.viewportY >= buffer.baseY;
+}
+
+/**
+ * Show the newest output. Deferred a frame because a write queued through
+ * `batchedWrite` has not reached xterm yet, so scrolling now would land on the
+ * old bottom.
+ */
+export function scrollTerminalToBottom(terminalId: string) {
+  const scroll = () => instances.get(terminalId)?.xterm.scrollToBottom();
+  scroll();
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(scroll);
+  }
 }
 
 /** Clear a replica's terminal before the desktop replays its current screen. */

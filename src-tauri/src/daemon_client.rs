@@ -30,6 +30,7 @@ type Sinks = Arc<Mutex<HashMap<String, Channel<TerminalOutput>>>>;
 
 pub struct DaemonClient {
     writer: Mutex<TcpStream>,
+    app_handle: Mutex<Option<AppHandle>>,
     next_id: AtomicU64,
     pending: Pending,
     sinks: Sinks,
@@ -56,6 +57,7 @@ impl DaemonClient {
             .map_err(|err| PtyError::from(err.to_string()))?;
         let client = Arc::new(DaemonClient {
             writer: Mutex::new(writer),
+            app_handle: Mutex::new(Some(app_handle.clone())),
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             sinks: Arc::new(Mutex::new(HashMap::new())),
@@ -190,6 +192,14 @@ impl DaemonClient {
     }
 
     pub fn write_terminal(&self, terminal_id: &str, data: &str) -> Result<(), PtyError> {
+        // Recorded here rather than in the daemon, which has no recorder. Both
+        // directions have to land in the same cast or a recording shows only
+        // half the conversation — output with no sign of what asked for it.
+        if let Some(app_handle) = self.app_handle.lock().unwrap().as_ref() {
+            app_handle
+                .state::<crate::session_recorder::SessionRecorder>()
+                .record_transport_input(terminal_id, data);
+        }
         self.request(Request::WriteTerminal {
             terminal_id: terminal_id.to_owned(),
             data: data.to_owned(),
@@ -198,6 +208,14 @@ impl DaemonClient {
     }
 
     pub fn resize_terminal(&self, terminal_id: &str, cols: u16, rows: u16) -> Result<(), PtyError> {
+        if let Some(app_handle) = self.app_handle.lock().unwrap().as_ref() {
+            app_handle
+                .state::<crate::session_recorder::SessionRecorder>()
+                .record_event(
+                    "resize",
+                    serde_json::json!({ "terminalId": terminal_id, "cols": cols, "rows": rows }),
+                );
+        }
         self.request(Request::ResizeTerminal {
             terminal_id: terminal_id.to_owned(),
             cols,

@@ -146,6 +146,18 @@ would change what the desktop shows. The **Fit** button chooses how to lose:
 
 The choice is per-device, so a phone can differ from the desktop.
 
+The terminal opens on the newest output and stays there as output arrives,
+unless you scroll up — then it leaves you where you put it until you scroll
+back down. Opening the keyboard does not cost you that position: a soft
+keyboard shrinks the *visual* viewport rather than the window, so the app
+sizes itself to the visual viewport and re-pins the terminal each time the
+keyboard opens, closes or rotates. Without that the prompt sits behind the
+keyboard and every tap means scrolling again.
+
+The terminal is also focused on load, so the first tap types rather than
+merely focusing. iOS will not raise the keyboard until that first tap
+regardless — it only opens one in response to a gesture, never on load.
+
 A soft keyboard has no Ctrl, Esc, Tab or arrows, so a key bar sits under the
 terminal with **esc**, **tab**, **^C**, **^R** and the four arrows. **ctrl** is
 sticky: tap it, then tap a letter, and the two are folded into a control code —

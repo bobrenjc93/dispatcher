@@ -20,7 +20,12 @@ import {
 } from "./lib/keyboardShortcuts";
 import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from "./lib/layoutUtils";
 import { closeTerminal, warmPool, refreshPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
-import { disposeTerminalInstance } from "./hooks/useTerminalBridge";
+import {
+  disposeTerminalInstance,
+  focusTerminalInstance,
+  refitAllTerminalsToViewport,
+  scrollTerminalToBottom,
+} from "./hooks/useTerminalBridge";
 import { useFileDrop } from "./hooks/useFileDrop";
 import { useAppStateBackup } from "./hooks/useAppStateBackup";
 import { useRecoveryBootstrap } from "./hooks/useRecoveryBootstrap";
@@ -32,6 +37,7 @@ import { startSessionRecording } from "./lib/sessionRecorder";
 import { setAttachStalledHandler } from "./lib/tmuxAttachWatchdog";
 import { queueTerminalOutput } from "./hooks/useTerminalBridge";
 import { useCompactViewport } from "./hooks/useCompactViewport";
+import { useSoftKeyboardViewport } from "./hooks/useSoftKeyboardViewport";
 import { isPrimaryClient } from "./lib/replication";
 import { debugLog } from "./lib/debugLog";
 import {
@@ -106,6 +112,36 @@ export default function App() {
   const removeLayout = useLayoutStore((s) => s.removeLayout);
 
   const isCompact = useCompactViewport();
+
+  // The keyboard opening or closing changes how much room the terminal has, so
+  // refit it and put the newest output back in view.
+  const handleSoftKeyboardViewport = useCallback(() => {
+    const terminalId = useTerminalStore.getState().activeTerminalId;
+    refitAllTerminalsToViewport();
+    if (terminalId) {
+      scrollTerminalToBottom(terminalId);
+    }
+  }, []);
+  useSoftKeyboardViewport(isCompact, handleSoftKeyboardViewport);
+
+  // Land on the newest output rather than wherever the replay happened to
+  // leave the viewport. Focus goes with it so the first tap types instead of
+  // just focusing — though iOS will not raise the keyboard until that tap,
+  // since it only opens one in response to a gesture.
+  useEffect(() => {
+    if (!isCompact) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const terminalId = useTerminalStore.getState().activeTerminalId;
+      if (!terminalId) {
+        return;
+      }
+      scrollTerminalToBottom(terminalId);
+      focusTerminalInstance(terminalId);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [isCompact]);
   const [isMobileNavOpen, setMobileNavOpen] = useState(false);
   const detailPanelCollapsed = useUiStore((s) => s.isDetailPanelCollapsed);
   const setDetailPanelCollapsed = useUiStore((s) => s.setDetailPanelCollapsed);
