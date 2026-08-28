@@ -48,8 +48,18 @@ pub fn create_terminal(
         terminal_id, cwd, cols, rows
     ));
 
-    let result =
-        state.create_terminal(&app_handle, terminal_id.clone(), cwd, cols, rows, on_output);
+    let result = match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+        crate::daemon_client::TerminalBackend::Daemon(client) => {
+            client.create_terminal(terminal_id.clone(), cwd, cols, rows, on_output)
+        }
+        crate::daemon_client::TerminalBackend::InProcess => state.create_terminal(
+            terminal_id.clone(),
+            cwd,
+            cols,
+            rows,
+            Box::new(crate::tauri_host::ChannelSink::new(on_output)),
+        ),
+    };
     if let Err(err) = &result {
         let _ = crate::debug_log::append_debug_log(&format!(
             "[backend:create_terminal:error] terminal_id={} error={}",
@@ -73,7 +83,10 @@ pub fn write_terminal(
         preview_terminal_data(&data, 120)
     ));
 
-    let result = state.write_terminal(&app_handle, &terminal_id, data.as_bytes());
+    let result = match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+        crate::daemon_client::TerminalBackend::Daemon(client) => client.write_terminal(&terminal_id, &data),
+        crate::daemon_client::TerminalBackend::InProcess => state.write_terminal(&terminal_id, data.as_bytes()),
+    };
     if let Err(err) = &result {
         let _ = crate::debug_log::append_debug_log(&format!(
             "[backend:write_terminal:error] terminal_id={} error={}",
@@ -96,7 +109,10 @@ pub fn resize_terminal(
         terminal_id, cols, rows
     ));
 
-    let result = state.resize_terminal(&app_handle, &terminal_id, cols, rows);
+    let result = match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+        crate::daemon_client::TerminalBackend::Daemon(client) => client.resize_terminal(&terminal_id, cols, rows),
+        crate::daemon_client::TerminalBackend::InProcess => state.resize_terminal(&terminal_id, cols, rows),
+    };
     if let Err(err) = &result {
         let _ = crate::debug_log::append_debug_log(&format!(
             "[backend:resize_terminal:error] terminal_id={} error={}",
@@ -107,13 +123,20 @@ pub fn resize_terminal(
 }
 
 #[tauri::command]
-pub fn close_terminal(state: State<'_, PtyManager>, terminal_id: String) -> Result<(), PtyError> {
+pub fn close_terminal(
+    app_handle: AppHandle,
+    state: State<'_, PtyManager>,
+    terminal_id: String,
+) -> Result<(), PtyError> {
     let _ = crate::debug_log::append_debug_log(&format!(
         "[backend:close_terminal] terminal_id={}",
         terminal_id
     ));
 
-    let result = state.close_terminal(&terminal_id);
+    let result = match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+        crate::daemon_client::TerminalBackend::Daemon(client) => client.close_terminal(&terminal_id),
+        crate::daemon_client::TerminalBackend::InProcess => state.close_terminal(&terminal_id),
+    };
     if let Err(err) = &result {
         let _ = crate::debug_log::append_debug_log(&format!(
             "[backend:close_terminal:error] terminal_id={} error={}",
@@ -125,10 +148,14 @@ pub fn close_terminal(state: State<'_, PtyManager>, terminal_id: String) -> Resu
 
 #[tauri::command]
 pub fn get_terminal_cwd(
+    app_handle: AppHandle,
     state: State<'_, PtyManager>,
     terminal_id: String,
 ) -> Result<Option<String>, PtyError> {
-    let result = state.get_terminal_cwd(&terminal_id);
+    let result = match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+        crate::daemon_client::TerminalBackend::Daemon(client) => client.get_terminal_cwd(&terminal_id),
+        crate::daemon_client::TerminalBackend::InProcess => state.get_terminal_cwd(&terminal_id),
+    };
     match &result {
         Ok(cwd) => {
             let _ = crate::debug_log::append_debug_log(&format!(
@@ -149,16 +176,26 @@ pub fn get_terminal_cwd(
 /// Terminals whose PTY is still running in this process. After a reload the UI
 /// uses this to reattach to what survived instead of respawning it.
 #[tauri::command]
-pub fn list_live_terminals(state: State<'_, PtyManager>) -> Result<Vec<String>, PtyError> {
-    Ok(state.live_terminal_ids())
+pub fn list_live_terminals(
+    app_handle: AppHandle,
+    state: State<'_, PtyManager>,
+) -> Result<Vec<String>, PtyError> {
+    match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+        crate::daemon_client::TerminalBackend::Daemon(client) => client.live_terminal_ids(),
+        crate::daemon_client::TerminalBackend::InProcess => Ok(state.live_terminal_ids()),
+    }
 }
 
 #[tauri::command]
 pub fn get_terminal_debug_info(
+    app_handle: AppHandle,
     state: State<'_, PtyManager>,
     terminal_id: String,
 ) -> Result<TerminalDebugInfo, PtyError> {
-    state.get_terminal_debug_info(&terminal_id)
+    match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+        crate::daemon_client::TerminalBackend::Daemon(client) => client.get_terminal_debug_info(&terminal_id),
+        crate::daemon_client::TerminalBackend::InProcess => state.get_terminal_debug_info(&terminal_id),
+    }
 }
 
 #[tauri::command]
@@ -167,12 +204,18 @@ pub fn warm_pool(
     state: State<'_, PtyManager>,
     count: usize,
 ) -> Result<(), PtyError> {
-    state.warm_pool(&app_handle, count)
+    match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+        crate::daemon_client::TerminalBackend::Daemon(client) => client.warm_pool(count),
+        crate::daemon_client::TerminalBackend::InProcess => state.warm_pool(count),
+    }
 }
 
 #[tauri::command]
 pub fn refresh_pool(app_handle: AppHandle, state: State<'_, PtyManager>) -> Result<(), PtyError> {
-    state.refresh_pool(&app_handle)
+    match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+        crate::daemon_client::TerminalBackend::Daemon(client) => client.refresh_pool(),
+        crate::daemon_client::TerminalBackend::InProcess => state.refresh_pool(),
+    }
 }
 
 #[tauri::command]

@@ -1,13 +1,12 @@
 use crate::errors::PtyError;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use tauri::{ipc::Channel, AppHandle, Emitter, Manager};
 
 const MAX_POOL_SIZE: usize = 3;
 
@@ -53,10 +52,8 @@ fn should_log_protocol_output(data: &str) -> bool {
 /// Hand every byte to the session recorder. This is the one place all PTY
 /// output passes through, so it is where "what did ssh and tmux actually send
 /// us" gets captured.
-fn record_output(app_handle: &AppHandle, terminal_id: &str, data: &str) {
-    app_handle
-        .state::<crate::session_recorder::SessionRecorder>()
-        .record_transport_output(terminal_id, data);
+fn record_output(host: &Arc<dyn PtyHost>, terminal_id: &str, data: &str) {
+    host.record_output(terminal_id, data);
 }
 
 fn log_protocol_output_chunk(terminal_id: &str, data: &str) {
@@ -378,6 +375,34 @@ fn utf8_split_point(bytes: &[u8]) -> usize {
 
 // -- Output routing for reader threads --
 
+/// Everything the PTY layer needs from whatever is hosting it.
+///
+/// In the desktop process that is Tauri. In the daemon it is the socket to the
+/// app that is currently attached. Keeping it behind a trait is what lets the
+/// same PTY code run in either, so terminals can outlive the window.
+pub trait PtyHost: Send + Sync + 'static {
+    fn record_output(&self, terminal_id: &str, data: &str);
+    fn record_input(&self, terminal_id: &str, data: &str);
+    fn record_event(&self, name: &str, payload: serde_json::Value);
+    fn terminal_exited(&self, terminal_id: &str, exit_code: Option<i32>);
+}
+
+/// Where one terminal's output goes. Returns false once the consumer is gone,
+/// which leaves the PTY running and still recording for the next attach.
+pub trait OutputSink: Send + Sync {
+    fn send(&self, terminal_id: &str, data: &str) -> bool;
+}
+
+/// Used before a host is installed, and in tests.
+pub struct NullPtyHost;
+
+impl PtyHost for NullPtyHost {
+    fn record_output(&self, _terminal_id: &str, _data: &str) {}
+    fn record_input(&self, _terminal_id: &str, _data: &str) {}
+    fn record_event(&self, _name: &str, _payload: serde_json::Value) {}
+    fn terminal_exited(&self, _terminal_id: &str, _exit_code: Option<i32>) {}
+}
+
 /// How much output each terminal remembers so a reconnecting UI can be shown
 /// what it missed instead of starting from a blank screen.
 const REPLAY_LIMIT_BYTES: usize = 256 * 1024;
@@ -398,7 +423,7 @@ enum OutputMode {
 struct OutputRouter {
     mode: OutputMode,
     assigned_id: Option<String>,
-    channel: Option<Channel<TerminalOutput>>,
+    channel: Option<Box<dyn OutputSink>>,
     replay: Vec<u8>,
 }
 
@@ -431,14 +456,8 @@ impl OutputRouter {
     }
 
     fn emit(&mut self, terminal_id: &str, data: String) {
-        if let Some(channel) = &self.channel {
-            if channel
-                .send(TerminalOutput {
-                    terminal_id: terminal_id.to_owned(),
-                    data,
-                })
-                .is_err()
-            {
+        if let Some(sink) = &self.channel {
+            if !sink.send(terminal_id, &data) {
                 // The UI went away. Keep the PTY running and keep recording;
                 // the next attach replays what was missed.
                 self.channel = None;
@@ -452,7 +471,7 @@ impl OutputRouter {
 /// Uses a carry buffer so multi-byte UTF-8 straddling a 4096-byte read boundary
 /// is not corrupted.
 fn spawn_reader_thread(
-    app_handle: AppHandle,
+    host: Arc<dyn PtyHost>,
     mut reader: Box<dyn Read + Send>,
     router: Arc<Mutex<OutputRouter>>,
     child_arc: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>,
@@ -469,7 +488,7 @@ fn spawn_reader_thread(
                     let terminal_id = terminal_id.clone();
                     let data = String::from_utf8_lossy(bytes).to_string();
                     log_protocol_output_chunk(&terminal_id, &data);
-                    record_output(&app_handle, &terminal_id, &data);
+                    record_output(&host, &terminal_id, &data);
                     r.record_replay(bytes);
                     r.emit(&terminal_id, data);
                 }
@@ -506,13 +525,7 @@ fn spawn_reader_thread(
 
         let assigned_id = router.lock().unwrap().assigned_id.clone();
         if let Some(terminal_id) = assigned_id {
-            let _ = app_handle.emit(
-                "terminal-exit",
-                TerminalExitPayload {
-                    terminal_id,
-                    exit_code,
-                },
-            );
+            host.terminal_exited(&terminal_id, exit_code);
         }
     });
 }
@@ -534,6 +547,7 @@ struct PoolEntry {
 }
 
 pub struct PtyManager {
+    host: std::sync::OnceLock<Arc<dyn PtyHost>>,
     sessions: Mutex<HashMap<String, PtySession>>,
     pool: Mutex<Vec<PoolEntry>>,
 }
@@ -541,24 +555,38 @@ pub struct PtyManager {
 impl PtyManager {
     pub fn new() -> Self {
         PtyManager {
+            host: std::sync::OnceLock::new(),
             sessions: Mutex::new(HashMap::new()),
             pool: Mutex::new(Vec::new()),
         }
     }
 
+    /// Install the host. Done once during setup, because the Tauri handle does
+    /// not exist when this manager is constructed.
+    pub fn set_host(&self, host: Arc<dyn PtyHost>) {
+        let _ = self.host.set(host);
+    }
+
+    fn host(&self) -> Arc<dyn PtyHost> {
+        self.host
+            .get()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(NullPtyHost) as Arc<dyn PtyHost>)
+    }
+
     /// Pre-spawn PTYs into the pool, up to MAX_POOL_SIZE total.
-    pub fn warm_pool(&self, app_handle: &AppHandle, count: usize) -> Result<(), PtyError> {
+    pub fn warm_pool(&self, count: usize) -> Result<(), PtyError> {
         let current = self.pool.lock().unwrap().len();
         let to_spawn = count.min(MAX_POOL_SIZE.saturating_sub(current));
         for _ in 0..to_spawn {
-            self.spawn_to_pool(app_handle)?;
+            self.spawn_to_pool()?;
         }
         Ok(())
     }
 
     /// Drain all pooled PTYs and spawn fresh replacements so that shell
     /// history, environment variables, etc. are up-to-date.
-    pub fn refresh_pool(&self, app_handle: &AppHandle) -> Result<(), PtyError> {
+    pub fn refresh_pool(&self) -> Result<(), PtyError> {
         let old: Vec<PoolEntry> = {
             let mut pool = self.pool.lock().unwrap();
             pool.drain(..).collect()
@@ -571,10 +599,10 @@ impl PtyManager {
             // Dropping master/writer closes the PTY fds; the reader thread
             // will see EOF and exit on its own.
         }
-        self.warm_pool(app_handle, MAX_POOL_SIZE)
+        self.warm_pool(MAX_POOL_SIZE)
     }
 
-    fn spawn_to_pool(&self, app_handle: &AppHandle) -> Result<(), PtyError> {
+    fn spawn_to_pool(&self) -> Result<(), PtyError> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -609,7 +637,7 @@ impl PtyManager {
 
         self.pool.lock().unwrap().push(entry);
 
-        spawn_reader_thread(app_handle.clone(), reader, router, child_arc);
+        spawn_reader_thread(self.host(), reader, router, child_arc);
 
         Ok(())
     }
@@ -623,16 +651,17 @@ impl PtyManager {
     /// hand. Reattaching keeps all of that and replays what the UI missed.
     pub fn create_terminal(
         &self,
-        app_handle: &AppHandle,
         terminal_id: String,
         cwd: Option<String>,
         cols: u16,
         rows: u16,
-        channel: Channel<TerminalOutput>,
+        channel: Box<dyn OutputSink>,
     ) -> Result<(), PtyError> {
-        if self.reattach_terminal(&terminal_id, cols, rows, &channel)? {
+        // Hand the sink over; it comes back only if there was nothing to
+        // reattach to, since reattaching consumes it.
+        let Some(channel) = self.reattach_terminal(&terminal_id, cols, rows, channel)? else {
             return Ok(());
-        }
+        };
 
         let has_cwd = cwd.as_ref().map_or(false, |d| !d.is_empty());
 
@@ -697,17 +726,16 @@ impl PtyManager {
         }
 
         // Pool empty — spawn fresh
-        self.spawn_fresh(app_handle, terminal_id, cwd, cols, rows, channel)
+        self.spawn_fresh(terminal_id, cwd, cols, rows, channel)
     }
 
     fn spawn_fresh(
         &self,
-        app_handle: &AppHandle,
         terminal_id: String,
         cwd: Option<String>,
         cols: u16,
         rows: u16,
-        channel: Channel<TerminalOutput>,
+        channel: Box<dyn OutputSink>,
     ) -> Result<(), PtyError> {
         let pty_system = native_pty_system();
 
@@ -761,23 +789,24 @@ impl PtyManager {
             sessions.insert(terminal_id.clone(), session);
         }
 
-        spawn_reader_thread(app_handle.clone(), reader, router, child_arc);
+        spawn_reader_thread(self.host(), reader, router, child_arc);
 
         Ok(())
     }
 
-    /// Point an existing terminal at a new channel and replay what the previous
-    /// UI missed. Returns false when there is no such terminal.
+    /// Point an existing terminal at a new sink and replay what the previous UI
+    /// missed. Returns the sink back when there is no such terminal, so the
+    /// caller can go on to spawn one.
     fn reattach_terminal(
         &self,
         terminal_id: &str,
         cols: u16,
         rows: u16,
-        channel: &Channel<TerminalOutput>,
-    ) -> Result<bool, PtyError> {
+        channel: Box<dyn OutputSink>,
+    ) -> Result<Option<Box<dyn OutputSink>>, PtyError> {
         let sessions = self.sessions.lock().unwrap();
         let Some(session) = sessions.get(terminal_id) else {
-            return Ok(false);
+            return Ok(Some(channel));
         };
 
         // Match the new UI's geometry before replaying, so the replayed output
@@ -790,7 +819,7 @@ impl PtyManager {
         });
 
         let mut r = session.router.lock().unwrap();
-        r.channel = Some(channel.clone());
+        r.channel = Some(channel);
         let replay = String::from_utf8_lossy(&r.replay).to_string();
         let replay_bytes = replay.len();
         if !replay.is_empty() {
@@ -803,7 +832,7 @@ impl PtyManager {
             "[backend:reattach_terminal] terminal_id={} cols={} rows={} replay_bytes={}",
             terminal_id, cols, rows, replay_bytes
         ));
-        Ok(true)
+        Ok(None)
     }
 
     /// Terminals whose PTY is still running. The UI uses this after a reload to
@@ -814,13 +843,11 @@ impl PtyManager {
 
     pub fn write_terminal(
         &self,
-        app_handle: &AppHandle,
         terminal_id: &str,
         data: &[u8],
     ) -> Result<(), PtyError> {
-        app_handle
-            .state::<crate::session_recorder::SessionRecorder>()
-            .record_transport_input(terminal_id, &String::from_utf8_lossy(data));
+        self.host()
+            .record_input(terminal_id, &String::from_utf8_lossy(data));
 
         let mut sessions = self.sessions.lock().unwrap();
         let session = sessions
@@ -894,17 +921,14 @@ impl PtyManager {
 
     pub fn resize_terminal(
         &self,
-        app_handle: &AppHandle,
         terminal_id: &str,
         cols: u16,
         rows: u16,
     ) -> Result<(), PtyError> {
-        app_handle
-            .state::<crate::session_recorder::SessionRecorder>()
-            .record_event(
-                "resize",
-                serde_json::json!({ "terminalId": terminal_id, "cols": cols, "rows": rows }),
-            );
+        self.host().record_event(
+            "resize",
+            serde_json::json!({ "terminalId": terminal_id, "cols": cols, "rows": rows }),
+        );
 
         let sessions = self.sessions.lock().unwrap();
         let session = sessions
@@ -976,7 +1000,7 @@ pub struct TerminalOutput {
     pub data: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalDebugInfo {
     pub terminal_id: String,
     pub foreground_pgid: Option<i32>,

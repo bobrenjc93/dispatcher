@@ -1,10 +1,13 @@
 mod commands;
+pub mod daemon;
+mod daemon_client;
 mod debug_log;
 mod errors;
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
 mod font_panel;
 mod pty_manager;
+mod tauri_host;
 mod renderer_watchdog;
 mod replication;
 mod run_diagnostics;
@@ -130,6 +133,20 @@ pub fn run() {
         })
         .setup(move |app| {
             let _ = debug_log::init_debug_log();
+            // The PTY layer is constructed before a handle exists, so give it
+            // its host now that one does.
+            app.state::<PtyManager>()
+                .set_host(std::sync::Arc::new(tauri_host::TauriPtyHost::new(
+                    app.handle().clone(),
+                )));
+            // Terminals live in the daemon so they outlive this process. Falls
+            // back to the in-process manager if the daemon cannot be reached.
+            let backend = daemon_client::TerminalBackend::connect(app.handle());
+            let _ = debug_log::append_debug_log(&format!(
+                "[backend:startup] terminal backend={}",
+                if backend.is_daemon() { "daemon" } else { "in-process" }
+            ));
+            app.manage(backend);
             let window_config = app
                 .config()
                 .app

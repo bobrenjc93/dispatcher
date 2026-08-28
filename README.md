@@ -245,8 +245,36 @@ placeholders, and the control session is resumed by nudging the live transport
 until tmux answers. Terminals that really are gone still become the
 restart-safe placeholders they always did.
 
-This only covers the UI restarting. Changing Rust code restarts the whole
-process, which does end the PTYs.
+### The terminal daemon
+
+PTYs do not live in the app process at all. Dispatcher starts a small daemon —
+the same binary, run with `--dispatcher-daemon` — and attaches to it over a
+loopback socket. Because the terminals belong to the daemon rather than to the
+window, they also survive the app itself:
+
+- quitting and reopening Dispatcher
+- the app crashing
+- `tauri dev` rebuilding after a Rust change
+
+On attach the app asks the daemon which terminals are still running, reattaches
+to them, and is replayed the output it missed — the same path a UI reload
+takes, so ssh connections and tmux control sessions come back intact rather
+than as placeholders.
+
+The daemon exits on its own once it has no terminals left and nothing has been
+attached for fifteen minutes, so it does not linger after you are done. Dev and
+release builds use separate daemons, so a dev rebuild never hands its terminals
+to the installed app.
+
+The socket is loopback TCP rather than a unix socket so the same code works on
+Windows. Anyone who can open a loopback port could otherwise reach it, so a
+connection is only served after presenting the token from the endpoint file,
+which is written owner-readable next to the diagnostic log.
+
+Set `DISPATCHER_DAEMON=0` to keep terminals in the app process instead. That is
+also the automatic fallback: if the daemon cannot be started or reached,
+Dispatcher runs them in-process rather than leaving you with no terminals, and
+says which it chose in the diagnostic log.
 
 ### When a tmux attach goes silent
 
