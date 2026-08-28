@@ -1791,14 +1791,43 @@ export function resetMirroredTerminal(terminalId: string) {
   }
 }
 
+/**
+ * Smallest grid worth believing. Below this the element has not been laid out
+ * yet; propagating it would resize the tmux pane to nonsense.
+ */
+const MIN_SYNCABLE_COLS = 10;
+const MIN_SYNCABLE_ROWS = 2;
+
 export function syncTerminalFrontendSize(terminalId: string, cols: number, rows: number) {
   const instance = instances.get(terminalId);
   if (!instance) {
     return;
   }
 
-  const nextCols = Math.max(2, Math.floor(cols));
-  const nextRows = Math.max(1, Math.floor(rows));
+  const nextCols = Math.floor(cols);
+  const nextRows = Math.floor(rows);
+
+  // An element that is mid-mount or hidden measures as nothing, and clamping
+  // that to a floor used to produce a plausible-looking 2x1 grid which was
+  // then pushed to tmux as `refresh-client -C 2x1`. tmux reflows the pane and
+  // its whole scrollback to two columns, and growing back does not undo it —
+  // the pane is left full of mid-word wraps and duplicated fragments. No real
+  // layout is this small, so treat it as "not measurable yet" and wait.
+  if (
+    !Number.isFinite(nextCols)
+    || !Number.isFinite(nextRows)
+    || nextCols < MIN_SYNCABLE_COLS
+    || nextRows < MIN_SYNCABLE_ROWS
+  ) {
+    debugLog("terminal.frontend", "ignoring degenerate resize", {
+      terminalId,
+      cols,
+      rows,
+      currentCols: instance.xterm.cols,
+      currentRows: instance.xterm.rows,
+    });
+    return;
+  }
 
   // tmux panes are sized by tmux rather than by the viewport, so this is the
   // only place their grid is decided. Replicas need that size too, otherwise

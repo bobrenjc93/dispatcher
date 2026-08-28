@@ -248,6 +248,27 @@ describe("useTerminalBridge synthetic input", () => {
     expect(createdTerminals[0].rows).toBe(25);
   });
 
+  it("ignores a degenerate grid instead of shrinking the tmux pane to it", () => {
+    ensureTerminalScreenshotTarget("term-degenerate");
+    const xterm = createdTerminals[createdTerminals.length - 1];
+
+    syncTerminalFrontendSize("term-degenerate", 88, 67);
+    expect(xterm.cols).toBe(88);
+    expect(xterm.rows).toBe(67);
+    xterm.resize.mockClear();
+
+    // An element mid-mount measures as nothing. Clamping that to a floor sent
+    // `refresh-client -C 2x1` to tmux, which reflowed the pane and its
+    // scrollback to two columns and corrupted it for good.
+    syncTerminalFrontendSize("term-degenerate", 0, 0);
+    syncTerminalFrontendSize("term-degenerate", 2, 1);
+    syncTerminalFrontendSize("term-degenerate", Number.NaN, Number.NaN);
+
+    expect(xterm.resize).not.toHaveBeenCalled();
+    expect(xterm.cols).toBe(88);
+    expect(xterm.rows).toBe(67);
+  });
+
   it("captures attached xterm canvas layers before falling back to synthetic text rendering", () => {
     const context = {
       drawImage: vi.fn(),

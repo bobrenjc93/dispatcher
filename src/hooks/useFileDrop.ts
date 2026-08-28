@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { isWebClient } from "../lib/webBridge";
 import { writeTerminal } from "../lib/tauriCommands";
 import { sendInputToTmuxTerminal } from "../lib/tmuxControl";
 
@@ -20,6 +21,11 @@ function clearHighlight() {
 
 export function useFileDrop() {
   useEffect(() => {
+    // Dragging files in from the OS is a native-window affair; a browser
+    // replica has no webview to ask.
+    if (isWebClient()) {
+      return;
+    }
     const unlisten = getCurrentWebview().onDragDropEvent((event) => {
       if (event.payload.type === "enter" || event.payload.type === "over") {
         clearHighlight();
