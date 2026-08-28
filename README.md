@@ -283,6 +283,15 @@ Windows. Anyone who can open a loopback port could otherwise reach it, so a
 connection is only served after presenting the token from the endpoint file,
 which is written owner-readable next to the diagnostic log.
 
+Because the daemon is the same binary as the app, a pattern kill aimed at
+Dispatcher matches it too and takes every terminal down. To restart the app
+without touching them, exclude the daemon:
+
+```bash
+pkill -f 'Dispatcher$'                       # app only
+pgrep -f -- --dispatcher-daemon              # the daemon, left alone
+```
+
 Set `DISPATCHER_DAEMON=0` to keep terminals in the app process instead. That is
 also the automatic fallback: if the daemon cannot be started or reached,
 Dispatcher runs them in-process rather than leaving you with no terminals, and
