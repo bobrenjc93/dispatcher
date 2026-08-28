@@ -1,6 +1,7 @@
 use crate::errors::PtyError;
 use crate::pty_manager::{PtyManager, TerminalDebugInfo, TerminalOutput};
 use crate::renderer_watchdog::{RendererHeartbeatDetails, RendererWatchdog};
+use crate::replication::ReplicationHub;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
@@ -60,6 +61,7 @@ pub fn create_terminal(
 
 #[tauri::command]
 pub fn write_terminal(
+    app_handle: AppHandle,
     state: State<'_, PtyManager>,
     terminal_id: String,
     data: String,
@@ -71,7 +73,7 @@ pub fn write_terminal(
         preview_terminal_data(&data, 120)
     ));
 
-    let result = state.write_terminal(&terminal_id, data.as_bytes());
+    let result = state.write_terminal(&app_handle, &terminal_id, data.as_bytes());
     if let Err(err) = &result {
         let _ = crate::debug_log::append_debug_log(&format!(
             "[backend:write_terminal:error] terminal_id={} error={}",
@@ -83,6 +85,7 @@ pub fn write_terminal(
 
 #[tauri::command]
 pub fn resize_terminal(
+    app_handle: AppHandle,
     state: State<'_, PtyManager>,
     terminal_id: String,
     cols: u16,
@@ -93,7 +96,7 @@ pub fn resize_terminal(
         terminal_id, cols, rows
     ));
 
-    let result = state.resize_terminal(&terminal_id, cols, rows);
+    let result = state.resize_terminal(&app_handle, &terminal_id, cols, rows);
     if let Err(err) = &result {
         let _ = crate::debug_log::append_debug_log(&format!(
             "[backend:resize_terminal:error] terminal_id={} error={}",
@@ -141,6 +144,13 @@ pub fn get_terminal_cwd(
         }
     }
     result
+}
+
+/// Terminals whose PTY is still running in this process. After a reload the UI
+/// uses this to reattach to what survived instead of respawning it.
+#[tauri::command]
+pub fn list_live_terminals(state: State<'_, PtyManager>) -> Result<Vec<String>, PtyError> {
+    Ok(state.live_terminal_ids())
 }
 
 #[tauri::command]
@@ -356,6 +366,7 @@ pub fn write_app_state_backup(
     app_handle: AppHandle,
     content: String,
     storage_namespace: Option<String>,
+    client_id: Option<String>,
 ) -> Result<String, PtyError> {
     let path = app_state_backup_path(&app_handle, storage_namespace.as_deref())?;
     if let Some(parent) = path.parent() {
@@ -365,8 +376,15 @@ pub fn write_app_state_backup(
     rotate_existing_app_state_backups(&path)?;
 
     let tmp_path = path.with_extension("json.tmp");
-    fs::write(&tmp_path, content)?;
+    fs::write(&tmp_path, &content)?;
     fs::rename(&tmp_path, &path)?;
+
+    // Every client persists the same document shape, so the write doubles as
+    // the sync point: hand it to the replicas so their tabs, layout and notes
+    // follow the desktop window.
+    app_handle
+        .state::<ReplicationHub>()
+        .publish_app_state(&app_handle, content, client_id.as_deref());
 
     Ok(path.display().to_string())
 }
@@ -437,3 +455,4 @@ pub fn hide_font_panel() -> Result<(), PtyError> {
     }
     Ok(())
 }
+

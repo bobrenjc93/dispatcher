@@ -19,6 +19,8 @@ export interface TerminalSession {
   isPinnedGreen?: boolean;
   isPinnedGray?: boolean;
   notifyOnInaction?: boolean;
+  /** Bounce the dock icon when this tab starts needing attention. */
+  bounceOnAttention?: boolean;
   backendKind: TerminalBackendKind;
   restoredFromBackendKind?: TerminalBackendKind;
   tmuxControlSessionId?: string;

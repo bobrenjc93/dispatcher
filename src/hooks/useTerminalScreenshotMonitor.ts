@@ -24,8 +24,10 @@ import {
   prepareInactionNotificationSound,
   shouldNotifyOnInaction,
 } from "../lib/inactionNotification";
+import { bounceDockForAttention, shouldBounceDock } from "../lib/dockAttention";
 import { pushStatusDebug } from "../lib/statusDebug";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
+import { isPrimaryClient } from "../lib/replication";
 import {
   getActiveStatusResizeSuppression,
   getStatusResizeSuppressionForActivity,
@@ -471,6 +473,13 @@ async function writeScreenshotDebugArtifacts(args: {
 
 export function useTerminalScreenshotMonitor() {
   useEffect(() => {
+    // Activity status is derived from terminal content and written into the
+    // workspace document. The desktop window owns that judgement; a replica
+    // running its own copy would fight it over the shared state.
+    if (!isPrimaryClient()) {
+      return;
+    }
+
     const previousHashes = new Map<string, string>();
     const previousComponents = new Map<string, TerminalVisualTextSnapshot[]>();
     const recentHashes = new Map<string, string[]>();
@@ -547,6 +556,26 @@ export function useTerminalScreenshotMonitor() {
         staleStartedAt: args.staleStartedAt,
       });
       void notifyTerminalInaction();
+    };
+
+    const maybeBounceDockForAttention = (args: {
+      tabRootTerminalId: string;
+      title: string;
+      enabled: boolean;
+      wasNeedsAttention: boolean;
+      nextNeedsAttention: boolean;
+      isActiveTab: boolean;
+    }) => {
+      if (!shouldBounceDock({
+        enabled: args.enabled,
+        wasNeedsAttention: args.wasNeedsAttention,
+        nextNeedsAttention: args.nextNeedsAttention,
+        isActiveTab: args.isActiveTab,
+        documentHasFocus: document.hasFocus(),
+      })) {
+        return;
+      }
+      bounceDockForAttention(args.tabRootTerminalId, args.title);
     };
 
     const applyTimestampStatus = (args: {
@@ -649,6 +678,14 @@ export function useTerminalScreenshotMonitor() {
         now: args.now,
         staleStartedAt,
         effectiveChangedAt,
+      });
+      maybeBounceDockForAttention({
+        tabRootTerminalId: args.tabRootTerminalId,
+        title: tabRootSession?.title ?? "Terminal",
+        enabled: tabRootSession?.bounceOnAttention ?? false,
+        wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
+        nextNeedsAttention,
+        isActiveTab,
       });
       const statusDotSemantic = getStatusDotSemantic({
         hasDetectedActivity,
@@ -1030,6 +1067,14 @@ export function useTerminalScreenshotMonitor() {
             now,
             staleStartedAt,
             effectiveChangedAt,
+          });
+          maybeBounceDockForAttention({
+            tabRootTerminalId,
+            title: tabRootSession?.title ?? "Terminal",
+            enabled: tabRootSession?.bounceOnAttention ?? false,
+            wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
+            nextNeedsAttention,
+            isActiveTab,
           });
           const statusDotSemantic = getStatusDotSemantic({
             hasDetectedActivity,

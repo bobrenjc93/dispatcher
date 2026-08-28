@@ -15,6 +15,7 @@ import {
 import type { TerminalOutputPayload } from "../lib/tauriCommands";
 import type { TerminalBackendKind } from "../types/terminal";
 import { useFontStore } from "../stores/useFontStore";
+import { useUiStore } from "../stores/useUiStore";
 import { useColorSchemeStore } from "../stores/useColorSchemeStore";
 import { buildFontFamilyCSS } from "../components/common/FontSettings";
 import { findLayoutKeyForTerminal } from "../lib/layoutUtils";
@@ -22,8 +23,26 @@ import { getTabStatusTerminalIds, type TerminalVisualTextSnapshot } from "../lib
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
+import { toControlCharacter } from "../lib/keyboardShortcuts";
 import { debugLog } from "../lib/debugLog";
 import { getScopedStorageKey } from "../lib/storageNamespace";
+import {
+  forgetMirroredTerminal,
+  isPrimaryClient,
+  isReplicaClient,
+  mirrorTerminalOutput,
+  mirrorTerminalSize,
+  performAction,
+  registerActionHandler,
+  setTerminalGridProvider,
+} from "../lib/replication";
+import { isCompactViewport } from "./useCompactViewport";
+import {
+  disposeAttachWatchdog,
+  noteTerminalInput,
+  noteTerminalOutput,
+} from "../lib/tmuxAttachWatchdog";
+import { recordPaneOutput, recordSessionEvent } from "../lib/sessionRecorder";
 import { isLinkOpenModifierPressed } from "../lib/terminalMouse";
 import { findTerminalWebLinkMatches } from "../lib/terminalLinks";
 import {
@@ -221,6 +240,11 @@ const TERMINAL_RESPONSE_QUERY_PATTERN =
 const TERMINAL_RESPONSE_SEQUENCE_PATTERN =
   /\x1b(?:\](?:(?:1[0-2])|4;\d+);[^\x07\x1b]*(?:\x07|\x1b\\)|\[\d+;\d+R|\[\?\d+(?:;\d+)*c|\[>\d+(?:;\d+)*c)/g;
 const HIDDEN_WRITE_FALLBACK_MS = 50;
+/**
+ * Ceiling on output waiting to be written into one terminal. Reached only when
+ * the frontend has stopped draining; past it the oldest output is discarded.
+ */
+const MAX_BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
 // Longest terminal-response query we detect is ~10 chars; keep a little slack
 // for sequences split across IPC chunk boundaries.
 const RESPONSE_QUERY_BOUNDARY_TAIL_CHARS = 16;
@@ -251,7 +275,24 @@ function isOptionModifierPressed(event: MouseEvent): boolean {
 }
 
 function shouldFitFrontendToViewport(backendKind: TerminalBackendKind | undefined): boolean {
+  // A replica renders the grid the desktop window dictates; fitting to its own
+  // viewport would fight the mirrored size.
+  if (isReplicaClient()) {
+    return false;
+  }
   return backendKind !== "tmux-pane" && backendKind !== "tmux-window";
+}
+
+/**
+ * Push this window's terminal size to the backend. Only the desktop window
+ * does this — it owns the PTY — and it tells the replicas what it settled on.
+ */
+function syncBackendTerminalSize(terminalId: string, cols: number, rows: number) {
+  if (!isPrimaryClient()) {
+    return;
+  }
+  resizeTerminal(terminalId, cols, rows).catch(() => {});
+  mirrorTerminalSize(terminalId, cols, rows);
 }
 
 function markPastedTerminalActivity(terminalId: string, text: string) {
@@ -647,6 +688,14 @@ function recordParkedTmuxWriteDrop(
       reason,
     };
     parkedTmuxWriteDrops.set(terminalId, summary);
+    // Dropped output is one of the likeliest reasons a pane ends up drawing
+    // something stale, so it goes in the recording rather than only the log.
+    recordSessionEvent("pane-output-dropped", {
+      terminalId,
+      reason,
+      bytes: data.length,
+      backendKind: getTerminalBackendKind(terminalId),
+    });
     debugLog("terminal.output", "dropping parked tmux output", {
       terminalId,
       backendKind: getTerminalBackendKind(terminalId),
@@ -694,6 +743,20 @@ function batchedWrite(
     }
   }
 
+  // Every terminal's output converges here — local PTYs and tmux panes alike,
+  // the latter already decoded out of the control protocol. Mirroring at this
+  // point is what lets a replica render tmux exactly like the desktop does.
+  mirrorTerminalOutput(terminalId, data);
+
+  noteTerminalOutput(terminalId, data.length);
+
+  // Record the decoded stream for tmux panes. A local shell's bytes are the
+  // PTY's bytes, which the backend already captured at the transport.
+  const recordedBackendKind = getTerminalBackendKind(terminalId);
+  if (recordedBackendKind === "tmux-pane" || recordedBackendKind === "tmux-window") {
+    recordPaneOutput(terminalId, data);
+  }
+
   let buffer = writeBuffers.get(terminalId);
   if (!buffer) {
     buffer = [];
@@ -704,6 +767,31 @@ function batchedWrite(
     writeBufferClearScrollback.delete(terminalId);
   }
   buffer.push(data);
+
+  // A terminal whose frontend is not draining (no instance yet, a stalled
+  // renderer) must not accumulate without limit. Dropping the oldest output is
+  // better than growing until the tab, and the backpressure behind it, seizes
+  // up — that backpressure reaches all the way to a remote tmux client.
+  let buffered = 0;
+  for (const chunk of buffer) {
+    buffered += chunk.length;
+  }
+  if (buffered > MAX_BUFFERED_WRITE_BYTES) {
+    let dropped = 0;
+    while (buffer.length > 1 && buffered > MAX_BUFFERED_WRITE_BYTES) {
+      dropped += buffer[0].length;
+      buffered -= buffer[0].length;
+      buffer.shift();
+    }
+    debugLog("terminal.output", "dropped buffered output over the cap", {
+      terminalId,
+      dropped,
+      remaining: buffered,
+      cap: MAX_BUFFERED_WRITE_BYTES,
+    });
+    recordSessionEvent("output-buffer-overflow", { terminalId, dropped, remaining: buffered });
+  }
+
   if (options?.allowParkedWrite) {
     writeBufferAllowParked.add(terminalId);
   }
@@ -711,8 +799,12 @@ function batchedWrite(
     writeBufferClearScrollback.add(terminalId);
   }
 
+  // Activity timestamps drive the status dots and live in the workspace
+  // document. The desktop window is the one that observes real terminal output,
+  // so a replica leaves them alone and takes the dots from shared state.
   const shouldRecordOutput =
-    isRecordableTerminalOutput(data, options)
+    isPrimaryClient()
+    && isRecordableTerminalOutput(data, options)
     && !writeStatusRecorded.has(terminalId);
   if (shouldRecordOutput) {
     writeStatusRecorded.add(terminalId);
@@ -862,8 +954,31 @@ function isTransientFocusSequence(data: string): boolean {
   return data === "\u001b[I" || data === "\u001b[O";
 }
 
-export function handleTerminalInputData(terminalId: string, data: string) {
+export function handleTerminalInputData(terminalId: string, inputFromKeyboard: string) {
+  let data = inputFromKeyboard;
+
+  // A soft keyboard has no Ctrl key. When the on-screen key bar has armed it,
+  // fold the modifier into this keystroke and disarm.
+  if (useUiStore.getState().isCtrlArmed) {
+    useUiStore.getState().setCtrlArmed(false);
+    const chord = toControlCharacter(data);
+    if (chord) {
+      data = chord;
+    }
+  }
+
   pushKeyDebug(`xterm.onData:${terminalId}`, describeTerminalData(data));
+
+  // A replica does not hold the PTY or the tmux transport, so typing there is
+  // sent to the desktop window and the desktop does the writing. The echo comes
+  // back through the mirror like any other output.
+  if (isReplicaClient()) {
+    performAction("terminalInput", terminalId, data);
+    return;
+  }
+
+  noteTerminalInput(terminalId, data);
+
   const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
   let inputData = data;
   if (backendKind === "tmux-pane") {
@@ -912,7 +1027,43 @@ export function handleTerminalInputData(terminalId: string, data: string) {
   }
 }
 
+/** Re-fit every terminal; the compact policy or the viewport just changed. */
+export function refitAllTerminalsToViewport() {
+  for (const terminalId of instances.keys()) {
+    fitTerminalFontToViewport(terminalId);
+  }
+}
+
+// A narrow-screen fit depends on the chosen policy and the viewport, neither of
+// which the per-terminal effects watch.
+useUiStore.subscribe((state, previous) => {
+  if (state.compactTerminalFit !== previous.compactTerminalFit) {
+    refitAllTerminalsToViewport();
+  }
+});
+
+if (typeof window !== "undefined") {
+  window.addEventListener("resize", () => refitAllTerminalsToViewport());
+  window.addEventListener("orientationchange", () => refitAllTerminalsToViewport());
+}
+
 globalThis.__dispatcherTerminalInputRouter = handleTerminalInputData;
+
+// Terminal grids live in the xterm instances here, so replication asks this
+// module rather than the other way round.
+setTerminalGridProvider((terminalId) => {
+  const xterm = instances.get(terminalId)?.xterm;
+  if (!xterm || xterm.cols <= 0 || xterm.rows <= 0) {
+    return null;
+  }
+  return { cols: xterm.cols, rows: xterm.rows };
+});
+
+// Typing in a browser replica arrives here, on the desktop window, and is
+// written to the real PTY or tmux pane exactly as if it had been typed locally.
+registerActionHandler("terminalInput", (terminalId, data) => {
+  handleTerminalInputData(terminalId, data);
+});
 
 function stripTerminalControlSequences(data: string): string {
   return data
@@ -1206,6 +1357,21 @@ export function ensureTerminalFrontend(terminalId: string) {
   createTerminalInstance(terminalId);
 }
 
+/**
+ * Attach the backend output channel for a terminal whose PTY is already
+ * running, without waiting for its tab to be mounted.
+ *
+ * A tmux transport tab is normally never mounted — once tmux windows become
+ * the visible tabs, nothing renders the transport itself. Mounting is what
+ * usually creates the channel, so after a reload the backend would keep
+ * reading that PTY into its replay ring while the control stream never
+ * reached the router: input still works (it writes straight to the PTY) but
+ * no output is ever parsed, leaving panes blank and commands queued forever.
+ */
+export function ensureTerminalOutputChannel(terminalId: string) {
+  ensureTerminalBackend(terminalId);
+}
+
 export function hasTerminalFrontend(terminalId: string): boolean {
   return instances.has(terminalId);
 }
@@ -1215,6 +1381,12 @@ function ensureTerminalBackend(terminalId: string, cwd?: string) {
   const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
 
   if (backendKind === "tmux-pane" || backendKind === "tmux-window") {
+    return instance;
+  }
+
+  // A replica has no backend of its own. The desktop window owns every PTY and
+  // the tmux control stream; the replica just renders the output it mirrors.
+  if (isReplicaClient()) {
     return instance;
   }
 
@@ -1594,6 +1766,31 @@ function getTerminalMountContentSize(mountPoint: HTMLElement): { width: number; 
   };
 }
 
+/**
+ * The desktop window decides how big a terminal is; a replica renders at that
+ * size rather than fitting to its own window, so the two show identical
+ * wrapping. Applied from mirrored `size` frames.
+ */
+export function applyMirroredTerminalSize(terminalId: string, cols: number, rows: number) {
+  ensureTerminalFrontend(terminalId);
+  syncTerminalFrontendSize(terminalId, cols, rows);
+  fitTerminalFontToViewport(terminalId);
+}
+
+/** Write mirrored output into the replica's copy of a terminal. */
+export function applyMirroredTerminalOutput(terminalId: string, data: string) {
+  ensureTerminalFrontend(terminalId);
+  batchedWrite(terminalId, data, { allowParkedWrite: true });
+}
+
+/** Clear a replica's terminal before the desktop replays its current screen. */
+export function resetMirroredTerminal(terminalId: string) {
+  const instance = instances.get(terminalId);
+  if (instance) {
+    instance.xterm.reset();
+  }
+}
+
 export function syncTerminalFrontendSize(terminalId: string, cols: number, rows: number) {
   const instance = instances.get(terminalId);
   if (!instance) {
@@ -1602,6 +1799,22 @@ export function syncTerminalFrontendSize(terminalId: string, cols: number, rows:
 
   const nextCols = Math.max(2, Math.floor(cols));
   const nextRows = Math.max(1, Math.floor(rows));
+
+  // tmux panes are sized by tmux rather than by the viewport, so this is the
+  // only place their grid is decided. Replicas need that size too, otherwise
+  // they render the pane at a default grid that does not match its content.
+  mirrorTerminalSize(terminalId, nextCols, nextRows);
+
+  // Geometry decisions taken here are a common cause of a pane drawing wrong,
+  // so they belong in the recording next to the bytes.
+  if (instance.xterm.cols !== nextCols || instance.xterm.rows !== nextRows) {
+    recordSessionEvent("frontend-resize", {
+      terminalId,
+      from: { cols: instance.xterm.cols, rows: instance.xterm.rows },
+      to: { cols: nextCols, rows: nextRows },
+      backendKind: getTerminalBackendKind(terminalId),
+    });
+  }
   if (
     !Number.isFinite(nextCols)
     || !Number.isFinite(nextRows)
@@ -1667,6 +1880,85 @@ export function syncTerminalFrontendSize(terminalId: string, cols: number, rows:
   }
   markTerminalStatusResizeSuppression(terminalId, "frontend-grid-resize");
   instance.xterm.resize(nextCols, nextRows);
+}
+
+/** Text smaller than this is not worth rendering on a phone. */
+const MIN_READABLE_FONT_SIZE = 11;
+/** How much of the font size a row occupies, including line height. */
+const ROW_HEIGHT_RATIO = 1.2;
+
+/**
+ * Size the font for a narrow screen.
+ *
+ * A replica renders the column count the desktop is running, which on a phone
+ * is far wider than the display. Reflowing is not an option — the desktop owns
+ * the grid, and reflowing would disagree with what it shows — so this client
+ * changes its own font size instead. Scaling the font rather than
+ * CSS-transforming the element keeps xterm's geometry honest, so taps still
+ * land on the cell the user aimed at.
+ *
+ * Two ways to lose:
+ *
+ * - `readable` keeps text legible and fills the height, letting long lines run
+ *   off the side to be panned to. Better for reading output, which is what a
+ *   phone is mostly for.
+ * - `fit-width` shrinks until every column is on screen, however small.
+ */
+export function fitTerminalFontToViewport(terminalId: string) {
+  const instance = instances.get(terminalId);
+  if (!instance) {
+    return;
+  }
+
+  const preferredSize = useFontStore.getState().fontSize;
+  if (!isCompactViewport()) {
+    if (instance.xterm.options.fontSize !== preferredSize) {
+      instance.xterm.options.fontSize = preferredSize;
+    }
+    return;
+  }
+
+  const mount = instance.element.parentElement;
+  const currentSize = instance.xterm.options.fontSize ?? preferredSize;
+  const cell = getTerminalCellSize(terminalId);
+  const cols = instance.xterm.cols;
+  const rows = instance.xterm.rows;
+  if (!mount || !cell || cell.width <= 0 || cols <= 0 || rows <= 0) {
+    return;
+  }
+
+  const fit = useUiStore.getState().compactTerminalFit;
+  let nextSize: number;
+
+  if (fit === "fit-width") {
+    // Cell width scales with font size, so one measurement gives the ratio.
+    const widthPerFontUnit = cell.width / currentSize;
+    const available = mount.clientWidth;
+    if (available <= 0) {
+      return;
+    }
+    nextSize = Math.max(4, Math.min(preferredSize, Math.floor(available / (cols * widthPerFontUnit))));
+  } else {
+    const available = mount.clientHeight;
+    if (available <= 0) {
+      return;
+    }
+    const heightFitted = Math.floor(available / (rows * ROW_HEIGHT_RATIO));
+    nextSize = Math.max(MIN_READABLE_FONT_SIZE, Math.min(preferredSize, heightFitted));
+  }
+
+  if (nextSize !== currentSize) {
+    instance.xterm.options.fontSize = nextSize;
+  }
+
+  // xterm clips to its element, so in readable mode the columns that do not fit
+  // would simply be unreachable. Widen the element to the whole grid and let
+  // the pane scroll it instead.
+  const widthPerFontUnit = cell.width / currentSize;
+  const gridWidth = Math.ceil(cols * widthPerFontUnit * nextSize);
+  const shouldOverflow = fit === "readable" && gridWidth > mount.clientWidth;
+  instance.element.style.width = shouldOverflow ? `${gridWidth}px` : "";
+  instance.element.style.flexShrink = shouldOverflow ? "0" : "";
 }
 
 export function getTerminalCellSize(terminalId: string): { width: number; height: number } | null {
@@ -1762,6 +2054,14 @@ export function sendSyntheticTerminalInput(terminalId: string, data: string) {
   // mirror the default scroll-on-user-input behavior before writing to the PTY.
   instances.get(terminalId)?.xterm.scrollToBottom();
 
+  // Control chords (Ctrl+C, Ctrl+R, ⌘⌫ …) reach the terminal through here
+  // rather than through xterm's own key handling, so a replica has to relay
+  // them just like ordinary typing — it cannot write to the PTY itself.
+  if (isReplicaClient()) {
+    performAction("terminalInput", terminalId, data);
+    return;
+  }
+
   const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
   if (backendKind === "tmux-pane") {
     sendInputToTmuxTerminal(terminalId, data).catch(() => {
@@ -1794,6 +2094,8 @@ export function disposeTerminalInstance(terminalId: string) {
     instances.delete(terminalId);
   }
   createdPtys.delete(terminalId);
+  disposeAttachWatchdog(terminalId);
+  forgetMirroredTerminal(terminalId);
   disposeWriteBatch(terminalId);
   syntheticInputSuppressions.delete(terminalId);
   focusSequenceSuppressions.delete(terminalId);
@@ -1961,6 +2263,8 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       const i = instances.get(terminalId);
       if (!i) return;
 
+      fitTerminalFontToViewport(terminalId);
+
       const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind;
       if (shouldFitFrontendToViewport(backendKind)) {
         i.fitAddon.fit();
@@ -1978,7 +2282,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       }
 
       if (backendKind === "local" || backendKind === "tmux-transport") {
-        resizeTerminal(terminalId, i.xterm.cols, i.xterm.rows).catch(() => {});
+        syncBackendTerminalSize(terminalId, i.xterm.cols, i.xterm.rows);
       }
     });
 
@@ -1992,7 +2296,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
       markTerminalStatusResizeSuppression(terminalId, "xterm-resize");
       if (backendKind === "local" || backendKind === "tmux-transport") {
-        resizeTerminal(terminalId, cols, rows).catch(() => {});
+        syncBackendTerminalSize(terminalId, cols, rows);
       }
     });
 
@@ -2002,6 +2306,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
       if (i) {
         i.xterm.options.fontSize = state.fontSize;
         i.xterm.options.fontFamily = buildFontFamilyCSS(state.fontFamily);
+        fitTerminalFontToViewport(terminalId);
         i.xterm.options.fontWeight = state.fontWeight;
         i.xterm.options.fontWeightBold = state.fontWeightBold;
         i.xterm.options.lineHeight = state.lineHeight;

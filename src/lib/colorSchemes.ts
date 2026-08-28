@@ -369,3 +369,12 @@ export function applyUIColors(colors: UIColors) {
   const theme = isLightBackground(colors.bgPrimary) ? "light" : "dark";
   getCurrentWindow().setTheme(theme as "light" | "dark").catch(() => {});
 }
+
+/**
+ * Exposes the terminal's own background colour to CSS. A phone rarely matches
+ * the desktop's grid aspect ratio, so the space around the terminal has to be
+ * painted the same colour or it reads as a gap rather than as the terminal.
+ */
+export function applyTerminalBackgroundVar(background: string) {
+  document.documentElement.style.setProperty("--terminal-bg", background);
+}

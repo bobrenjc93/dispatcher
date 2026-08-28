@@ -61,6 +61,7 @@ export const useTerminalStore = create<TerminalStore>()(
               isPinnedGreen: false,
               isPinnedGray: false,
               notifyOnInaction: false,
+              bounceOnAttention: false,
               backendKind: "local",
               ...patch,
             },
@@ -299,6 +300,7 @@ export const useTerminalStore = create<TerminalStore>()(
               : (session.isPinnedGreen ?? false),
             isPinnedGray: session.isPinnedGray ?? false,
             notifyOnInaction: session.notifyOnInaction ?? false,
+            bounceOnAttention: session.bounceOnAttention ?? false,
             backendKind:
               isRestoredTmuxWindow || isRestoredTmuxPane
                 ? session.backendKind

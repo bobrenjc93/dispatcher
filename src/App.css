@@ -1544,3 +1544,201 @@ body.sidebar-dragging * {
   flex-shrink: 0;
   color: var(--green);
 }
+
+/* ===========================================================================
+   Compact viewport (phones, narrow windows)
+
+   The desktop layout is three columns side by side, which does not fit a
+   phone. Here the sidebar becomes a drawer over the terminal, notes are
+   hidden behind a toggle, and the terminal gets the whole screen.
+   =========================================================================== */
+
+.mobile-topbar {
+  display: none;
+}
+
+@media (max-width: 820px) {
+  .app-compact {
+    flex-direction: column;
+    height: 100dvh;
+    /* Avoid the home indicator and notch on iOS. */
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+      env(safe-area-inset-bottom) env(safe-area-inset-left);
+    box-sizing: border-box;
+  }
+
+  .app-compact .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+  }
+
+  .mobile-topbar-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--text-primary);
+  }
+
+  /* Comfortable thumb targets rather than pointer-sized ones. */
+  .mobile-nav-toggle,
+  .mobile-notes-toggle,
+  .mobile-fit-toggle {
+    min-height: 34px;
+    min-width: 34px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .mobile-nav-toggle:active,
+  .mobile-notes-toggle:active,
+  .mobile-fit-toggle:active {
+    background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+  }
+
+  .mobile-fit-toggle.is-active {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+  }
+
+  /* Sidebar becomes an off-canvas drawer. */
+  .app-compact .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    width: min(80vw, 320px);
+    max-width: 320px;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    border-right: 1px solid var(--border-color);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .app-compact .sidebar.sidebar-drawer-open {
+    transform: translateX(0);
+  }
+
+  .mobile-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .app-compact .main-content {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  /* One column: notes sit above the terminal when opened, rather than beside. */
+  .app-compact .project-view {
+    flex-direction: column;
+  }
+
+  .app-compact .detail-panel {
+    width: auto !important;
+    min-width: 0 !important;
+    max-height: 45vh;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .app-compact .detail-divider,
+  .app-compact .detail-expand-btn {
+    display: none;
+  }
+
+  .app-compact .terminal-canvas {
+    flex: 1;
+    min-height: 0;
+    /* The grid is the desktop's, so it rarely matches a phone's aspect ratio
+       exactly. Match the terminal background so the leftover space reads as
+       part of the terminal rather than a gap. */
+    background: var(--terminal-bg, var(--bg-primary));
+  }
+
+  /* Keep the terminal and its scrollbar together at the top rather than
+     stretching the box over the leftover space. */
+  .app-compact .terminal-container {
+    flex: 0 1 auto;
+    max-height: 100%;
+  }
+
+  /* Sidebar rows are tap targets on a phone. */
+  .app-compact .sidebar-terminal-node,
+  .app-compact .sidebar-project-header {
+    min-height: 38px;
+  }
+
+  /* In readable mode the grid is wider than the screen; swipe to follow a long
+     line rather than shrinking everything to fit. The xterm element lives in
+     .terminal-container, so that is the box that has to scroll. */
+  .app-compact .terminal-container {
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .app-compact .terminal-pane {
+    touch-action: pan-x pan-y pinch-zoom;
+  }
+
+  /* Keys a soft keyboard does not have. Sits under the terminal, above the
+     keyboard when it is open. */
+  .mobile-key-bar {
+    display: flex;
+    gap: 6px;
+    padding: 6px 8px;
+    overflow-x: auto;
+    flex-shrink: 0;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+    scrollbar-width: none;
+  }
+
+  .mobile-key-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .mobile-key {
+    min-width: 44px;
+    min-height: 36px;
+    padding: 0 10px;
+    flex-shrink: 0;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .mobile-key:active {
+    background: var(--bg-active);
+    color: var(--text-primary);
+  }
+
+  .mobile-key.is-armed {
+    background: var(--bg-active);
+    color: var(--text-primary);
+    border-color: var(--accent);
+  }
+}

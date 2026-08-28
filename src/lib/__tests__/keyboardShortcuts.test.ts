@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  toControlCharacter,
   getCtrlLetterControlCharacter,
   getMacDeleteSequence,
   getMacOptionMetaSequence,
@@ -244,5 +245,30 @@ describe("keyboardShortcuts", () => {
     const normalEvent = new Event("beforeinput", { bubbles: true, cancelable: true });
     expect(target.dispatchEvent(normalEvent)).toBe(true);
     expect(leakedInputCount).toBe(1);
+  });
+});
+
+describe("control characters for the on-screen Ctrl", () => {
+  it("maps letters to their control codes", () => {
+    expect(toControlCharacter("c")).toBe("\u0003");
+    expect(toControlCharacter("C")).toBe("\u0003");
+    expect(toControlCharacter("r")).toBe("\u0012");
+    expect(toControlCharacter("a")).toBe("\u0001");
+    expect(toControlCharacter("z")).toBe("\u001a");
+  });
+
+  it("maps the punctuation chords", () => {
+    expect(toControlCharacter("[")).toBe("\u001b");
+    expect(toControlCharacter("\\")).toBe("\u001c");
+    expect(toControlCharacter("]")).toBe("\u001d");
+    expect(toControlCharacter(" ")).toBe("\u0000");
+    expect(toControlCharacter("?")).toBe("\u007f");
+  });
+
+  it("leaves anything that is not a chord alone", () => {
+    expect(toControlCharacter("")).toBeNull();
+    expect(toControlCharacter("ab")).toBeNull();
+    expect(toControlCharacter("1")).toBeNull();
+    expect(toControlCharacter("\u001b[A")).toBeNull();
   });
 });

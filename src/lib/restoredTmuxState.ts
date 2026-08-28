@@ -5,6 +5,13 @@ import { createLeaf, findLayoutKeyForTerminal, findTerminalIds } from "./layoutU
 import { collectVisibleTerminalRefs, findProjectIdForTerminal } from "./treeUtils";
 
 export interface RestoredTmuxStateSnapshot {
+  /**
+   * Terminals whose PTY is still running in the backend. tmux tabs backed by
+   * one of these are left intact instead of being downgraded to placeholders:
+   * the transport survived, so the session behind it is still reachable and
+   * rebuilding it by hand would mean another ssh and another tmux attach.
+   */
+  liveTerminalIds?: ReadonlySet<string>;
   sessions: Record<string, TerminalSession>;
   activeTerminalId: string | null;
   projects: Record<string, Project>;
@@ -156,11 +163,21 @@ export function normalizeRestoredTmuxState(
   }
 
   const layouts: Record<string, LayoutNode> = { ...snapshot.layouts };
+  const liveTerminalIds = snapshot.liveTerminalIds ?? new Set<string>();
+  /** A tmux tab is still usable when the transport carrying it is alive. */
+  const hasLiveTransport = (session: TerminalSession): boolean => {
+    const transportId = session.tmuxControlSessionId;
+    return Boolean(transportId && liveTerminalIds.has(transportId));
+  };
   let activeTerminalId = snapshot.activeTerminalId;
   let activeProjectId = snapshot.activeProjectId;
   let changed = false;
 
   for (const [sessionId, session] of Object.entries(sessions)) {
+    if (liveTerminalIds.has(sessionId) && getEffectiveBackendKind(session) === "tmux-transport") {
+      // The transport PTY survived, so the control session can be resumed.
+      continue;
+    }
     if (getEffectiveBackendKind(session) === "tmux-transport") {
       delete sessions[sessionId];
       delete layouts[sessionId];
@@ -178,6 +195,12 @@ export function normalizeRestoredTmuxState(
   }
 
   for (const [sessionId, session] of Object.entries(sessions)) {
+    // Keep tmux tabs whose transport is still running fully wired up; clearing
+    // their control-session id is what turns them into dead placeholders.
+    if (hasLiveTransport(session)) {
+      continue;
+    }
+
     const cleared = clearRestoreMarker(session);
     if (cleared !== session) {
       sessions[sessionId] = cleared;

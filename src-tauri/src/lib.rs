@@ -6,10 +6,16 @@ mod errors;
 mod font_panel;
 mod pty_manager;
 mod renderer_watchdog;
+mod replication;
 mod run_diagnostics;
+mod session_recorder;
+mod web_server;
 
 use pty_manager::PtyManager;
 use renderer_watchdog::RendererWatchdog;
+use replication::ReplicationHub;
+use session_recorder::SessionRecorder;
+use web_server::DEFAULT_WEB_PORT;
 use std::panic;
 use std::sync::Once;
 use std::time::Instant;
@@ -107,6 +113,8 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shell::init())
         .manage(PtyManager::new())
+        .manage(ReplicationHub::new())
+        .manage(SessionRecorder::new())
         .manage(renderer_watchdog)
         .on_page_load(move |webview, payload| {
             let _ = debug_log::append_debug_log(&format!(
@@ -138,6 +146,16 @@ pub fn run() {
             window_builder.build()?;
 
             watchdog_for_setup.start();
+
+            // Serve the same app to web browsers. Browsers run as replicas of
+            // this window: they render what it mirrors and send user actions
+            // back for it to perform.
+            let web_port = std::env::var("DISPATCHER_WEB_PORT")
+                .ok()
+                .and_then(|value| value.parse::<u16>().ok())
+                .unwrap_or(DEFAULT_WEB_PORT);
+            web_server::start(app.handle().clone(), web_port);
+
             let window_labels = app
                 .webview_windows()
                 .keys()
@@ -160,6 +178,7 @@ pub fn run() {
             commands::refresh_pool,
             commands::get_terminal_cwd,
             commands::get_terminal_debug_info,
+            commands::list_live_terminals,
             commands::append_debug_log,
             commands::renderer_heartbeat,
             commands::get_debug_log_path,
@@ -167,6 +186,18 @@ pub fn run() {
             commands::read_app_state_backup,
             commands::write_app_state_backup,
             commands::get_app_state_backup_path,
+            replication::set_primary_client,
+            replication::get_primary_client,
+            replication::get_replica_count,
+            replication::relay_action,
+            replication::publish_mirror,
+            replication::read_shared_app_state,
+            replication::get_web_server_info,
+            session_recorder::record_pane_output,
+            session_recorder::record_session_event,
+            session_recorder::describe_recorded_terminal,
+            session_recorder::get_recording_info,
+            session_recorder::set_recording_enabled,
             commands::show_font_panel,
             commands::hide_font_panel,
         ]);

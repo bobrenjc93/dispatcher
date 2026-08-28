@@ -3,12 +3,15 @@ import { Sidebar } from "./components/Sidebar/Sidebar";
 import { ProjectView } from "./components/Layout/ProjectView";
 import { KeyDebugOverlay } from "./components/common/KeyDebugOverlay";
 import { NameDialog } from "./components/common/NameDialog";
+import { MobileKeyBar } from "./components/Terminal/MobileKeyBar";
 import { useProjectStore } from "./stores/useProjectStore";
 import { useLayoutStore } from "./stores/useLayoutStore";
 import { useTerminalStore } from "./stores/useTerminalStore";
 import { useFontStore } from "./stores/useFontStore";
 import { useColorSchemeStore } from "./stores/useColorSchemeStore";
-import { applyUIColors } from "./lib/colorSchemes";
+import { useUiStore } from "./stores/useUiStore";
+import { applyTerminalBackgroundVar, applyUIColors } from "./lib/colorSchemes";
+import type { ColorScheme } from "./types/colorScheme";
 import {
   isCloseTabShortcut,
   isRenameTerminalShortcut,
@@ -24,6 +27,12 @@ import { useRecoveryBootstrap } from "./hooks/useRecoveryBootstrap";
 import { useStartupStoreNormalization } from "./hooks/useStartupStoreNormalization";
 import { useTerminalScreenshotMonitor } from "./hooks/useTerminalScreenshotMonitor";
 import { useWakeRecovery } from "./hooks/useWakeRecovery";
+import { useReplicatedAction, useReplicationChannels } from "./hooks/useReplication";
+import { startSessionRecording } from "./lib/sessionRecorder";
+import { setAttachStalledHandler } from "./lib/tmuxAttachWatchdog";
+import { queueTerminalOutput } from "./hooks/useTerminalBridge";
+import { useCompactViewport } from "./hooks/useCompactViewport";
+import { isPrimaryClient } from "./lib/replication";
 import { debugLog } from "./lib/debugLog";
 import {
   resolveTerminalCloseFocusTarget,
@@ -96,12 +105,64 @@ export default function App() {
   const removeTerminalFromLayout = useLayoutStore((s) => s.removeTerminal);
   const removeLayout = useLayoutStore((s) => s.removeLayout);
 
+  const isCompact = useCompactViewport();
+  const [isMobileNavOpen, setMobileNavOpen] = useState(false);
+  const detailPanelCollapsed = useUiStore((s) => s.isDetailPanelCollapsed);
+  const setDetailPanelCollapsed = useUiStore((s) => s.setDetailPanelCollapsed);
+  const compactTerminalFit = useUiStore((s) => s.compactTerminalFit);
+  const setCompactTerminalFit = useUiStore((s) => s.setCompactTerminalFit);
+
+  // The notes column has no room next to a terminal on a phone; start hidden
+  // there, and restore the desktop preference when there is space again.
+  const collapsedForCompactRef = useRef(false);
+  useEffect(() => {
+    if (isCompact && !detailPanelCollapsed) {
+      collapsedForCompactRef.current = true;
+      setDetailPanelCollapsed(true);
+    } else if (!isCompact && collapsedForCompactRef.current) {
+      collapsedForCompactRef.current = false;
+      setDetailPanelCollapsed(false);
+    }
+    // Only react to the viewport flipping, not to the user toggling notes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCompact]);
+
   useFileDrop();
   useStartupStoreNormalization();
   const appStateBootstrapComplete = useAppStateBackup();
   useRecoveryBootstrap();
   useTerminalScreenshotMonitor();
   useWakeRecovery();
+  useReplicationChannels();
+
+  // Record terminal sessions so a rendering bug can be inspected afterwards.
+  useEffect(() => startSessionRecording(), []);
+
+  // A control-mode attach that never speaks leaves the tab looking frozen with
+  // no explanation, so say what happened in the terminal itself.
+  useEffect(() => {
+    setAttachStalledHandler((terminalId) => {
+      queueTerminalOutput(
+        terminalId,
+        "\r\n\u001b[33m[dispatcher]\u001b[0m tmux attached but sent no control-mode data.\r\n"
+          + "\r\nThis is a tmux server whose binary was replaced while it was running —\r\n"
+          + "usually a package upgrade some time after the server started. Such a server\r\n"
+          + "still answers commands, but it can no longer finish an attach: it receives the\r\n"
+          + "client's terminal descriptors and drops them, so it never sends the control-mode\r\n"
+          + "preamble, and never will.\r\n"
+          + "\r\nConfirm it from another shell on that host:\r\n"
+          + "  readlink /proc/$(tmux display-message -p '#{pid}')/exe\r\n"
+          + "  # ending in \"(deleted)\" means this is the bug\r\n"
+          + "\r\nThe running server cannot be repaired, and each further attempt strands\r\n"
+          + "another client on it. Save what you need, then restart it:\r\n"
+          + "  tmux capture-pane -p -S - -t <pane>   # scrollback, one pane at a time\r\n"
+          + "  tmux kill-server                      # destroys every session on that host\r\n"
+          + "\r\nThis tab is in raw mode, so Ctrl-C will not bring the shell back. Close it.\r\n",
+        { allowParkedWrite: true, recordActivity: false }
+      );
+    });
+    return () => setAttachStalledHandler(null);
+  }, []);
 
   useEffect(() => {
     const logStartupState = (phase: string) => {
@@ -222,6 +283,10 @@ export default function App() {
   // periodically so pooled shells have up-to-date history/env. Give the first
   // render priority over starting three login shells during a cold launch.
   useEffect(() => {
+    if (!isPrimaryClient()) {
+      return;
+    }
+
     const warmTimer = window.setTimeout(() => {
       warmPool(3).catch(() => {});
     }, 1_500);
@@ -233,6 +298,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!isPrimaryClient()) {
+      return;
+    }
+
     let unlisten: (() => void) | null = null;
     onTerminalExit((payload) => {
       handleTransportTerminalExit(payload.terminal_id);
@@ -242,10 +311,12 @@ export default function App() {
 
   // Apply UI colors from color scheme on mount and subscribe to changes
   useEffect(() => {
-    applyUIColors(useColorSchemeStore.getState().getActiveScheme().ui);
-    return useColorSchemeStore.subscribe((state) => {
-      applyUIColors(state.getActiveScheme().ui);
-    });
+    const apply = (scheme: ColorScheme) => {
+      applyUIColors(scheme.ui);
+      applyTerminalBackgroundVar(scheme.terminal.background);
+    };
+    apply(useColorSchemeStore.getState().getActiveScheme());
+    return useColorSchemeStore.subscribe((state) => apply(state.getActiveScheme()));
   }, []);
 
   // Sync activeProjectId whenever activeTerminalId changes so that
@@ -364,7 +435,7 @@ export default function App() {
     [projects, addNode, addChildToNode, addSession, initLayout, updateSessionCwd]
   );
 
-  const handleNewTerminal = useCallback(() => {
+  const handleNewTerminalLocal = useCallback(() => {
     const currentProjectId = useProjectStore.getState().activeProjectId;
     const currentProject = currentProjectId ? useProjectStore.getState().projects[currentProjectId] : null;
     const activeTerminalId = useTerminalStore.getState().activeTerminalId ?? undefined;
@@ -399,7 +470,7 @@ export default function App() {
     setDialog({ type: "new-project" });
   }, []);
 
-  const handleNewTerminalInProject = useCallback(
+  const handleNewTerminalInProjectLocal = useCallback(
     (projectId: string) => {
       const activeProjectId = useProjectStore.getState().activeProjectId;
       const activeTerminalId = useTerminalStore.getState().activeTerminalId ?? undefined;
@@ -451,7 +522,7 @@ export default function App() {
     [projects, nodes]
   );
 
-  const handleDeleteProject = useCallback(
+  const handleDeleteProjectLocal = useCallback(
     (projectId: string) => {
       const project = projects[projectId];
       if (!project) return;
@@ -483,7 +554,7 @@ export default function App() {
     [projects, nodes, removeProject, removeNode, removeSession, removeLayout]
   );
 
-  const handleDeleteTerminal = useCallback(
+  const handleDeleteTerminalLocal = useCallback(
     (terminalId: string, projectId: string) => {
       void closeTmuxTerminal(terminalId).then((handled) => {
         if (handled) {
@@ -521,7 +592,7 @@ export default function App() {
     [projects, nodes, removeChildFromNode, removeNode, removeSession, removeLayout]
   );
 
-  const handleSplitPane = useCallback(
+  const handleSplitPaneLocal = useCallback(
     (targetTerminalId: string, direction: "horizontal" | "vertical") => {
       if (isDisconnectedTmuxPlaceholderTerminal(targetTerminalId)) {
         return;
@@ -559,7 +630,7 @@ export default function App() {
     [addSession, splitTerminal]
   );
 
-  const handleClosePane = useCallback(
+  const handleClosePaneLocal = useCallback(
     (terminalId: string) => {
       const terminal = useTerminalStore.getState().sessions[terminalId];
       const shouldPrefocusTmuxClose =
@@ -684,9 +755,28 @@ export default function App() {
     ]
   );
 
+  // Actions that start, stop or write to something real run on the desktop
+  // window. In the desktop these call straight through; in a browser replica
+  // they are relayed to the desktop, which performs them and mirrors back the
+  // result. Everything downstream — buttons, shortcuts, menus — is unaware.
+  const handleNewTerminal = useReplicatedAction("newTerminal", handleNewTerminalLocal);
+  const handleNewTerminalInProject = useReplicatedAction(
+    "newTerminalInProject",
+    handleNewTerminalInProjectLocal
+  );
+  const handleDeleteProject = useReplicatedAction("deleteProject", handleDeleteProjectLocal);
+  const handleDeleteTerminal = useReplicatedAction("deleteTerminal", handleDeleteTerminalLocal);
+  const handleSplitPane = useReplicatedAction("splitPane", handleSplitPaneLocal);
+  const handleClosePane = useReplicatedAction("closePane", handleClosePaneLocal);
+
   // Find the layout key (tab root terminal ID) for the currently active terminal.
   const layouts = useLayoutStore((s) => s.layouts);
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
+
+  // Picking a tab in the drawer should get it out of the way immediately.
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [activeTerminalId]);
   const activeLayoutKey = (() => {
     if (!activeProject) return null;
     if (activeTerminalId) {
@@ -947,22 +1037,81 @@ export default function App() {
     }
   };
 
+  const activeTerminalTitle = activeTerminalId
+    ? sessions[activeTerminalId]?.title ?? "Terminal"
+    : "Dispatcher";
+
   return (
-    <div className="app">
+    <div className={`app${isCompact ? " app-compact" : ""}`}>
+      {isCompact && (
+        <div className="mobile-topbar">
+          <button
+            className="mobile-nav-toggle"
+            aria-label={isMobileNavOpen ? "Close tabs" : "Show tabs"}
+            aria-expanded={isMobileNavOpen}
+            onClick={() => setMobileNavOpen((open) => !open)}
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+              <path
+                d="M2.5 4.5h13M2.5 9h13M2.5 13.5h13"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          <span className="mobile-topbar-title">{activeTerminalTitle}</span>
+          <button
+            className={`mobile-fit-toggle${compactTerminalFit === "fit-width" ? " is-active" : ""}`}
+            aria-label={
+              compactTerminalFit === "fit-width"
+                ? "Switch to readable text"
+                : "Fit the whole terminal width on screen"
+            }
+            aria-pressed={compactTerminalFit === "fit-width"}
+            onClick={() =>
+              setCompactTerminalFit(
+                compactTerminalFit === "fit-width" ? "readable" : "fit-width"
+              )
+            }
+          >
+            Fit
+          </button>
+          <button
+            className="mobile-notes-toggle"
+            aria-label={detailPanelCollapsed ? "Show notes" : "Hide notes"}
+            onClick={() => setDetailPanelCollapsed(!detailPanelCollapsed)}
+          >
+            Notes
+          </button>
+        </div>
+      )}
+
+      {isCompact && isMobileNavOpen && (
+        <div
+          className="mobile-scrim"
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       <Sidebar
+        className={isCompact && isMobileNavOpen ? "sidebar-drawer-open" : undefined}
         onNewTerminal={handleNewTerminal}
         onNewTerminalInProject={handleNewTerminalInProject}
         onNewProject={handleNewProject}
         onDeleteProject={handleDeleteProject}
         onDeleteTerminal={handleDeleteTerminal}
         onMoveTerminal={handleMoveTerminal}
-        style={{ width: sidebarWidth, minWidth: sidebarWidth }}
+        style={isCompact ? undefined : { width: sidebarWidth, minWidth: sidebarWidth }}
       />
-      <div
-        ref={sidebarDividerRef}
-        className="sidebar-divider"
-        onMouseDown={handleSidebarDividerMouseDown}
-      />
+      {!isCompact && (
+        <div
+          ref={sidebarDividerRef}
+          className="sidebar-divider"
+          onMouseDown={handleSidebarDividerMouseDown}
+        />
+      )}
       <div className="main-content">
         {activeProject && activeLayoutKey ? (
           <ProjectView
@@ -977,6 +1126,8 @@ export default function App() {
           </div>
         )}
       </div>
+
+      {isCompact && <MobileKeyBar />}
 
       {dialog?.type === "new-project" && (
         <NameDialog

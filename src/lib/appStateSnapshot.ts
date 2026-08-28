@@ -132,6 +132,65 @@ export function snapshotHasAppState(snapshot: AppStateSnapshot): boolean {
   return counts.projects > 0 || counts.sessions > 0 || counts.layouts > 0;
 }
 
+/**
+ * Identity of a snapshot's actual contents, ignoring the bookkeeping fields
+ * that change on every build. Two clients that agree on the state produce the
+ * same signature, which is what stops a shared-state update from bouncing back
+ * and forth between them forever.
+ */
+export function getAppStateSignature(snapshot: AppStateSnapshot): string {
+  return JSON.stringify([
+    snapshot[APP_STATE_PROJECTS_KEY]?.state ?? null,
+    snapshot[APP_STATE_TERMINALS_KEY]?.state ?? null,
+    snapshot[APP_STATE_LAYOUTS_KEY]?.state ?? null,
+  ]);
+}
+
+/**
+ * Adopt state published by another live client.
+ *
+ * Unlike {@link restoreAppStateSnapshot} this does not run the tmux
+ * normalization pass: that pass exists to downgrade tmux tabs to placeholders
+ * after a restart, and applying it here would tear down sessions that are
+ * still very much alive in the client that sent them.
+ */
+export function applySharedAppState(
+  snapshot: AppStateSnapshot,
+  source: string
+): RestoreAppStateResult {
+  const projectState = snapshot[APP_STATE_PROJECTS_KEY]?.state;
+  const terminalState = snapshot[APP_STATE_TERMINALS_KEY]?.state;
+  const layoutState = snapshot[APP_STATE_LAYOUTS_KEY]?.state;
+
+  if (!projectState?.projects || !projectState.nodes || !terminalState?.sessions || !layoutState?.layouts) {
+    return { restored: false, reason: "invalid", counts: getSnapshotCounts(snapshot) };
+  }
+
+  useProjectStore.setState({
+    projects: projectState.projects,
+    nodes: projectState.nodes,
+    activeProjectId: projectState.activeProjectId ?? null,
+    projectOrder: projectState.projectOrder ?? Object.keys(projectState.projects),
+  });
+  useLayoutStore.setState({
+    layouts: layoutState.layouts,
+  });
+  useTerminalStore.setState({
+    sessions: terminalState.sessions,
+    activeTerminalId: terminalState.activeTerminalId ?? null,
+  });
+
+  writeAppStateSnapshotToLocalStorage(snapshot);
+  const counts = getLiveAppStateCounts();
+
+  debugLog("app.persistence", "applied shared state snapshot", {
+    source,
+    counts,
+  });
+
+  return { restored: true, counts };
+}
+
 export function parseAppStateSnapshot(raw: string): AppStateSnapshot | null {
   try {
     const parsed = JSON.parse(raw) as AppStateSnapshot;

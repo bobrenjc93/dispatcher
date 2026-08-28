@@ -47,6 +47,24 @@ describe("tmuxControlProtocol", () => {
     expect(unescapeTmuxOutput("abc\\")).toBe("abc\\");
   });
 
+  it("decodes the doubled backslash that capture-pane -C emits", () => {
+    // `%output` octal-escapes a literal backslash, `capture-pane -C` doubles
+    // it. Both have to come back as one backslash.
+    expect(unescapeTmuxOutput("A\\\\B")).toBe("A\\B");
+    expect(unescapeTmuxOutput("\\134")).toBe("\\");
+    expect(unescapeTmuxOutput("\\\\\\\\")).toBe("\\\\");
+  });
+
+  it("keeps an OSC 8 hyperlink terminator intact from either encoding", () => {
+    // Taken from a real capture-pane -C reply: the `ESC \` that ends the
+    // hyperlink arrives as \033 followed by a doubled backslash. Decoding only
+    // the octal half left a stray backslash printed before every link.
+    expect(unescapeTmuxOutput("\\033]8;;http://x\\033\\\\E\\033]8;;\\033\\\\"))
+      .toBe("\u001b]8;;http://x\u001b\\E\u001b]8;;\u001b\\");
+    // The same terminator as %output writes it.
+    expect(unescapeTmuxOutput("\\033\\134D117139102")).toBe("\u001b\\D117139102");
+  });
+
   it("encodes input bytes into hex chunks for send-keys -H", () => {
     expect(encodeTmuxSendKeysHex("A€", 16)).toEqual(["41 e2 82 ac"]);
   });

@@ -192,6 +192,20 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
               },
             },
             {
+              label: "Bounce When Done",
+              icon: (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M7 2.25V6.5M7 6.5L4.75 4.5M7 6.5L9.25 4.5M2.75 9.25C4.25 11 9.75 11 11.25 9.25" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ),
+              checked: session.bounceOnAttention ?? false,
+              onClick: () => {
+                patchSession(terminalId, {
+                  bounceOnAttention: !(session.bounceOnAttention ?? false),
+                });
+              },
+            },
+            {
               label: "Move to Top",
               icon: (
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

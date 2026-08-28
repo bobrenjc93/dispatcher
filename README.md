@@ -11,6 +11,7 @@ A desktop terminal multiplexer built with Tauri, React, and xterm.js. Organize s
 - **Per-tab notes** — keep notes attached to the tab you are actually working in
 - **Activity status dots** — green for active work, pulsing green for stale unseen work, brown for acknowledged stale work, gray for long-idle acknowledged work
 - **Fast local terminals** — PTY pooling keeps new local tabs feeling immediate
+- **Browser access on port 3003** — the running app also serves itself over HTTP; open it in a browser and you get the same session, mirrored live
 - **tmux `-CC` integration** — run `tmux -CC` locally or over SSH and map tmux windows to Dispatcher tabs and tmux panes to Dispatcher splits
 - **tmux-aware shortcuts** — `Cmd+T`, split, close, focus, and rename route to tmux when the active tab is backed by a live control-mode session
 - **Restart-safe tmux placeholders** — if Dispatcher restarts, saved tmux tabs keep their titles and notes and come back with reconnect instructions instead of disappearing
@@ -77,6 +78,96 @@ npm run tauri -- build
 
 Build artifacts are written to `src-tauri/target/release/bundle/`.
 
+## Browser access
+
+Whenever Dispatcher is running it also serves itself on port **3003**:
+
+```
+http://localhost:3003
+```
+
+If 3003 is already taken — another Dispatcher, or anything else — it walks up
+to the next free port (3004, 3005, ...). The port it settled on is written to
+the diagnostic log at startup, along with the LAN URL.
+
+It listens on all interfaces, so the same URL works from a phone or another
+machine on your network using this machine's LAN address.
+
+### How it works
+
+The desktop window is the master. It is the only client that owns PTYs and
+drives tmux. A browser is a **replica**: it renders what the desktop mirrors to
+it, and anything you do there is sent to the desktop to perform.
+
+```
+browser  --- action (keystroke, new tab, split, close) --->  desktop  ---> PTY / tmux
+browser  <-------------- mirrored output + grid size --------  desktop  <---
+```
+
+Because every effect happens in one place, there is no second writer on a PTY
+and no second driver on the tmux control stream — the browser stays interactive
+without any of the races that sharing those would create.
+
+What this gives you:
+
+- **Everything is mirrored**, including tmux. Type in the browser and the
+  keystroke is performed by the desktop; the output comes back the same way it
+  reaches the desktop's own screen. A replica that connects late gets the recent
+  scrollback replayed so it starts on the same screen.
+- **One workspace.** Projects, tabs, splits, notes, titles and the active tab
+  are the same document in both. Open a tab in the browser and it appears in the
+  desktop window, and the other way around.
+- **The desktop decides sizing.** A replica renders the grid the desktop is
+  using, so line wrapping matches instead of reflowing per window.
+
+Set `DISPATCHER_WEB_PORT` to change the port it starts looking from.
+
+> **This is unauthenticated.** Anyone who can reach port 3003 gets a shell as
+> you, with no password. Only run it on networks you trust. To reach Dispatcher
+> from elsewhere, prefer an SSH tunnel
+> (`ssh -L 3003:localhost:3003 your-machine`) over exposing the port.
+
+### On a phone
+
+Below 820px the UI switches to a single column:
+
+- the sidebar becomes a drawer behind the ☰ button, closing as soon as you pick
+  a tab
+- notes move behind a **Notes** toggle instead of taking a column
+- the terminal gets the rest of the screen, with tap targets sized for thumbs
+
+The grid belongs to the desktop, and a desktop's 97 columns do not fit a phone,
+so a replica scales its own font rather than reflowing the terminal — reflowing
+would change what the desktop shows. The **Fit** button chooses how to lose:
+
+- **off (default)** — text stays readable and long lines run off the side to be
+  swiped to
+- **on** — shrink until every column is on screen, however small
+
+The choice is per-device, so a phone can differ from the desktop.
+
+A soft keyboard has no Ctrl, Esc, Tab or arrows, so a key bar sits under the
+terminal with **esc**, **tab**, **^C**, **^R** and the four arrows. **ctrl** is
+sticky: tap it, then tap a letter, and the two are folded into a control code —
+so Ctrl+anything is reachable, not just the two shortcuts with their own key.
+
+### Under `tauri dev`
+
+The dev server is proxied through the Dispatcher port, so the URL above is the
+only one you need in development too — including from another device. Live
+reload is the exception: it does not tunnel through the proxy, so a browser
+viewing a dev build will not hot-reload. The desktop window, which loads Vite
+directly, still does.
+
+### Limits
+
+The desktop window has to be running — it is the thing being replicated. If it
+is closed, the browser has nothing to mirror.
+
+A few things stay native-only because they have no browser equivalent: the
+macOS font panel, window theming, dock attention bounces, and dragging files in
+from the OS. The browser uses its own clipboard and opens links in a new tab.
+
 ## tmux `-CC`
 
 Dispatcher can promote a regular shell into a tmux control-mode session.
@@ -99,6 +190,103 @@ tmux -CC a
 ```
 
 Dispatcher will reconnect and hydrate the saved tmux tabs in place.
+
+## Session recordings
+
+Every run records its terminals to disk so a rendering bug can be looked at
+after it happens, instead of being reproduced on demand.
+
+```
+~/Library/Logs/com.dispatcher.desktop/recordings/<run>/
+  index.json              which recording is which tab: title, project, backend, tmux ids
+  events.jsonl            resizes and dropped output — the things that reshape a pane
+  transport-<id>.cast     raw PTY bytes, both directions: exactly what ssh and tmux exchanged
+  pane-<id>.cast          bytes written into one pane's terminal, after tmux was decoded
+```
+
+The `.cast` files are [asciinema](https://asciinema.org) v2, so they are plain
+JSON lines — `[seconds, "o"|"i", "data"]` — and can also be replayed:
+
+```bash
+asciinema play transport-<id>.cast
+```
+
+Two streams are kept because they answer different questions. The **transport**
+is the ground truth from the remote: for a `tmux -CC` tab it is the whole
+control-mode conversation, `%output` and `%layout-change` and all, plus every
+byte Dispatcher sent back. The **pane** stream is what one pane's terminal
+actually received once that conversation was decoded — which is what rendering
+follows. If a pane draws wrong, the two together say whether the remote sent
+something odd or Dispatcher mis-handled it. Local shells only get a transport
+recording, because their pane stream is the same bytes.
+
+To report a problem, note the **tab title** and roughly **when** it happened;
+`index.json` maps titles to files and every entry is timestamped from the start
+of the run. The current directory is written to the debug log at startup.
+
+Recordings are capped at 24 MB each, the last 12 runs are kept, and the whole
+directory is held under 2 GB. They contain full terminal output — set
+`DISPATCHER_RECORD=0` to turn recording off.
+
+## Terminals outlive the UI
+
+PTYs are owned by the backend process, not by the window, and they are
+*reattached* rather than recreated when the UI comes back. Reloading the
+frontend — which happens on every edit under `tauri dev` — keeps:
+
+- the shell, and its process tree, running untouched
+- any ssh connection, so no re-authenticating
+- the tmux control session, so no `tmux -CC a` again
+
+On reload the UI asks the backend which terminals are still running. Those are
+reattached and replayed the output they missed; tmux tabs backed by a live
+transport keep their windows and panes instead of collapsing into
+placeholders, and the control session is resumed by nudging the live transport
+until tmux answers. Terminals that really are gone still become the
+restart-safe placeholders they always did.
+
+This only covers the UI restarting. Changing Rust code restarts the whole
+process, which does end the PTYs.
+
+### When a tmux attach goes silent
+
+`tmux -CC` normally answers within milliseconds. Dispatcher watches for a
+control-mode command and, if nothing comes back, says so in the tab rather than
+leaving it looking frozen.
+
+The cause is almost always a tmux server whose binary was replaced while it was
+running — a package upgrade some time after the server started. Traced on a
+live server, it accepts the connection, receives both terminal descriptors over
+`SCM_RIGHTS`, receives the `attach` command, and then reaches `control_start()`
+with both descriptors already lost: it runs `close(-1)` / `fcntl(-1)` and writes
+the `\x1bP1000p` preamble into a bufferevent on fd -1. Nothing ever reaches the
+client, the tty is already in raw mode so Ctrl-C does not help, and each attempt
+strands another client on the server and leaks two descriptors there.
+
+Commands keep working, because they are answered over the socket and never need
+those descriptors — which is why such a server looks healthy. Confirm it with:
+
+```bash
+readlink /proc/$(tmux display-message -p '#{pid}')/exe
+# ending in "(deleted)" means the binary was replaced under the server
+```
+
+A server in this state cannot be repaired; attaching will never work again.
+Save any scrollback with `tmux capture-pane -p -S - -t <pane>`, then
+`tmux kill-server` — which destroys every session on that host. This is not
+something Dispatcher causes, and no client-side change can avoid it.
+
+### Bounce When Done
+
+Right-click a tab and toggle **Bounce When Done** to have the dock icon bounce
+when that tab starts needing attention. It bounces on the transition into
+needing attention rather than repeatedly while it persists, and stays quiet
+when you are already looking at that tab in a focused window. On macOS the
+bounce continues until Dispatcher is activated, so a tab that finished while
+you were in another app is still asking for you when you come back.
+
+This is separate from **Notify on Inaction**, which plays a sound once a tab
+has been quiet for a while; the two can be enabled independently.
 
 ## Status Dots
 

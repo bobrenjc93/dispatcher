@@ -26,6 +26,7 @@ interface SidebarProps {
     position?: "before" | "after"
   ) => void;
   style?: React.CSSProperties;
+  className?: string;
 }
 
 export function Sidebar({
@@ -36,6 +37,7 @@ export function Sidebar({
   onDeleteTerminal,
   onMoveTerminal,
   style,
+  className,
 }: SidebarProps) {
   const projects = useProjectStore((s) => s.projects);
   const projectOrder = useProjectStore((s) => s.projectOrder);
@@ -100,7 +102,7 @@ export function Sidebar({
   ];
 
   return (
-    <div className="sidebar" style={style}>
+    <div className={className ? `sidebar ${className}` : "sidebar"} style={style}>
       <div className="sidebar-header">
         <div className="sidebar-title">
           <svg width="20" height="20" viewBox="0 0 1024 1024" fill="none">

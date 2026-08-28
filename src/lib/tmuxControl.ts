@@ -36,10 +36,19 @@ import {
   type DisconnectedTmuxWindowPlaceholderRef,
 } from "./treeUtils";
 import { writeTerminal } from "./tauriCommands";
+import {
+  isPrimaryClient,
+  isReplicaClient,
+  performAction,
+  registerActionHandler,
+} from "./replication";
+import { noteControlModeStarted } from "./tmuxAttachWatchdog";
+import { recordSessionEvent } from "./sessionRecorder";
 import { debugLog, debugLogError, previewDebugText } from "./debugLog";
 import {
   disposeTerminalInstance,
   ensureTerminalFrontend,
+  ensureTerminalOutputChannel,
   focusTerminalInstance,
   getTerminalCellSize,
   getTerminalViewportSize,
@@ -960,8 +969,22 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
   return recovered;
 }
 
+/**
+ * tmux control mode multiplexes commands and their replies over a single
+ * stream, and replies carry no client attribution — two clients driving one
+ * transport would mis-attribute each other's replies. The desktop window is
+ * the master and the only driver.
+ *
+ * Replicas reach tmux through relayed actions instead, so nothing here should
+ * ever run in one. This is the backstop that guarantees it: with no control
+ * session resolvable, every tmux command path is inert.
+ */
+function ownsTmuxControlSessions(): boolean {
+  return isPrimaryClient();
+}
+
 function getControlSessionById(sessionId: string | undefined): TmuxControlSession | null {
-  if (!sessionId) {
+  if (!sessionId || !ownsTmuxControlSessions()) {
     return null;
   }
   const session = controlSessions.get(sessionId) ?? recoverControlSessionFromStore(sessionId);
@@ -972,7 +995,15 @@ function getControlSessionById(sessionId: string | undefined): TmuxControlSessio
   return session;
 }
 
+/** Leaves output untouched; used by clients that do not drive tmux. */
+function passthroughTransportOutput(_terminalId: string, data: string): string {
+  return data;
+}
+
 export function getCurrentTmuxTransportOutputRouter(): TmuxTransportOutputRouter {
+  if (!ownsTmuxControlSessions()) {
+    return passthroughTransportOutput;
+  }
   return globalThis.__dispatcherTmuxTransportOutputRouter ?? routeTmuxTransportOutput;
 }
 
@@ -4336,7 +4367,38 @@ function scheduleBootstrapRefresh(session: TmuxControlSession) {
   }, TMUX_BOOTSTRAP_FALLBACK_DELAY_MS);
 }
 
+// ---------------------------------------------------------------------------
+// Client hygiene
+//
+// A control-mode client that stops reading cannot be detached by the server —
+// detaching means writing to it. Dispatcher used to abandon such clients on
+// every failed attach, and they accumulated on the remote session forever. So:
+// record the client we are using, clean up the ones we left behind last time,
+// and detach ourselves properly on the way out.
+// ---------------------------------------------------------------------------
+
+/**
+ * Detach this client before we stop reading its output. Without this the server
+ * keeps the client attached forever, which is how they piled up.
+ */
+function detachOurClient(session: TmuxControlSession) {
+  if (!session.controlModeActive) {
+    return;
+  }
+
+  // With no -t, tmux detaches the client that issued the command — us. Fire and
+  // forget: the transport is going away, so nobody is left to read a reply, and
+  // a failure here must not block teardown.
+  writeTerminal(session.transportTerminalId, "detach-client\n").catch(() => {});
+  debugLog("tmux.clients", "detached our client", { sessionId: session.id });
+}
+
 function teardownControlSession(session: TmuxControlSession, reason: string) {
+  // Do this first, while the transport can still carry the command.
+  if (reason !== "tmux-%exit" && reason !== "transport-pty-exit") {
+    detachOurClient(session);
+  }
+
   debugLog("tmux.session", "teardown start", {
     sessionId: session.id,
     transportTerminalId: session.transportTerminalId,
@@ -4791,6 +4853,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
 
   controlSessions.set(session.id, session);
   transportTerminalToSessionId.set(transportTerminalId, session.id);
+  noteControlModeStarted(transportTerminalId);
   useTerminalStore.getState().patchSession(transportTerminalId, {
     backendKind: "tmux-transport",
     tmuxControlSessionId: session.id,
@@ -5148,6 +5211,13 @@ export async function sendInputToTmuxTerminal(terminalId: string, data: string):
 }
 
 export function handleTmuxTerminalFocus(terminalId: string) {
+  // Selecting a tmux window is a tmux command, so a replica asks the desktop
+  // window to do it rather than reaching for the control stream itself.
+  if (isReplicaClient()) {
+    performAction("focusTerminal", terminalId);
+    return;
+  }
+
   const session = getControlSessionForTerminal(terminalId);
   if (!session) {
     return;
@@ -5345,6 +5415,14 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
 }
 
 export async function renameTmuxTerminal(terminalId: string, title: string): Promise<boolean> {
+  if (isReplicaClient()) {
+    performAction("renameTerminal", terminalId, title);
+    // The rename lands via the desktop window and comes back in shared state,
+    // so the caller must not also apply its local fallback rename.
+    const terminal = getTerminalSession(terminalId);
+    return terminal?.backendKind === "tmux-window";
+  }
+
   const terminal = getTerminalSession(terminalId);
   const session = getControlSessionForTerminal(terminalId);
   if (!terminal || !session || terminal.backendKind !== "tmux-window" || !terminal.tmuxWindowId) {
@@ -5744,4 +5822,62 @@ export function handleTransportTerminalExit(terminalId: string) {
   });
 
   teardownControlSession(session, "transport-pty-exit");
+}
+
+// The desktop window is the only tmux driver, so it is also the one that
+// performs these when a replica relays them.
+registerActionHandler("focusTerminal", (terminalId) => {
+  handleTmuxTerminalFocus(terminalId);
+});
+registerActionHandler("renameTerminal", (terminalId, name) => {
+  void renameTmuxTerminal(terminalId, name);
+});
+
+/**
+ * Re-establish control sessions for transports that outlived the UI.
+ *
+ * The PTY carrying `tmux -CC` survives a reload, so the tmux client on the far
+ * end is still attached and still in control mode — but this process has
+ * forgotten every window and pane it knew. Rather than make the user attach
+ * again (another ssh, another passcode, another `tmux -CC a`), poke the live
+ * transport with a harmless command. tmux answers with a `%begin`/`%end` block,
+ * the transport router recognises the control stream exactly as it does for a
+ * fresh attach, and the session bootstraps itself from there.
+ */
+export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) {
+  if (!isPrimaryClient() || liveTerminalIds.size === 0) {
+    return;
+  }
+
+  const sessions = useTerminalStore.getState().sessions;
+  for (const [terminalId, terminal] of Object.entries(sessions)) {
+    if (terminal.backendKind !== "tmux-transport" || !liveTerminalIds.has(terminalId)) {
+      continue;
+    }
+    // Re-attach the backend output channel first, and do it even for a session
+    // that was already recovered from the store. The transport tab is normally
+    // never mounted — once tmux windows become the visible tabs, nothing
+    // renders the transport — so a mount will not do this for us. Without a
+    // channel the backend reads this PTY into its replay ring and the control
+    // stream never reaches the router: input still works, but no output is
+    // parsed, so panes stay blank and queued commands never run.
+    ensureTerminalOutputChannel(terminalId);
+
+    if (controlSessions.has(terminalId) || transportTerminalToSessionId.has(terminalId)) {
+      continue;
+    }
+
+    debugLog("tmux.session", "resuming control session after reload", {
+      transportTerminalId: terminalId,
+    });
+    recordSessionEvent("tmux-control-session-resumed", { terminalId });
+
+    // The frontend must already be listening before the reply arrives.
+    ensureTerminalFrontend(terminalId);
+    // A no-op query: it changes nothing but forces tmux to emit a control-mode
+    // block, which is what the router needs in order to latch on.
+    writeTerminal(terminalId, "list-sessions -F ''\n").catch((error) => {
+      debugLogError("tmux.session", "resume nudge failed", error);
+    });
+  }
 }

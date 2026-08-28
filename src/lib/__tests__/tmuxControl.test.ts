@@ -4,10 +4,12 @@ const {
   focusTerminalInstanceMock,
   getTerminalCellSizeMock,
   getTerminalViewportSizeMock,
+  ensureTerminalOutputChannelMock,
   queueTerminalOutputMock,
   syncTerminalFrontendSizeMock,
   writeTerminalMock,
 } = vi.hoisted(() => ({
+  ensureTerminalOutputChannelMock: vi.fn(),
   focusTerminalInstanceMock: vi.fn(),
   getTerminalCellSizeMock: vi.fn(() => ({ width: 8, height: 16 })),
   getTerminalViewportSizeMock: vi.fn(() => ({ width: 640, height: 384 })),
@@ -24,6 +26,7 @@ vi.mock("../tauriCommands", () => ({
 vi.mock("../../hooks/useTerminalBridge", () => ({
   disposeTerminalInstance: vi.fn(),
   ensureTerminalFrontend: vi.fn(),
+  ensureTerminalOutputChannel: ensureTerminalOutputChannelMock,
   focusTerminalInstance: focusTerminalInstanceMock,
   getTerminalCellSize: getTerminalCellSizeMock,
   getTerminalViewportSize: getTerminalViewportSizeMock,
@@ -48,6 +51,7 @@ import {
   createTmuxWindowForTerminal,
   handleTmuxTerminalFocus,
   resizeTmuxPaneByTerminal,
+  resumeLiveControlSessions,
   routeTmuxTransportOutput,
   sendInputToTmuxTerminal,
   sendPasteToTmuxTerminal,
@@ -398,6 +402,7 @@ describe("tmuxControl", () => {
     queueTerminalOutputMock.mockReset();
     queueTerminalOutputMock.mockReturnValue(true);
     syncTerminalFrontendSizeMock.mockReset();
+    ensureTerminalOutputChannelMock.mockReset();
     clearStatusResizeSuppressionsForTests();
     resetTmuxRuntime();
   });
@@ -406,6 +411,36 @@ describe("tmuxControl", () => {
     vi.useRealTimers();
     clearStatusResizeSuppressionsForTests();
     resetTmuxRuntime();
+  });
+
+  it("re-attaches the transport output channel after a reload, session or not", async () => {
+    const transportTerminalId = "transport-resume";
+    seedTransportTerminal(transportTerminalId);
+    useTerminalStore.setState({
+      sessions: {
+        [transportTerminalId]: makeTerminalSession(transportTerminalId, {
+          backendKind: "tmux-transport",
+        }),
+      },
+      activeTerminalId: transportTerminalId,
+    });
+
+    // Nothing known yet: attach the channel and nudge tmux into answering.
+    resumeLiveControlSessions(new Set([transportTerminalId]));
+    expect(ensureTerminalOutputChannelMock).toHaveBeenCalledWith(transportTerminalId);
+    expect(getWrittenTmuxCommand(0)).toContain("list-sessions");
+
+    await hydrateSingleWindow(transportTerminalId, { captureInitialContent: false });
+    ensureTerminalOutputChannelMock.mockReset();
+    writeTerminalMock.mockClear();
+
+    // A session recovered from the store still has no output channel: the
+    // transport tab is never mounted once tmux windows own the tabs. Skipping
+    // the attach here left the pane blank with input that appeared to work.
+    resumeLiveControlSessions(new Set([transportTerminalId]));
+    expect(ensureTerminalOutputChannelMock).toHaveBeenCalledWith(transportTerminalId);
+    // The session is already latched, so it must not be nudged a second time.
+    expect(writeTerminalMock).not.toHaveBeenCalled();
   });
 
   it("pastes tmux pane input through a bracket-aware tmux paste buffer", async () => {

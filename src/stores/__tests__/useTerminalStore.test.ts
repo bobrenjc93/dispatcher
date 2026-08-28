@@ -17,6 +17,7 @@ describe("useTerminalStore", () => {
       expect(session.isPinnedGreen).toBe(false);
       expect(session.isPinnedGray).toBe(false);
       expect(session.notifyOnInaction).toBe(false);
+      expect(session.bounceOnAttention).toBe(false);
       expect(session.title).toBe("My Term");
     });
 

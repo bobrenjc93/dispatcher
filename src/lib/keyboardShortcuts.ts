@@ -161,3 +161,43 @@ export function suppressMacCtrlChordTextInput(
     }
   };
 }
+
+/**
+ * The control character a key produces when Ctrl is held, e.g. `c` -> 0x03.
+ *
+ * A phone keyboard has no Ctrl key, so the on-screen key bar arms a sticky Ctrl
+ * and the next character typed is translated here.
+ */
+export function toControlCharacter(input: string): string | null {
+  if (input.length !== 1) {
+    return null;
+  }
+
+  const code = input.toUpperCase().charCodeAt(0);
+
+  // A-Z map to 0x01-0x1a.
+  if (code >= 65 && code <= 90) {
+    return String.fromCharCode(code - 64);
+  }
+
+  // The usual punctuation chords continue that run: [ \ ] ^ _ and @/space.
+  switch (input) {
+    case "[":
+      return "\u001b";
+    case "\\":
+      return "\u001c";
+    case "]":
+      return "\u001d";
+    case "^":
+      return "\u001e";
+    case "_":
+      return "\u001f";
+    case " ":
+    case "@":
+      return "\u0000";
+    case "?":
+      return "\u007f";
+    default:
+      return null;
+  }
+}

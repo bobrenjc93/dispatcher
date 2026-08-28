@@ -1,0 +1,41 @@
+import { describe, expect, it } from "vitest";
+import { shouldBounceDock } from "../dockAttention";
+
+const base = {
+  enabled: true,
+  wasNeedsAttention: false,
+  nextNeedsAttention: true,
+  isActiveTab: false,
+  documentHasFocus: false,
+};
+
+describe("shouldBounceDock", () => {
+  it("bounces when a background tab starts needing attention", () => {
+    expect(shouldBounceDock(base)).toBe(true);
+  });
+
+  it("stays quiet unless the tab opted in", () => {
+    expect(shouldBounceDock({ ...base, enabled: false })).toBe(false);
+  });
+
+  it("bounces on the edge only, not for every sample while attention persists", () => {
+    expect(shouldBounceDock({ ...base, wasNeedsAttention: true })).toBe(false);
+  });
+
+  it("does not bounce for a tab that no longer needs attention", () => {
+    expect(shouldBounceDock({ ...base, nextNeedsAttention: false })).toBe(false);
+  });
+
+  it("does not bounce at a user already looking at the tab", () => {
+    expect(
+      shouldBounceDock({ ...base, isActiveTab: true, documentHasFocus: true })
+    ).toBe(false);
+  });
+
+  it("still bounces for the active tab when Dispatcher is in the background", () => {
+    // The whole point is pulling the user back from another app.
+    expect(
+      shouldBounceDock({ ...base, isActiveTab: true, documentHasFocus: false })
+    ).toBe(true);
+  });
+});

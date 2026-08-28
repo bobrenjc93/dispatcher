@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use tauri::{ipc::Channel, AppHandle, Emitter};
+use tauri::{ipc::Channel, AppHandle, Emitter, Manager};
 
 const MAX_POOL_SIZE: usize = 3;
 
@@ -48,6 +48,15 @@ fn should_log_protocol_output(data: &str) -> bool {
         || data.contains("%session-window-changed ")
         || data.contains("%sessions-changed")
         || data.contains("%session-changed ")
+}
+
+/// Hand every byte to the session recorder. This is the one place all PTY
+/// output passes through, so it is where "what did ssh and tmux actually send
+/// us" gets captured.
+fn record_output(app_handle: &AppHandle, terminal_id: &str, data: &str) {
+    app_handle
+        .state::<crate::session_recorder::SessionRecorder>()
+        .record_transport_output(terminal_id, data);
 }
 
 fn log_protocol_output_chunk(terminal_id: &str, data: &str) {
@@ -369,19 +378,143 @@ fn utf8_split_point(bytes: &[u8]) -> usize {
 
 // -- Output routing for reader threads --
 
+/// How much output each terminal remembers so a reconnecting UI can be shown
+/// what it missed instead of starting from a blank screen.
+const REPLAY_LIMIT_BYTES: usize = 256 * 1024;
+
 enum OutputMode {
     /// PTY is pooled; buffer all output until assigned.
     Buffering(Vec<u8>),
-    /// PTY is assigned to a real terminal; stream to frontend.
-    Streaming {
-        channel: Channel<TerminalOutput>,
-        terminal_id: String,
-    },
+    /// PTY is assigned to a real terminal; stream to whichever UI is attached.
+    Streaming { terminal_id: String },
 }
 
+/// Where a PTY's output goes, and what it remembers.
+///
+/// The channel is deliberately optional and swappable: the UI owning it is far
+/// more fragile than the process on the other end of the pty. A page reload
+/// replaces the channel; it must not disturb the shell, the ssh connection, or
+/// the tmux client behind it.
 struct OutputRouter {
     mode: OutputMode,
     assigned_id: Option<String>,
+    channel: Option<Channel<TerminalOutput>>,
+    replay: Vec<u8>,
+}
+
+impl OutputRouter {
+    fn new_buffering() -> Self {
+        OutputRouter {
+            mode: OutputMode::Buffering(Vec::with_capacity(4096)),
+            assigned_id: None,
+            channel: None,
+            replay: Vec::new(),
+        }
+    }
+
+    fn record_replay(&mut self, bytes: &[u8]) {
+        self.replay.extend_from_slice(bytes);
+        if self.replay.len() <= REPLAY_LIMIT_BYTES * 2 {
+            return;
+        }
+
+        // Trim on a line boundary when one is nearby so a replay does not begin
+        // in the middle of an escape sequence.
+        let excess = self.replay.len() - REPLAY_LIMIT_BYTES;
+        let window_end = std::cmp::min(self.replay.len(), excess + 4096);
+        let cut = self.replay[excess..window_end]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|offset| excess + offset + 1)
+            .unwrap_or(excess);
+        self.replay.drain(..cut);
+    }
+
+    fn emit(&mut self, terminal_id: &str, data: String) {
+        if let Some(channel) = &self.channel {
+            if channel
+                .send(TerminalOutput {
+                    terminal_id: terminal_id.to_owned(),
+                    data,
+                })
+                .is_err()
+            {
+                // The UI went away. Keep the PTY running and keep recording;
+                // the next attach replays what was missed.
+                self.channel = None;
+            }
+        }
+    }
+}
+
+/// Reader thread: buffers output while the PTY is pooled, streams it to
+/// whichever UI is attached once assigned, and always records it for replay.
+/// Uses a carry buffer so multi-byte UTF-8 straddling a 4096-byte read boundary
+/// is not corrupted.
+fn spawn_reader_thread(
+    app_handle: AppHandle,
+    mut reader: Box<dyn Read + Send>,
+    router: Arc<Mutex<OutputRouter>>,
+    child_arc: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>,
+) {
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let mut carry: Vec<u8> = Vec::new();
+
+        let dispatch = |bytes: &[u8]| {
+            let mut r = router.lock().unwrap();
+            match &mut r.mode {
+                OutputMode::Buffering(buffer) => buffer.extend_from_slice(bytes),
+                OutputMode::Streaming { terminal_id } => {
+                    let terminal_id = terminal_id.clone();
+                    let data = String::from_utf8_lossy(bytes).to_string();
+                    log_protocol_output_chunk(&terminal_id, &data);
+                    record_output(&app_handle, &terminal_id, &data);
+                    r.record_replay(bytes);
+                    r.emit(&terminal_id, data);
+                }
+            }
+        };
+
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    carry.extend_from_slice(&buf[..n]);
+                    let split = utf8_split_point(&carry);
+                    if split > 0 {
+                        dispatch(&carry[..split]);
+                    }
+                    carry.drain(..split);
+                }
+                Err(_) => break,
+            }
+        }
+
+        if !carry.is_empty() {
+            dispatch(&carry);
+        }
+
+        let exit_code = {
+            let mut guard = child_arc.lock().unwrap();
+            if let Some(ref mut child) = *guard {
+                child.wait().ok().map(|status| status.exit_code() as i32)
+            } else {
+                None
+            }
+        };
+
+        let assigned_id = router.lock().unwrap().assigned_id.clone();
+        if let Some(terminal_id) = assigned_id {
+            let _ = app_handle.emit(
+                "terminal-exit",
+                TerminalExitPayload {
+                    terminal_id,
+                    exit_code,
+                },
+            );
+        }
+    });
 }
 
 // -- Session types --
@@ -390,6 +523,7 @@ struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>,
+    router: Arc<Mutex<OutputRouter>>,
 }
 
 struct PoolEntry {
@@ -459,15 +593,12 @@ impl PtyManager {
         drop(pair.slave);
 
         let writer = pair.master.take_writer().map_err(PtyError::from)?;
-        let mut reader = pair.master.try_clone_reader().map_err(PtyError::from)?;
+        let reader = pair.master.try_clone_reader().map_err(PtyError::from)?;
 
         let child_arc: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>> =
             Arc::new(Mutex::new(Some(child)));
 
-        let router = Arc::new(Mutex::new(OutputRouter {
-            mode: OutputMode::Buffering(Vec::with_capacity(4096)),
-            assigned_id: None,
-        }));
+        let router = Arc::new(Mutex::new(OutputRouter::new_buffering()));
 
         let entry = PoolEntry {
             master: pair.master,
@@ -478,98 +609,18 @@ impl PtyManager {
 
         self.pool.lock().unwrap().push(entry);
 
-        // Reader thread: buffers output while pooled, streams when assigned.
-        // Uses a carry buffer to avoid corrupting multi-byte UTF-8 characters
-        // that straddle 4096-byte read boundaries.
-        let handle = app_handle.clone();
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            let mut carry: Vec<u8> = Vec::new();
-
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        carry.extend_from_slice(&buf[..n]);
-
-                        let split = utf8_split_point(&carry);
-
-                        if split > 0 {
-                            let mut r = router.lock().unwrap();
-                            match &mut r.mode {
-                                OutputMode::Buffering(buffer) => {
-                                    buffer.extend_from_slice(&carry[..split]);
-                                }
-                                OutputMode::Streaming {
-                                    channel,
-                                    terminal_id,
-                                } => {
-                                    let data =
-                                        String::from_utf8_lossy(&carry[..split]).to_string();
-                                    log_protocol_output_chunk(terminal_id, &data);
-                                    let _ = channel.send(TerminalOutput {
-                                        terminal_id: terminal_id.clone(),
-                                        data,
-                                    });
-                                }
-                            }
-                        }
-
-                        // Keep only incomplete trailing bytes.
-                        carry.drain(..split);
-                    }
-                    Err(_) => break,
-                }
-            }
-
-            // Flush any remaining carry bytes at EOF.
-            if !carry.is_empty() {
-                let mut r = router.lock().unwrap();
-                match &mut r.mode {
-                    OutputMode::Buffering(buffer) => {
-                        buffer.extend_from_slice(&carry);
-                    }
-                    OutputMode::Streaming {
-                        channel,
-                        terminal_id,
-                    } => {
-                        let data = String::from_utf8_lossy(&carry).to_string();
-                        log_protocol_output_chunk(terminal_id, &data);
-                        let _ = channel.send(TerminalOutput {
-                            terminal_id: terminal_id.clone(),
-                            data,
-                        });
-                    }
-                }
-                drop(r);
-            }
-
-            // EOF — get exit code
-            let exit_code = {
-                let mut guard = child_arc.lock().unwrap();
-                if let Some(ref mut child) = *guard {
-                    child.wait().ok().map(|status| status.exit_code() as i32)
-                } else {
-                    None
-                }
-            };
-
-            // Only emit exit event if this PTY was assigned to a terminal
-            let r = router.lock().unwrap();
-            if let Some(ref tid) = r.assigned_id {
-                let _ = handle.emit(
-                    "terminal-exit",
-                    TerminalExitPayload {
-                        terminal_id: tid.clone(),
-                        exit_code,
-                    },
-                );
-            }
-        });
+        spawn_reader_thread(app_handle.clone(), reader, router, child_arc);
 
         Ok(())
     }
 
+    /// Start the terminal, or — when it is already running — hand the existing
+    /// one to the new channel.
+    ///
+    /// A page reload throws away the old channel and asks for every terminal
+    /// again. Recreating them would kill the shell, and with it any ssh
+    /// connection and tmux client behind it, which is expensive to rebuild by
+    /// hand. Reattaching keeps all of that and replays what the UI missed.
     pub fn create_terminal(
         &self,
         app_handle: &AppHandle,
@@ -579,6 +630,10 @@ impl PtyManager {
         rows: u16,
         channel: Channel<TerminalOutput>,
     ) -> Result<(), PtyError> {
+        if self.reattach_terminal(&terminal_id, cols, rows, &channel)? {
+            return Ok(());
+        }
+
         let has_cwd = cwd.as_ref().map_or(false, |d| !d.is_empty());
 
         // Try pool first — even when cwd is specified we can cd into it
@@ -597,22 +652,22 @@ impl PtyManager {
             // Switch router from buffering to streaming
             {
                 let mut r = entry.router.lock().unwrap();
+                r.channel = Some(channel);
                 if !has_cwd {
                     // No custom cwd — replay buffered output (initial prompt etc.)
-                    if let OutputMode::Buffering(ref buffer) = r.mode {
-                        if !buffer.is_empty() {
-                            let data = String::from_utf8_lossy(buffer).to_string();
-                            let _ = channel.send(TerminalOutput {
-                                terminal_id: terminal_id.clone(),
-                                data,
-                            });
-                        }
+                    let buffered = match r.mode {
+                        OutputMode::Buffering(ref buffer) => buffer.clone(),
+                        OutputMode::Streaming { .. } => Vec::new(),
+                    };
+                    if !buffered.is_empty() {
+                        r.record_replay(&buffered);
+                        let data = String::from_utf8_lossy(&buffered).to_string();
+                        r.emit(&terminal_id, data);
                     }
                 }
                 // When has_cwd is true we discard the buffer — the cd+clear
                 // below will produce a fresh prompt in the right directory.
                 r.mode = OutputMode::Streaming {
-                    channel,
                     terminal_id: terminal_id.clone(),
                 };
                 r.assigned_id = Some(terminal_id.clone());
@@ -622,6 +677,7 @@ impl PtyManager {
                 master: entry.master,
                 writer: entry.writer,
                 child: entry.child,
+                router: Arc::clone(&entry.router),
             };
 
             // cd into the requested directory and clear the screen so the
@@ -675,7 +731,7 @@ impl PtyManager {
         drop(pair.slave);
 
         let writer = pair.master.take_writer().map_err(|e| PtyError::from(e))?;
-        let mut reader = pair
+        let reader = pair
             .master
             .try_clone_reader()
             .map_err(|e| PtyError::from(e))?;
@@ -683,10 +739,21 @@ impl PtyManager {
         let child_arc: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>> =
             Arc::new(Mutex::new(Some(child)));
 
+        let router = Arc::new(Mutex::new(OutputRouter::new_buffering()));
+        {
+            let mut r = router.lock().unwrap();
+            r.mode = OutputMode::Streaming {
+                terminal_id: terminal_id.clone(),
+            };
+            r.assigned_id = Some(terminal_id.clone());
+            r.channel = Some(channel);
+        }
+
         let session = PtySession {
             master: pair.master,
             writer,
             child: Arc::clone(&child_arc),
+            router: Arc::clone(&router),
         };
 
         {
@@ -694,71 +761,67 @@ impl PtyManager {
             sessions.insert(terminal_id.clone(), session);
         }
 
-        let tid = terminal_id.clone();
-        let handle = app_handle.clone();
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            let mut carry: Vec<u8> = Vec::new();
-
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        carry.extend_from_slice(&buf[..n]);
-
-                        let split = utf8_split_point(&carry);
-
-                        if split > 0 {
-                            let data = String::from_utf8_lossy(&carry[..split]).to_string();
-                            log_protocol_output_chunk(&tid, &data);
-                            let _ = channel.send(TerminalOutput {
-                                terminal_id: tid.clone(),
-                                data,
-                            });
-                        }
-
-                        // Keep only incomplete trailing bytes.
-                        carry.drain(..split);
-                    }
-                    Err(_) => break,
-                }
-            }
-
-            // Flush any remaining carry bytes at EOF.
-            if !carry.is_empty() {
-                let data = String::from_utf8_lossy(&carry).to_string();
-                log_protocol_output_chunk(&tid, &data);
-                let _ = channel.send(TerminalOutput {
-                    terminal_id: tid.clone(),
-                    data,
-                });
-            }
-
-            let exit_code = {
-                let mut guard = child_arc.lock().unwrap();
-                if let Some(ref mut child) = *guard {
-                    child
-                        .wait()
-                        .ok()
-                        .map(|status| status.exit_code() as i32)
-                } else {
-                    None
-                }
-            };
-
-            let _ = handle.emit(
-                "terminal-exit",
-                TerminalExitPayload {
-                    terminal_id: tid,
-                    exit_code,
-                },
-            );
-        });
+        spawn_reader_thread(app_handle.clone(), reader, router, child_arc);
 
         Ok(())
     }
 
-    pub fn write_terminal(&self, terminal_id: &str, data: &[u8]) -> Result<(), PtyError> {
+    /// Point an existing terminal at a new channel and replay what the previous
+    /// UI missed. Returns false when there is no such terminal.
+    fn reattach_terminal(
+        &self,
+        terminal_id: &str,
+        cols: u16,
+        rows: u16,
+        channel: &Channel<TerminalOutput>,
+    ) -> Result<bool, PtyError> {
+        let sessions = self.sessions.lock().unwrap();
+        let Some(session) = sessions.get(terminal_id) else {
+            return Ok(false);
+        };
+
+        // Match the new UI's geometry before replaying, so the replayed output
+        // wraps the way the terminal will render it.
+        let _ = session.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+
+        let mut r = session.router.lock().unwrap();
+        r.channel = Some(channel.clone());
+        let replay = String::from_utf8_lossy(&r.replay).to_string();
+        let replay_bytes = replay.len();
+        if !replay.is_empty() {
+            r.emit(terminal_id, replay);
+        }
+        drop(r);
+        drop(sessions);
+
+        let _ = crate::debug_log::append_debug_log(&format!(
+            "[backend:reattach_terminal] terminal_id={} cols={} rows={} replay_bytes={}",
+            terminal_id, cols, rows, replay_bytes
+        ));
+        Ok(true)
+    }
+
+    /// Terminals whose PTY is still running. The UI uses this after a reload to
+    /// tell a live session from one that only exists in saved state.
+    pub fn live_terminal_ids(&self) -> Vec<String> {
+        self.sessions.lock().unwrap().keys().cloned().collect()
+    }
+
+    pub fn write_terminal(
+        &self,
+        app_handle: &AppHandle,
+        terminal_id: &str,
+        data: &[u8],
+    ) -> Result<(), PtyError> {
+        app_handle
+            .state::<crate::session_recorder::SessionRecorder>()
+            .record_transport_input(terminal_id, &String::from_utf8_lossy(data));
+
         let mut sessions = self.sessions.lock().unwrap();
         let session = sessions
             .get_mut(terminal_id)
@@ -831,10 +894,18 @@ impl PtyManager {
 
     pub fn resize_terminal(
         &self,
+        app_handle: &AppHandle,
         terminal_id: &str,
         cols: u16,
         rows: u16,
     ) -> Result<(), PtyError> {
+        app_handle
+            .state::<crate::session_recorder::SessionRecorder>()
+            .record_event(
+                "resize",
+                serde_json::json!({ "terminalId": terminal_id, "cols": cols, "rows": rows }),
+            );
+
         let sessions = self.sessions.lock().unwrap();
         let session = sessions
             .get(terminal_id)

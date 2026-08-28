@@ -1,4 +1,5 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { getClientId } from "./clientId";
 import { getNativeStorageNamespace } from "./storageNamespace";
 
 export interface TerminalOutputPayload {
@@ -29,6 +30,11 @@ export interface RendererHeartbeatDetails {
   skippedHeartbeatCount: number;
 }
 
+/**
+ * Starts the terminal, or — when its PTY is still running from before a reload
+ * — reattaches to it and replays the output this UI missed. Reattaching is what
+ * keeps an ssh connection and its tmux client alive across a reload.
+ */
 export async function createTerminal(
   terminalId: string,
   onOutput: Channel<TerminalOutputPayload>,
@@ -70,6 +76,15 @@ export async function warmPool(count: number = 3): Promise<void> {
 
 export async function refreshPool(): Promise<void> {
   await invoke("refresh_pool");
+}
+
+/**
+ * Terminals whose PTY is still running in the backend. PTYs outlive the UI, so
+ * after a reload this distinguishes a session that can be reattached from one
+ * that only exists in saved state.
+ */
+export async function listLiveTerminals(): Promise<string[]> {
+  return await invoke("list_live_terminals");
 }
 
 export async function getTerminalCwd(terminalId: string): Promise<string | null> {
@@ -123,7 +138,27 @@ export async function writeAppStateBackup(content: string): Promise<string> {
   return await invoke("write_app_state_backup", {
     content,
     storageNamespace: getNativeStorageNamespace(),
+    clientId: getClientId(),
   });
+}
+
+/**
+ * The newest snapshot any client has published this run, used so a client that
+ * joins late adopts what the others are already showing instead of whatever
+ * its own localStorage remembers.
+ */
+export async function readSharedAppState(): Promise<string | null> {
+  return await invoke("read_shared_app_state");
+}
+
+export interface WebServerInfo {
+  enabled: boolean;
+  port: number;
+  urls: string[];
+}
+
+export async function getWebServerInfo(): Promise<WebServerInfo> {
+  return await invoke("get_web_server_info");
 }
 
 export async function getAppStateBackupPath(): Promise<string> {

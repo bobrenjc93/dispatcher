@@ -124,7 +124,26 @@ export function unescapeTmuxOutput(value: string): string {
   };
 
   for (let index = 0; index < value.length; index += 1) {
-    if (value[index] !== "\\" || index + 4 > value.length) {
+    if (value[index] !== "\\") {
+      continue;
+    }
+
+    // A literal backslash arrives in two encodings. `%output` octal-escapes it
+    // as \134, but `capture-pane -C` doubles it instead, and both land here.
+    // Left undecoded, the doubled form leaks a stray backslash into the pane —
+    // visible on every OSC 8 hyperlink, whose `ESC \` terminator ends up as
+    // `ESC \ \`. Two backslashes cannot occur in the octal-only encoding, so
+    // decoding them is safe for `%output` too.
+    if (value[index + 1] === "\\") {
+      flushLiteralRun(index);
+      escapedBytes.push(0x5c);
+      flushEscapedBytes();
+      index += 1;
+      runStart = index + 1;
+      continue;
+    }
+
+    if (index + 4 > value.length) {
       continue;
     }
     const octal = value.slice(index + 1, index + 4);
