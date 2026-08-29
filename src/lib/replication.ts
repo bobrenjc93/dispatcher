@@ -29,8 +29,18 @@ import { isWebClient } from "./webBridge";
 const MIRROR_EVENT = "dispatcher-mirror";
 const ACTION_EVENT = "dispatcher-action";
 
-/** How much of each terminal the master remembers for replicas that join late. */
-const SNAPSHOT_LIMIT_BYTES = 256 * 1024;
+/**
+ * How much of each terminal the master remembers for replicas that join late.
+ *
+ * This is the only history a replica can ever have: the desktop keeps 50k lines
+ * of xterm scrollback, but a phone starts empty and sees exactly what was
+ * mirrored to it. The old 256KB bought very little on an agent pane, where most
+ * bytes are a TUI repainting itself rather than new lines, so scrollback on
+ * mobile ran out almost immediately. Snapshots are sent per terminal rather
+ * than as one message, so raising this does not turn a replica's first frame
+ * into a multi-megabyte payload.
+ */
+const SNAPSHOT_LIMIT_BYTES = 1024 * 1024;
 /** Mirror frames are coalesced over this window to keep the IPC chatter down. */
 const MIRROR_FLUSH_MS = 16;
 
@@ -131,11 +141,27 @@ function noteReplicaPresent() {
   }
 }
 
+/**
+ * Drop the oldest output once a snapshot outgrows its budget, cutting at a line
+ * boundary. Slicing at an arbitrary byte can land inside an escape sequence,
+ * and the replica then renders the tail of it as literal text at the very top
+ * of its scrollback. Escape sequences never span a newline, so a newline is
+ * always a safe place to start.
+ */
+export function trimSnapshotBuffer(buffer: string, limit = SNAPSHOT_LIMIT_BYTES): string {
+  if (buffer.length <= limit) {
+    return buffer;
+  }
+
+  const overflow = buffer.length - limit;
+  const newline = buffer.indexOf("\n", overflow);
+  return newline === -1 ? buffer.slice(overflow) : buffer.slice(newline + 1);
+}
+
 function appendSnapshot(terminalId: string, data: string) {
-  const next = (snapshotBuffers.get(terminalId) ?? "") + data;
   snapshotBuffers.set(
     terminalId,
-    next.length > SNAPSHOT_LIMIT_BYTES ? next.slice(next.length - SNAPSHOT_LIMIT_BYTES) : next
+    trimSnapshotBuffer((snapshotBuffers.get(terminalId) ?? "") + data)
   );
 }
 
@@ -214,25 +240,36 @@ export function forgetMirroredTerminal(terminalId: string) {
   lastPublishedSize.delete(terminalId);
 }
 
-/** Replay every terminal's current screen to one replica that just joined. */
+/**
+ * Replay every terminal's current screen to one replica that just joined.
+ *
+ * One message per terminal, not one for all of them. A workspace can hold
+ * dozens of terminals, so a single message carries every snapshot at once and
+ * grows with both the number of terminals and how much history each keeps —
+ * which is what forced the history budget to stay small. Split up, each
+ * message stays the size of one terminal and the replica can paint the
+ * terminals it has already mounted while the rest arrive.
+ */
 function sendSnapshotTo(targetClientId: string) {
-  const frames: MirrorFrame[] = [];
+  let bytes = 0;
   for (const [terminalId, data] of snapshotBuffers) {
-    frames.push({ kind: "reset", terminalId });
+    const frames: MirrorFrame[] = [{ kind: "reset", terminalId }];
     const size = resolveGrid(terminalId);
     if (size) {
       frames.push({ kind: "size", terminalId, cols: size.cols, rows: size.rows });
     }
     if (data) {
       frames.push({ kind: "output", terminalId, data });
+      bytes += data.length;
     }
+    void publishMirror({ frames, targetClientId });
   }
 
   debugLog("replication", "sending snapshot to replica", {
     targetClientId,
     terminals: snapshotBuffers.size,
+    bytes,
   });
-  void publishMirror({ frames, targetClientId });
 }
 
 type MirrorFrameHandler = (frame: MirrorFrame) => void;

@@ -14,6 +14,7 @@ const {
   performAction,
   registerActionHandler,
   setReplicaCount,
+  trimSnapshotBuffer,
 } = await import("../replication");
 const { handleTmuxTerminalFocus, renameTmuxTerminal } = await import("../tmuxControl");
 
@@ -150,5 +151,30 @@ describe("desktop-as-master replication", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(invokeMock.mock.calls.some(([cmd]) => cmd === "publish_mirror")).toBe(false);
+  });
+
+  it("trims a replica snapshot at a line boundary, not mid-escape-sequence", () => {
+    // A replica's scrollback starts wherever this cut lands. Slicing at an
+    // arbitrary byte can land inside an escape sequence, and xterm then renders
+    // the tail of it as literal text across the top of the history.
+    const keep = "\u001b[32mkept line\u001b[0m\n";
+    const buffer = `old\n\u001b[31mdropped\u001b[0m\n${keep}`;
+
+    const trimmed = trimSnapshotBuffer(buffer, keep.length + 2);
+
+    expect(trimmed).toBe(keep);
+    expect(trimmed.startsWith("\u001b[")).toBe(true);
+  });
+
+  it("keeps a snapshot that still fits untouched", () => {
+    const buffer = "line one\nline two\n";
+    expect(trimSnapshotBuffer(buffer, 1024)).toBe(buffer);
+  });
+
+  it("falls back to a hard cut when the tail holds no line break", () => {
+    // A single enormous line still has to be bounded, or the budget means
+    // nothing for a pane that never emits a newline.
+    const buffer = "x".repeat(100);
+    expect(trimSnapshotBuffer(buffer, 10)).toHaveLength(10);
   });
 });
