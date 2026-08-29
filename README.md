@@ -373,17 +373,24 @@ Save any scrollback with `tmux capture-pane -p -S - -t <pane>`, then
 `tmux kill-server` — which destroys every session on that host. This is not
 something Dispatcher causes, and no client-side change can avoid it.
 
-### Bounce When Done
+### Bounce When Done and Notify on Inaction
 
-Right-click a tab and toggle **Bounce When Done** to have the dock icon bounce
-when that tab starts needing attention. It bounces on the transition into
-needing attention rather than repeatedly while it persists, and stays quiet
-when you are already looking at that tab in a focused window. On macOS the
-bounce continues until Dispatcher is activated, so a tab that finished while
-you were in another app is still asking for you when you come back.
+Two per-tab alerts, both on the right-click menu, and easy to confuse:
 
-This is separate from **Notify on Inaction**, which plays a sound once a tab
-has been quiet for a while; the two can be enabled independently.
+| | fires when | how it tells you |
+|---|---|---|
+| **Bounce When Done** | the tab *starts* needing attention — the moment the status dot turns | the dock icon bounces, and keeps bouncing until you click Dispatcher |
+| **Notify on Inaction** | the tab has been *quiet* for a while after being busy | a three-second chime |
+
+Roughly: Bounce is for "something just happened", Notify is for "this has
+stopped and you have not noticed". They are independent — enable either, both,
+or neither, per tab.
+
+Bounce fires on the transition rather than repeatedly while attention persists,
+and stays quiet when you are already looking at that tab in a focused window.
+It re-asks every few seconds until the window is focused, because a macOS
+attention request is easy to lose — anything that briefly activates the app
+ends it.
 
 ## Status Dots
 

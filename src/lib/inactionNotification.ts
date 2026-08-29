@@ -37,6 +37,48 @@ export function prepareInactionNotificationSound() {
   }
 }
 
+/** How long the alert should last. Short enough not to be a nuisance, long
+ *  enough to notice from another room. */
+export const INACTION_CHIME_SECONDS = 3;
+
+const CHIME_PITCHES = [659.25, 880];
+const NOTE_LENGTH = 0.13;
+const MOTIF_GAP = 0.5;
+
+export interface ChimeNote {
+  /** Seconds from the start of the alert. */
+  offset: number;
+  frequency: number;
+  duration: number;
+}
+
+/**
+ * A repeating two-note motif spanning the full alert.
+ *
+ * Repeating rather than holding one long tone: a sustained note reads as a
+ * fault, and a pattern is easier to notice without being startling. The last
+ * note is stretched so the alert ends exactly when it should rather than
+ * trailing off early.
+ */
+export function buildInactionChime(seconds: number = INACTION_CHIME_SECONDS): ChimeNote[] {
+  const notes: ChimeNote[] = [];
+  for (let motif = 0; motif * MOTIF_GAP < seconds; motif += 1) {
+    for (const [index, frequency] of CHIME_PITCHES.entries()) {
+      const offset = motif * MOTIF_GAP + index * NOTE_LENGTH;
+      if (offset >= seconds) {
+        break;
+      }
+      notes.push({ offset, frequency, duration: Math.min(NOTE_LENGTH, seconds - offset) });
+    }
+  }
+
+  const last = notes[notes.length - 1];
+  if (last) {
+    last.duration = Math.max(last.duration, seconds - last.offset);
+  }
+  return notes;
+}
+
 async function playInactionNotificationSound() {
   const context = getNotificationAudioContext();
   if (!context) {
@@ -47,19 +89,19 @@ async function playInactionNotificationSound() {
   }
 
   const startAt = context.currentTime + 0.01;
-  for (const [index, frequency] of [659.25, 880].entries()) {
-    const noteStart = startAt + index * 0.13;
+  for (const note of buildInactionChime()) {
+    const noteStart = startAt + note.offset;
     const oscillator = context.createOscillator();
     const gain = context.createGain();
     oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(frequency, noteStart);
+    oscillator.frequency.setValueAtTime(note.frequency, noteStart);
     gain.gain.setValueAtTime(0.0001, noteStart);
     gain.gain.exponentialRampToValueAtTime(0.14, noteStart + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, noteStart + 0.12);
+    gain.gain.exponentialRampToValueAtTime(0.0001, noteStart + note.duration - 0.01);
     oscillator.connect(gain);
     gain.connect(context.destination);
     oscillator.start(noteStart);
-    oscillator.stop(noteStart + 0.13);
+    oscillator.stop(noteStart + note.duration);
   }
 }
 
