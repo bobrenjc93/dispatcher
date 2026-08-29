@@ -23,11 +23,16 @@ export function useStartupStoreNormalization() {
       // PTYs outlive the UI. Anything still running can be reattached rather
       // than rebuilt, which for an ssh + tmux tab saves re-authenticating and
       // re-attaching by hand — the whole point of keeping them separate.
-      let liveTerminalIds = new Set<string>();
+      // Left undefined when the backend cannot be asked. Normalization treats
+      // that as "unknown" and keeps the tmux tabs, rather than concluding
+      // nothing is alive and deleting transports that are running perfectly
+      // well — which cannot be undone and costs the user an ssh and a
+      // `tmux -CC a` per tab.
+      let liveTerminalIds: Set<string> | undefined;
       try {
         liveTerminalIds = new Set(await listLiveTerminals());
       } catch (error) {
-        debugLog("startup.normalize", "could not list live terminals", {
+        debugLog("startup.normalize", "could not list live terminals, keeping tmux tabs", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -72,7 +77,7 @@ export function useStartupStoreNormalization() {
         });
       }
 
-      resumeLiveControlSessions(liveTerminalIds);
+      resumeLiveControlSessions(liveTerminalIds ?? new Set());
     })();
 
     return () => {

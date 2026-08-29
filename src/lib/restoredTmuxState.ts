@@ -163,18 +163,25 @@ export function normalizeRestoredTmuxState(
   }
 
   const layouts: Record<string, LayoutNode> = { ...snapshot.layouts };
-  const liveTerminalIds = snapshot.liveTerminalIds ?? new Set<string>();
+  // Undefined means "could not find out", which is not the same as "nothing is
+  // alive". Conflating them deletes every transport from the saved workspace on
+  // a single failed lookup, and a deleted transport can never be reattached —
+  // the user has to ssh in and run `tmux -CC a` again, forever.
+  const liveTerminalIds = snapshot.liveTerminalIds;
+  const liveIsKnown = liveTerminalIds !== undefined;
+  const isLive = (id: string): boolean =>
+    liveIsKnown ? liveTerminalIds.has(id) : true;
   /** A tmux tab is still usable when the transport carrying it is alive. */
   const hasLiveTransport = (session: TerminalSession): boolean => {
     const transportId = session.tmuxControlSessionId;
-    return Boolean(transportId && liveTerminalIds.has(transportId));
+    return Boolean(transportId && isLive(transportId));
   };
   let activeTerminalId = snapshot.activeTerminalId;
   let activeProjectId = snapshot.activeProjectId;
   let changed = false;
 
   for (const [sessionId, session] of Object.entries(sessions)) {
-    if (liveTerminalIds.has(sessionId) && getEffectiveBackendKind(session) === "tmux-transport") {
+    if (isLive(sessionId) && getEffectiveBackendKind(session) === "tmux-transport") {
       // The transport PTY survived, so the control session can be resumed.
       continue;
     }

@@ -5855,6 +5855,16 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
   }
 
   const sessions = useTerminalStore.getState().sessions;
+  const transportIds = Object.entries(sessions)
+    .filter(([, terminal]) => terminal.backendKind === "tmux-transport")
+    .map(([id]) => id);
+  debugLog("tmux.session", "resume scan", {
+    liveTerminalIds: liveTerminalIds.size,
+    transports: transportIds.length,
+    liveTransports: transportIds.filter((id) => liveTerminalIds.has(id)).length,
+    sampleLive: [...liveTerminalIds].slice(0, 3).map((id) => id.slice(0, 8)),
+    sampleTransports: transportIds.slice(0, 3).map((id) => id.slice(0, 8)),
+  });
   for (const [terminalId, terminal] of Object.entries(sessions)) {
     if (terminal.backendKind !== "tmux-transport" || !liveTerminalIds.has(terminalId)) {
       continue;

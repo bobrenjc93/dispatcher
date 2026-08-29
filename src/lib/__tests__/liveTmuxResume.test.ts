@@ -96,9 +96,21 @@ describe("tmux state across a reload", () => {
     expect(result.sessions[WINDOW]?.backendKind).toBe("tmux-window");
   });
 
-  it("treats a missing live set as nothing being alive", () => {
+  it("keeps tmux tabs when it could not find out what is alive", () => {
+    // "Could not ask" is not "nothing is running". Treating them the same
+    // deleted transports that were alive, and a deleted transport can never be
+    // reattached — it costs an ssh and a `tmux -CC a` per tab, permanently.
     const { liveTerminalIds: _ignored, ...withoutLive } = snapshot(new Set());
     const result = normalizeRestoredTmuxState(withoutLive);
+
+    expect(result.sessions[TRANSPORT]).toBeDefined();
+    expect(result.sessions[WINDOW].tmuxControlSessionId).toBe(TRANSPORT);
+  });
+
+  it("still drops a transport that is known to be gone", () => {
+    // An empty set is an answer: nothing is running, so the tabs really are
+    // placeholders now.
+    const result = normalizeRestoredTmuxState(snapshot(new Set()));
 
     expect(result.sessions[TRANSPORT]).toBeUndefined();
   });

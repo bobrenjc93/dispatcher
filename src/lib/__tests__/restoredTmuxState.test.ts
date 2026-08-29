@@ -6,6 +6,9 @@ import { normalizeRestoredTmuxState } from "../restoredTmuxState";
 describe("restoredTmuxState", () => {
   it("preserves restored tmux windows as disconnected placeholders and removes transport cruft", () => {
     const result = normalizeRestoredTmuxState({
+      // An explicit empty set: we asked what was running and the answer was
+      // nothing. Omitting it would mean "could not ask", which keeps the tabs.
+      liveTerminalIds: new Set<string>(),
       sessions: {
         transport: {
           id: "transport",
