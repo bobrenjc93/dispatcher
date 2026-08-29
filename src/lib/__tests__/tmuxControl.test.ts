@@ -376,6 +376,27 @@ function completeTmuxCommandWithLines(
 }
 
 /**
+ * Answer a pipelined cursor+capture pair. Both are queued in the same tmux
+ * command drain — the cursor first — so their replies come back in that order.
+ */
+/** Let a capture's continuation chain run to completion. */
+async function flushMicrotasks(times = 12) {
+  for (let i = 0; i < times; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+function completeTmuxCaptureWithCursor(
+  transportTerminalId: string,
+  cursorCommandId: number,
+  captureLines: readonly string[],
+  cursor = "4\t7"
+) {
+  completeTmuxCommandWithLines(transportTerminalId, cursorCommandId, [cursor]);
+  completeTmuxCommandWithLines(transportTerminalId, cursorCommandId + 1, captureLines);
+}
+
+/**
  * Complete a command and have pane output land immediately after its %end, in
  * the same transport chunk. tmux control mode is one ordered stream, so this
  * is what a genuine race looks like: the output is applied before the awaiting
@@ -838,9 +859,10 @@ describe("tmuxControl", () => {
         "%begin 4 0",
         "%end 4 0",
         "%begin 5 0",
-        "Claude screen",
+        "4\t7",
         "%end 5 0",
         "%begin 6 0",
+        "Claude screen",
         "%end 6 0",
         "",
       ].join("\n")
@@ -853,7 +875,7 @@ describe("tmuxControl", () => {
       'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
     );
 
-    completeTmuxCommandWithLines(transportTerminalId, 7, ["4\t7"]);
+    completeTmuxCommand(transportTerminalId, 7);
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -973,19 +995,15 @@ describe("tmuxControl", () => {
       [
         "%output %1 \\033[31;2H\\033[Kconcurrent tui frame",
         "%begin 4 0",
-        "authoritative frame",
+        "4\t7",
         "%end 4 0",
+        "%begin 5 0",
+        "authoritative frame",
+        "%end 5 0",
         "",
       ].join("\n")
     );
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    completeTmuxCommandWithLines(transportTerminalId, 5, ["4\t7"]);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
@@ -1038,6 +1056,34 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("puts the cursor query in flight with the capture, not after it", async () => {
+    // Both have to be queued before either reply is read. Asking for the
+    // cursor only once the capture has come back leaves a whole round trip in
+    // between, and output landing in it makes the capture stale — which on a
+    // pane that never stops emitting is every attempt, so the repair can never
+    // complete. tmux runs queued commands back to back without flushing pane
+    // output between them, so pipelining them keeps both replies consistent.
+    const transportTerminalId = "transport-pipelined-cursor-capture";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Klive tui frame\n");
+    await vi.advanceTimersByTimeAsync(1_200);
+
+    // Nothing has been answered yet, so anything written by now was queued
+    // without waiting on a reply.
+    const inFlight = (writeTerminalMock.mock.calls as unknown as Array<[string, string]>)
+      .filter(([id]) => id === transportTerminalId)
+      .map(([, data]) => data);
+    expect(inFlight).toContain('display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n');
+    expect(inFlight).toContain("capture-pane -p -e -C -t %1\n");
+  });
+
   it("repairs cursor-addressed visible tmux output after it settles", async () => {
     const transportTerminalId = "transport-visible-redraw-repair";
     seedTransportTerminal(transportTerminalId);
@@ -1065,24 +1111,11 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -t %1\n"
     );
 
-    routeTmuxTransportOutput(
-      transportTerminalId,
-      [
-        "%begin 4 0",
-        "authoritative frame",
-        "%end 4 0",
-        "",
-      ].join("\n")
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,
       'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
     );
-
-    completeTmuxCommandWithLines(transportTerminalId, 5, ["4\t7"]);
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, ["authoritative frame"]);
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -1299,17 +1332,15 @@ describe("tmuxControl", () => {
     );
 
     const inputPromise = sendInputToTmuxTerminal(paneTerminalId, "vim ~/.bash_profile\r");
-    completeTmuxCommandWithLines(transportTerminalId, 4, ["shell frame before vim"]);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, ["shell frame before vim"]);
+    await flushMicrotasks();
 
     expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
       paneTerminalId,
       expect.stringContaining("shell frame before vim"),
       expect.anything()
     );
-    completeTmuxCommandWithLines(transportTerminalId, 5, []);
+    completeTmuxCommandWithLines(transportTerminalId, 6, []);
     await expect(inputPromise).resolves.toBe(true);
   });
 
@@ -1640,9 +1671,10 @@ describe("tmuxControl", () => {
         "%begin 4 0",
         "%end 4 0",
         "%begin 5 0",
-        "current viewport",
+        "4\t7",
         "%end 5 0",
         "%begin 6 0",
+        "current viewport",
         "%end 6 0",
         "",
       ].join("\n")
@@ -1694,18 +1726,12 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -t %1\n"
     );
 
-    completeTmuxCommandWithLines(transportTerminalId, 4, ["background viewport"]);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,
       'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
     );
-    completeTmuxCommandWithLines(transportTerminalId, 5, ["4\t7"]);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, ["background viewport"]);
+    await flushMicrotasks();
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
@@ -1748,9 +1774,10 @@ describe("tmuxControl", () => {
         "%begin 4 0",
         "%end 4 0",
         "%begin 5 0",
-        "fresh viewport",
+        "12\t15",
         "%end 5 0",
         "%begin 6 0",
+        "fresh viewport",
         "%end 6 0",
         "",
       ].join("\n")
@@ -1763,7 +1790,7 @@ describe("tmuxControl", () => {
       'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
     );
 
-    completeTmuxCommandWithLines(transportTerminalId, 7, ["12\t15"]);
+    completeTmuxCommand(transportTerminalId, 7);
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -1836,9 +1863,10 @@ describe("tmuxControl", () => {
         "%begin 4 0",
         "%end 4 0",
         "%begin 5 0",
-        "fresh viewport",
+        "4\t7",
         "%end 5 0",
         "%begin 6 0",
+        "fresh viewport",
         "%end 6 0",
         "",
       ].join("\n")
@@ -1894,15 +1922,14 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -t %1\n"
     );
 
+    completeTmuxCommandWithLines(transportTerminalId, 3, ["4\t7"]);
     completeTmuxCommandWithRacedOutput(
       transportTerminalId,
-      3,
+      4,
       ["stale initial history"],
       "%output %1 live after initial replay"
     );
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
@@ -1922,14 +1949,12 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -t %1\n"
     );
 
-    completeTmuxCommandWithLines(transportTerminalId, 4, ["fresh initial history"]);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,
       'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
     );
+    completeTmuxCaptureWithCursor(transportTerminalId, 5, ["fresh initial history"]);
+    await flushMicrotasks();
 
     completeTmuxCommandWithLines(transportTerminalId, 5, ["4\t7"]);
     await Promise.resolve();
@@ -1968,16 +1993,15 @@ describe("tmuxControl", () => {
     // A busy pane keeps racing every capture attempt with fresh %output.
     let commandId = 3;
     for (let raceRound = 0; raceRound < 3; raceRound += 1) {
+      completeTmuxCommandWithLines(transportTerminalId, commandId, ["4\t7"]);
       completeTmuxCommandWithRacedOutput(
         transportTerminalId,
-        commandId,
+        commandId + 1,
         [`raced frame ${raceRound}`],
         `%output %1 stream ${raceRound}`
       );
-      commandId += 1;
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      commandId += 2;
+      await flushMicrotasks();
       expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
         paneTerminalId,
         expect.stringContaining(`raced frame ${raceRound}`),
@@ -1993,16 +2017,15 @@ describe("tmuxControl", () => {
 
     // Fourth attempt races too, but the retry budget is exhausted: the
     // capture is applied anyway so the reattached pane shows a full frame.
+    completeTmuxCommandWithLines(transportTerminalId, commandId, ["4\t7"]);
     completeTmuxCommandWithRacedOutput(
       transportTerminalId,
-      commandId,
+      commandId + 1,
       ["accepted frame"],
       "%output %1 stream final"
     );
-    commandId += 1;
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    commandId += 2;
+    await flushMicrotasks();
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,
       'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
@@ -2072,10 +2095,13 @@ describe("tmuxControl", () => {
         "%begin 6 0",
         "%end 6 0",
         "%begin 7 0",
-        "fresh viewport",
+        "4\t7",
         "%end 7 0",
         "%begin 8 0",
+        "fresh viewport",
         "%end 8 0",
+        "%begin 9 0",
+        "%end 9 0",
         "",
       ].join("\n")
     );
@@ -2088,15 +2114,14 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -S -12 -t %1\n"
     );
 
+    completeTmuxCommandWithLines(transportTerminalId, 10, ["4\t7"]);
     completeTmuxCommandWithRacedOutput(
       transportTerminalId,
-      9,
+      11,
       ["stale full history"],
       "%output %1 live after focus"
     );
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
@@ -2117,28 +2142,12 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -S -12 -t %1\n"
     );
 
-    routeTmuxTransportOutput(
-      transportTerminalId,
-      [
-        "%begin 9 0",
-        "fresh full history",
-        "%end 9 0",
-        "",
-      ].join("\n")
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,
       'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
     );
-
-    completeTmuxCommandWithLines(transportTerminalId, 10, ["4\t7"]);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    completeTmuxCaptureWithCursor(transportTerminalId, 12, ["fresh full history"]);
+    await flushMicrotasks();
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
@@ -2182,9 +2191,10 @@ describe("tmuxControl", () => {
         "%begin 4 0",
         "%end 4 0",
         "%begin 5 0",
-        "current screen",
+        "4\t7",
         "%end 5 0",
         "%begin 6 0",
+        "current screen",
         "%end 6 0",
         "",
       ].join("\n")
@@ -2196,13 +2206,8 @@ describe("tmuxControl", () => {
       transportTerminalId,
       'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
     );
-    completeTmuxCommandWithLines(transportTerminalId, 7, ["4\t7"]);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    completeTmuxCommand(transportTerminalId, 7);
+    await flushMicrotasks();
     await vi.advanceTimersByTimeAsync(300);
     expect(writeTerminalMock).toHaveBeenCalledWith(
       transportTerminalId,

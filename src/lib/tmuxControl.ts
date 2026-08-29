@@ -3117,6 +3117,37 @@ function buildPaneReplayOutput(options: {
   return `${screenModePrefix}\u001b[0m\u001b[?7l\u001b[H\u001b[2J${clearScrollbackSequence}${options.content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H`;
 }
 
+/**
+ * Queue the cursor query without awaiting it, so the caller can put the capture
+ * behind it in the same tmux command queue drain.
+ *
+ * The two have to travel together. tmux runs queued commands back to back and
+ * only flushes pane output between drains, so replies queued together describe
+ * the same pane state. Awaiting the capture and *then* asking for the cursor
+ * opens a whole round trip in between, and any output landing in it makes the
+ * capture stale — which on a pane that emits continuously is every single
+ * attempt, so the repair can never complete.
+ *
+ * Ordering the cursor first also means it has already settled by the time the
+ * capture's staleness check runs, so an abort never strands a queued command.
+ */
+function beginPaneCursorQuery(
+  session: TmuxControlSession,
+  pane: TmuxPaneState
+): Promise<string[]> | null {
+  ensurePaneHistoryCaptureState(pane);
+  if (!pane.cursorStaleSinceOutput) {
+    return null;
+  }
+
+  const pending = sendCommand(session, buildTmuxPaneCursorCommand(pane.paneId));
+  // An early abort can leave this unawaited. Keep a handler attached so it
+  // never surfaces as an unhandled rejection; awaiting it later still sees the
+  // error.
+  pending.catch(() => {});
+  return pending;
+}
+
 async function resolvePaneCursorForCapture(
   session: TmuxControlSession,
   pane: TmuxPaneState,
@@ -3128,10 +3159,13 @@ async function resolvePaneCursorForCapture(
     // query instead of aborting the replay. Used by initial captures, where
     // a best-effort replay beats leaving the pane blank on a busy stream.
     acceptRacedCursor?: boolean;
+    // A cursor query the caller already queued via beginPaneCursorQuery.
+    pendingCursorLines?: Promise<string[]> | null;
   }
 ): Promise<{ cursorX: number; cursorY: number } | null> {
   ensurePaneHistoryCaptureState(pane);
-  if (!pane.cursorStaleSinceOutput) {
+  const pendingCursorLines = options?.pendingCursorLines ?? null;
+  if (!pendingCursorLines && !pane.cursorStaleSinceOutput) {
     return {
       cursorX: pane.cursorX,
       cursorY: pane.cursorY,
@@ -3148,7 +3182,9 @@ async function resolvePaneCursorForCapture(
     cachedCursorY: pane.cursorY,
   });
 
-  const lines = await sendCommand(session, buildTmuxPaneCursorCommand(pane.paneId));
+  const lines = await (
+    pendingCursorLines ?? sendCommand(session, buildTmuxPaneCursorCommand(pane.paneId))
+  );
   const currentPane = session.panes.get(pane.paneId);
   if (currentPane?.terminalId !== pane.terminalId) {
     debugLog("tmux.capture", "skip cursor refresh for stale pane", {
@@ -3470,6 +3506,8 @@ async function capturePaneFullContent(
   );
 
   try {
+    // Queued ahead of the capture in the same drain; see beginPaneCursorQuery.
+    const pendingCursorLines = beginPaneCursorQuery(session, pane);
     // Output that preceded the capture's %end is already inside the capture.
     let outputGenerationAtCapture = outputGeneration;
     const lines = await sendCommand(
@@ -3583,7 +3621,11 @@ async function capturePaneFullContent(
       currentPane,
       outputGenerationAtCapture,
       options.reason,
-      { outputRaceRepair: "history", acceptRacedCursor: acceptRacedCapture }
+      {
+        outputRaceRepair: "history",
+        acceptRacedCursor: acceptRacedCapture,
+        pendingCursorLines,
+      }
     );
     if (!cursor) {
       return;
@@ -3716,6 +3758,8 @@ async function redrawVisiblePaneContent(
     cursorY: pane.cursorY,
   });
 
+  // Queued ahead of the capture in the same drain; see beginPaneCursorQuery.
+  const pendingCursorLines = beginPaneCursorQuery(session, pane);
   // Everything tmux emitted before the capture's %end is already in the
   // capture, so only output that lands after this point makes it stale.
   let outputGenerationAtCapture = outputGeneration;
@@ -3825,7 +3869,10 @@ async function redrawVisiblePaneContent(
     currentPane,
     outputGenerationAtCapture,
     reason,
-    { outputRaceRepair: options?.backgroundRefresh ? "background" : "visible" }
+    {
+      outputRaceRepair: options?.backgroundRefresh ? "background" : "visible",
+      pendingCursorLines,
+    }
   );
   if (!cursor) {
     return;
