@@ -14,7 +14,6 @@
 use crate::errors::PtyError;
 use crate::pty_manager::{NullPtyHost, OutputSink, PtyHost, PtyManager};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::PathBuf;

@@ -14,6 +14,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# The objc 0.2 macros expand to `#[cfg(feature = "cargo-clippy")]` inside this
+# crate, which the unexpected_cfgs lint flags 47 times. Declaring the value as
+# expected silences those without disabling the lint for real mistakes.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-clipboard-manager = "2"

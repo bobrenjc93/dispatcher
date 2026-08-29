@@ -70,6 +70,9 @@ npm install
 npm run tauri -- dev
 ```
 
+Local builds are warning-free — Rust in dev, test and release, and the
+frontend bundle. If a build starts printing warnings, something changed.
+
 ### Production build
 
 ```bash
