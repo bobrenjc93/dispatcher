@@ -9,6 +9,12 @@ const HEARTBEAT_STALE_AFTER_MS: u128 = 15_000;
 const HEARTBEAT_STALE_LOG_INTERVAL_MS: u128 = 30_000;
 const HEARTBEAT_ALIVE_LOG_INTERVAL_MS: u128 = 60_000;
 const NO_HEARTBEAT_LOG_AFTER_MS: u128 = 30_000;
+/// A renderer silent this long is not busy, it is wedged. Well past the stale
+/// threshold, so ordinary jank never trips it.
+const HEARTBEAT_RECOVER_AFTER_MS: u128 = 60_000;
+/// Long enough for a reload to finish and heartbeats to resume before another
+/// attempt, so a window that cannot come back is not reloaded in a loop.
+const RECOVERY_COOLDOWN_MS: u128 = 120_000;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +47,8 @@ struct RendererWatchdogState {
     last_stale_log_at: Option<SystemTime>,
     stale_logged: bool,
     no_heartbeat_logged: bool,
+    last_recovery_at: Option<SystemTime>,
+    recovery_count: usize,
 }
 
 impl RendererHeartbeatDetails {
@@ -74,11 +82,13 @@ impl RendererWatchdog {
                 last_stale_log_at: None,
                 stale_logged: false,
                 no_heartbeat_logged: false,
+                last_recovery_at: None,
+                recovery_count: 0,
             })),
         }
     }
 
-    pub fn start(&self) {
+    pub fn start(&self, app_handle: tauri::AppHandle) {
         let state = Arc::clone(&self.state);
         let result = thread::Builder::new()
             .name("dispatcher-renderer-watchdog".to_string())
@@ -99,6 +109,14 @@ impl RendererWatchdog {
                     if should_stop {
                         break;
                     }
+                }
+
+                let recover = match state.lock() {
+                    Ok(mut guard) => guard.should_recover(SystemTime::now()),
+                    Err(_) => false,
+                };
+                if recover {
+                    reload_window(&app_handle);
                 }
             });
 
@@ -235,6 +253,66 @@ impl RendererWatchdogState {
     }
 }
 
+impl RendererWatchdogState {
+    /// Whether the renderer has been silent long enough to be reloaded.
+    ///
+    /// Detecting a wedged renderer was only ever diagnostic. Reloading it is
+    /// safe now that terminals live in the daemon: the shells, ssh sessions and
+    /// tmux clients are in another process and a reload reattaches to them.
+    /// A blank window the user has to notice and restart by hand is a worse
+    /// outcome than a reload they may not even see.
+    fn should_recover(&mut self, now: SystemTime) -> bool {
+        let Some(last_heartbeat_at) = self.last_heartbeat_at else {
+            // Never heard from it at all: measure from start-up instead, so a
+            // window that dies before its first heartbeat is still recovered.
+            if elapsed_millis_since(now, self.started_at) < HEARTBEAT_RECOVER_AFTER_MS {
+                return false;
+            }
+            return self.take_recovery_slot(now);
+        };
+
+        if elapsed_millis_since(now, last_heartbeat_at) < HEARTBEAT_RECOVER_AFTER_MS {
+            return false;
+        }
+        self.take_recovery_slot(now)
+    }
+
+    fn take_recovery_slot(&mut self, now: SystemTime) -> bool {
+        if let Some(last) = self.last_recovery_at {
+            if elapsed_millis_since(now, last) < RECOVERY_COOLDOWN_MS {
+                return false;
+            }
+        }
+        self.last_recovery_at = Some(now);
+        self.recovery_count += 1;
+        true
+    }
+}
+
+/// Reload the window a wedged renderer is running in.
+///
+/// A native reload rather than evaluating `location.reload()`: if the renderer
+/// has stopped answering, its JavaScript is exactly what cannot be relied on to
+/// run. Terminals are unaffected — they live in the daemon.
+fn reload_window(app_handle: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(window) = app_handle.get_webview_window("main") else {
+        let _ = crate::debug_log::append_debug_log(
+            "[backend:renderer_watchdog] wanted to reload but found no main window",
+        );
+        return;
+    };
+
+    let outcome = match window.reload() {
+        Ok(()) => "reloaded".to_string(),
+        Err(err) => format!("reload failed: {}", err),
+    };
+    let _ = crate::debug_log::append_debug_log(&format!(
+        "[backend:renderer_watchdog] renderer unresponsive, {}",
+        outcome
+    ));
+}
+
 fn elapsed_millis_since(now: SystemTime, earlier: SystemTime) -> u128 {
     now.duration_since(earlier).unwrap_or_default().as_millis()
 }
@@ -295,7 +373,53 @@ mod tests {
             last_stale_log_at: None,
             stale_logged: false,
             no_heartbeat_logged: false,
+            last_recovery_at: None,
+            recovery_count: 0,
         }
+    }
+
+    #[test]
+    fn recovers_a_renderer_that_has_gone_silent() {
+        let mut state = watchdog_state(Duration::from_millis(
+            (HEARTBEAT_RECOVER_AFTER_MS + 1_000) as u64,
+        ));
+        assert!(state.should_recover(SystemTime::now()));
+        assert_eq!(state.recovery_count, 1);
+    }
+
+    #[test]
+    fn leaves_a_merely_slow_renderer_alone() {
+        // Past the stale threshold but well short of wedged: logging is the
+        // right response, reloading is not.
+        let mut state = watchdog_state(Duration::from_millis(
+            (HEARTBEAT_STALE_AFTER_MS + 1_000) as u64,
+        ));
+        assert!(!state.should_recover(SystemTime::now()));
+        assert_eq!(state.recovery_count, 0);
+    }
+
+    #[test]
+    fn does_not_reload_in_a_loop() {
+        // A window that cannot come back must not be reloaded every few
+        // seconds forever.
+        let mut state = watchdog_state(Duration::from_millis(
+            (HEARTBEAT_RECOVER_AFTER_MS + 1_000) as u64,
+        ));
+        let now = SystemTime::now();
+        assert!(state.should_recover(now));
+        assert!(!state.should_recover(now));
+        assert_eq!(state.recovery_count, 1);
+    }
+
+    #[test]
+    fn recovers_a_window_that_never_reported_at_all() {
+        // Dying before the first heartbeat is the worst case: nothing to
+        // measure staleness from, and a permanently blank window.
+        let mut state = watchdog_state(Duration::from_millis(0));
+        state.last_heartbeat_at = None;
+        state.started_at = SystemTime::now()
+            - Duration::from_millis((HEARTBEAT_RECOVER_AFTER_MS + 1_000) as u64);
+        assert!(state.should_recover(SystemTime::now()));
     }
 
     #[test]

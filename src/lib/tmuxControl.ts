@@ -2895,6 +2895,18 @@ function isTmuxOutputLikelyToNeedAuthoritativeRedraw(output: string): boolean {
   );
 }
 
+/**
+ * How many times a redraw may be abandoned for racing output before it is
+ * applied anyway.
+ *
+ * Discarding a capture that raced newer output avoids painting something
+ * slightly stale. But a pane with an agent writing to it constantly races
+ * every single time, so the repair never lands — and after a reload the xterm
+ * starts empty, which leaves the pane blank indefinitely. A screen a moment
+ * out of date is far better than no screen, and the next output corrects it.
+ */
+const TMUX_MAX_REDRAW_RACES = 4;
+
 function shouldRetryVisibleRedraw(reason: string): boolean {
   return (
     reason.includes("output-settle")
@@ -3736,9 +3748,8 @@ async function redrawVisiblePaneContent(
     return;
   }
   if (currentPane.outputGeneration !== outputGeneration) {
-    if (!options?.backgroundRefresh) {
-      currentPane.visibleRedrawRaceCount += 1;
-    }
+    currentPane.visibleRedrawRaceCount += 1;
+    const raceBudgetSpent = currentPane.visibleRedrawRaceCount >= TMUX_MAX_REDRAW_RACES;
     debugLog("tmux.capture", options?.backgroundRefresh ? "skip background pane viewport redraw after raced output" : "skip visible pane redraw after raced output", {
       sessionId: session.id,
       paneId: pane.paneId,
@@ -3747,23 +3758,38 @@ async function redrawVisiblePaneContent(
       outputGeneration,
       currentOutputGeneration: currentPane.outputGeneration,
       visibleRedrawRaceCount: currentPane.visibleRedrawRaceCount,
+      raceBudgetSpent,
     });
-    if (options?.backgroundRefresh) {
-      scheduleBackgroundPaneViewportRefresh(
-        session,
-        currentPane,
-        `${reason}-raced-output`,
-        TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS
-      );
-    } else if (shouldRetryVisibleRedraw(reason)) {
-      schedulePaneVisibleRedraw(
-        session,
-        currentPane,
-        `${reason}-raced-output`,
-        TMUX_VISIBLE_REDRAW_RETRY_MS
-      );
+
+    if (!raceBudgetSpent) {
+      if (options?.backgroundRefresh) {
+        scheduleBackgroundPaneViewportRefresh(
+          session,
+          currentPane,
+          `${reason}-raced-output`,
+          TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS
+        );
+      } else if (shouldRetryVisibleRedraw(reason)) {
+        schedulePaneVisibleRedraw(
+          session,
+          currentPane,
+          `${reason}-raced-output`,
+          TMUX_VISIBLE_REDRAW_RETRY_MS
+        );
+      }
+      return;
     }
-    return;
+
+    // Out of retries: a pane that never stops writing would otherwise never be
+    // repaired at all. Apply what was captured.
+    debugLog("tmux.capture", "applying a raced redraw rather than leaving the pane stale", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId: pane.terminalId,
+      reason,
+      races: currentPane.visibleRedrawRaceCount,
+    });
+    currentPane.visibleRedrawRaceCount = 0;
   }
 
   const cursor = await resolvePaneCursorForCapture(
@@ -5868,7 +5894,27 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
     // parsed, so panes stay blank and queued commands never run.
     ensureTerminalOutputChannel(terminalId);
 
-    if (controlSessions.has(terminalId) || transportTerminalToSessionId.has(terminalId)) {
+    const existingSessionId = transportTerminalToSessionId.get(terminalId) ?? terminalId;
+    const existing = controlSessions.get(existingSessionId);
+    if (existing) {
+      // The session came back from the store with its windows and panes, but
+      // this UI has never seen a single byte of their output — the xterms are
+      // empty. Ask tmux what is on each screen, or a pane stays blank until it
+      // happens to produce output, which for a finished agent is never.
+      for (const pane of existing.panes.values()) {
+        pane.initialContentCaptured = false;
+        queueInitialPaneContentCapture(existing, pane, {
+          reason: "resume-after-reload",
+          priority: isPaneVisibleInActiveWindow(existing, pane),
+        });
+      }
+      debugLog("tmux.session", "requested pane content after reload", {
+        transportTerminalId: terminalId,
+        panes: existing.panes.size,
+      });
+      continue;
+    }
+    if (transportTerminalToSessionId.has(terminalId)) {
       continue;
     }
 

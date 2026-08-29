@@ -163,7 +163,7 @@ pub fn run() {
                 window_builder.data_store_identifier(DISPATCHER_DATA_STORE_IDENTIFIER);
             window_builder.build()?;
 
-            watchdog_for_setup.start();
+            watchdog_for_setup.start(app.handle().clone());
 
             // Serve the same app to web browsers. Browsers run as replicas of
             // this window: they render what it mirrors and send user actions

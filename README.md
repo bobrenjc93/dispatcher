@@ -414,6 +414,22 @@ while the app sits behind another one.
 Nothing can bounce the dock while Dispatcher is frontmost; macOS ignores an
 attention request from the active app.
 
+### When the window goes blank
+
+A wedged renderer used to be a dead end: the watchdog noticed and wrote it to
+the log, and the window stayed blank until someone restarted the app by hand.
+
+It now reloads the window instead. A renderer silent for a minute — well past
+the threshold for ordinary jank — gets a native reload, not an evaluated
+`location.reload()`, because a renderer that has stopped answering is exactly
+one whose JavaScript cannot be relied on to run. There is a two-minute cooldown
+so a window that cannot come back is not reloaded in a loop, and a window that
+dies before its first heartbeat is recovered too.
+
+This is only safe because terminals live in the daemon. The shells, ssh
+sessions and tmux clients are in another process, so the reload reattaches to
+them and replays what was missed.
+
 ## Status Dots
 
 Dispatcher's status dots are intentionally a small state machine, not raw PTY

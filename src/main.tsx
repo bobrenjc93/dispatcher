@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { debugLog } from "./lib/debugLog";
-import { initWebBridge } from "./lib/webBridge";
+import { initWebBridge, isWebClient } from "./lib/webBridge";
 import { startRendererHeartbeat } from "./lib/rendererHeartbeat";
 import App from "./App";
 
@@ -43,7 +43,15 @@ class RootErrorBoundary extends React.Component<
 // every Tauri call reading an undefined `__TAURI_INTERNALS__`, and leaves
 // `isWebClient()` false so the page does not even know it is a replica.
 // Resolves immediately inside Tauri.
+const hadTauriInternalsAtBoot =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 void initWebBridge().then(() => {
+  debugLog("app.runtime", "bridge bootstrap", {
+    hadTauriInternalsAtBoot,
+    isWebClient: isWebClient(),
+    href: window.location.href,
+  });
   debugLog("app.runtime", "render root start", {
     href: window.location.href,
   });
