@@ -95,6 +95,20 @@ export async function getTerminalDebugInfo(terminalId: string): Promise<Terminal
   return await invoke("get_terminal_debug_info", { terminalId });
 }
 
+/**
+ * Bounce the dock once more, replacing any bounce in progress.
+ *
+ * Not `requestUserAttention`: Tauri's cancel is a no-op, so a pending request
+ * can never be retired and asking again is coalesced into nothing.
+ */
+export async function pulseDockAttention(): Promise<number> {
+  return await invoke("pulse_dock_attention");
+}
+
+export async function cancelDockAttention(): Promise<void> {
+  await invoke("cancel_dock_attention");
+}
+
 export async function showFontPanel(
   family: string,
   size: number,

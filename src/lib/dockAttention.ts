@@ -7,7 +7,8 @@
  * bouncing until the user activates Dispatcher.
  */
 
-import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { cancelDockAttention, pulseDockAttention } from "./tauriCommands";
 import { debugLog } from "./debugLog";
 
 /**
@@ -49,10 +50,10 @@ let unlistenFocus: (() => void) | null = null;
  * again on a timer produced exactly one bounce and then silence.
  */
 function pulse() {
-  const window_ = getCurrentWindow();
-  void window_
-    .requestUserAttention(null)
-    .then(() => window_.requestUserAttention(UserAttentionType.Critical))
+  void pulseDockAttention()
+    .then((requestId) => {
+      debugLog("status.notification", "dock bounce pulse", { requestId });
+    })
     .catch((error) => {
       debugLog("status.notification", "dock bounce failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -82,7 +83,7 @@ export function stopDockAttention() {
   }
   unlistenFocus?.();
   unlistenFocus = null;
-  void getCurrentWindow().requestUserAttention(null).catch(() => {});
+  void cancelDockAttention().catch(() => {});
 }
 
 export function bounceDockForAttention(tabRootTerminalId: string, title: string) {

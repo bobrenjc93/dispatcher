@@ -2,6 +2,7 @@ mod commands;
 pub mod daemon;
 mod daemon_client;
 mod debug_log;
+mod dock_attention;
 mod errors;
 #[cfg(target_os = "macos")]
 #[allow(unexpected_cfgs)]
@@ -215,6 +216,8 @@ pub fn run() {
             session_recorder::describe_recorded_terminal,
             session_recorder::get_recording_info,
             session_recorder::set_recording_enabled,
+            dock_attention::pulse_dock_attention,
+            dock_attention::cancel_dock_attention,
             commands::show_font_panel,
             commands::hide_font_panel,
         ]);
