@@ -1718,6 +1718,17 @@ body.sidebar-dragging * {
     touch-action: pan-x pan-y pinch-zoom;
   }
 
+  /* Safari zooms the page whenever a focused input's text is under 16px, and a
+     zoomed page pans under the finger instead of scrolling — so tapping the
+     terminal to type left the whole app panning and the scrollback out of
+     reach. This textarea is xterm's keyboard target: 0x0, transparent and
+     parked off screen, so the size exists purely to keep Safari from zooming.
+     Matching the terminal font here would inherit whatever the pane is set to,
+     which on a phone is well under the threshold. */
+  .app-compact .xterm-helper-textarea {
+    font-size: 16px;
+  }
+
   /* While a selection is being dragged the gesture belongs to the terminal,
      not to the box it scrolls in — otherwise extending the range just pans. */
   .app-compact .terminal-container.terminal-touch-selecting {

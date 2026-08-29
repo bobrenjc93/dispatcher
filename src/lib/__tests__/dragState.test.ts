@@ -218,6 +218,37 @@ describe("dragState", () => {
     }
   });
 
+  it("releases the scroll blocker when a live touch drag is cancelled", () => {
+    // A touch drag holds a non-passive touchmove listener so the list stays
+    // put under the finger. There is no mouseup fallback on touch, so if a
+    // cancelled drag kept that listener the whole app would stop scrolling.
+    vi.useFakeTimers();
+    try {
+      const dragged = document.createElement("div");
+      dragged.dataset.nodeId = "dragged-node";
+      dragged.dataset.projectId = "project";
+      document.body.append(dragged);
+
+      startDrag({
+        type: "terminal",
+        terminalId: "terminal",
+        projectId: "project",
+        nodeId: "dragged-node",
+      }, 0, 0, dragged, "touch");
+      vi.advanceTimersByTime(400);
+      expect(dragged.classList.contains("is-dragging")).toBe(true);
+
+      document.dispatchEvent(pointerEvent("pointercancel", 0, 0));
+
+      const touchMove = new Event("touchmove", { bubbles: true, cancelable: true });
+      document.dispatchEvent(touchMove);
+      expect(touchMove.defaultPrevented).toBe(false);
+      expect(document.body.classList.contains("sidebar-dragging")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("completes an active drag from the mouseup fallback after pointercancel", () => {
     const dragged = document.createElement("div");
     dragged.dataset.nodeId = "dragged-node";

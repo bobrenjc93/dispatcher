@@ -316,7 +316,12 @@ function handleMouseUp(e: MouseEvent) {
 }
 
 function handlePointerCancel() {
-  if (!active) {
+  // A cancelled touch has no mouseup fallback to finish it, and an unfinished
+  // touch drag leaves a non-passive touchmove listener installed that
+  // preventDefaults every scroll in the app. Mouse drags keep the old
+  // behaviour: pointercancel fires spuriously there and mouseup still
+  // completes the drag.
+  if (!active || isTouchLikePointer(pointerTypeStarted)) {
     end();
   }
 }
