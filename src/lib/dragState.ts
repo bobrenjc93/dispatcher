@@ -47,6 +47,27 @@ let previousBodyWebkitUserSelect: string | null = null;
 let suppressingTextSelection = false;
 
 const THRESHOLD = 5;
+/**
+ * A finger never holds still. A tap that wobbles three pixels across and four
+ * down beats a five-pixel budget, and once a drag starts the click that would
+ * have selected the tab is deliberately swallowed — so on touch every tap
+ * looked like a drag and nothing could be selected.
+ */
+const TOUCH_THRESHOLD = 16;
+
+/** How far a pointer may travel before a press becomes a drag. */
+export function dragActivationThreshold(pointerType?: string): number {
+  return pointerType === "touch" || pointerType === "pen" ? TOUCH_THRESHOLD : THRESHOLD;
+}
+
+/** Manhattan distance, matching how the threshold is expressed. */
+export function exceedsDragThreshold(
+  dx: number,
+  dy: number,
+  pointerType?: string
+): boolean {
+  return Math.abs(dx) + Math.abs(dy) > dragActivationThreshold(pointerType);
+}
 const INTERACTIVE_DRAG_START_SELECTOR = "button,input,textarea,select,a,[contenteditable='true'],[contenteditable='']";
 const dragRuntime = getDragRuntimeState();
 
@@ -128,7 +149,8 @@ function handleDragMove(e: PointerEvent | MouseEvent) {
   if (!info) return;
 
   if (!active) {
-    if (Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY) > THRESHOLD) {
+    const pointerType = "pointerType" in e ? e.pointerType : undefined;
+    if (exceedsDragThreshold(e.clientX - startX, e.clientY - startY, pointerType)) {
       active = true;
       draggedEl?.classList.add("is-dragging");
       setTextSelectionSuppressed();

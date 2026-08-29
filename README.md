@@ -129,6 +129,12 @@ Set `DISPATCHER_WEB_PORT` to change the port it starts looking from.
 
 ### On a phone
 
+Dragging to reorder needs a bigger movement budget on a touchscreen than a
+mouse: a finger never holds still, and once a press becomes a drag the click
+that would have selected the tab is deliberately swallowed. A mouse-sized
+budget therefore made tabs unselectable by tap, so touch and pen get a larger
+one.
+
 Below 820px the UI switches to a single column:
 
 - the sidebar becomes a drawer behind the ☰ button, closing as soon as you pick
