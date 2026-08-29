@@ -18,8 +18,13 @@ describe("buildInactionChime", () => {
     // A sustained note reads as a fault; a pattern is noticeable without
     // being startling.
     const notes = buildInactionChime();
-    expect(notes.length).toBeGreaterThan(4);
+    expect(notes.length).toBeGreaterThan(2);
     expect(new Set(notes.map((n) => n.frequency)).size).toBe(2);
+  });
+
+  it("is short enough not to grate", () => {
+    // Three seconds was accurate and annoying.
+    expect(INACTION_CHIME_SECONDS).toBeLessThanOrEqual(1);
   });
 
   it("never schedules a note past the end", () => {

@@ -380,7 +380,7 @@ Two per-tab alerts, both on the right-click menu, and easy to confuse:
 | | fires when | how it tells you |
 |---|---|---|
 | **Bounce When Done** | the tab *starts* needing attention — the moment the status dot turns | the dock icon bounces, and keeps bouncing until you click Dispatcher |
-| **Notify on Inaction** | the tab has been *quiet* for a while after being busy | a three-second chime |
+| **Notify on Inaction** | the tab has been *quiet* for a while after being busy | a one-second chime |
 
 Roughly: Bounce is for "something just happened", Notify is for "this has
 stopped and you have not noticed". They are independent — enable either, both,
@@ -388,9 +388,15 @@ or neither, per tab.
 
 Bounce fires on the transition rather than repeatedly while attention persists,
 and stays quiet when you are already looking at that tab in a focused window.
-It re-asks every few seconds until the window is focused, because a macOS
-attention request is easy to lose — anything that briefly activates the app
-ends it.
+It bounces again every three seconds until the window is focused. Each pulse
+cancels the outstanding request before making a new one, because macOS treats
+a repeat request as a no-op while an earlier one is still pending — without
+that you get one bounce and then silence. Focus is read from the window rather
+than `document.hasFocus()`, which answers for the webview and can report focus
+while the app sits behind another one.
+
+Nothing can bounce the dock while Dispatcher is frontmost; macOS ignores an
+attention request from the active app.
 
 ## Status Dots
 

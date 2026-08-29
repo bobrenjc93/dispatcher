@@ -37,9 +37,9 @@ export function prepareInactionNotificationSound() {
   }
 }
 
-/** How long the alert should last. Short enough not to be a nuisance, long
- *  enough to notice from another room. */
-export const INACTION_CHIME_SECONDS = 3;
+/** How long the alert should last. Long enough to notice, short enough not to
+ *  grate when it fires while you are at the desk. */
+export const INACTION_CHIME_SECONDS = 1;
 
 const CHIME_PITCHES = [659.25, 880];
 const NOTE_LENGTH = 0.13;
