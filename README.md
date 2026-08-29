@@ -163,6 +163,18 @@ The terminal is also focused on load, so the first tap types rather than
 merely focusing. iOS will not raise the keyboard until that first tap
 regardless — it only opens one in response to a gesture, never on load.
 
+### Links and selecting text
+
+Opening a link needs Cmd (or Ctrl) held on a desktop, so a click still reaches
+the terminal. A touchscreen has no modifier to hold, so there a plain tap opens
+the link.
+
+Selecting by dragging does not work on a phone and cannot be made to: the
+terminal draws through WebGL, so the screen is pixels on a canvas with no DOM
+text for the browser to select, and xterm's own selection is driven by mouse
+drags a touchscreen never produces. The key bar has a **copy** button instead —
+it copies the selection if there is one, and otherwise the visible screen.
+
 ### Dictation
 
 Dictation revises as it listens, sending the whole phrase so far on every

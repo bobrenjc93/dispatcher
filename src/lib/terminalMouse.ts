@@ -8,6 +8,37 @@ function getPlatform(platform?: string): string {
   return navigator.platform;
 }
 
+/**
+ * Whether the pointer has no modifier keys behind it.
+ *
+ * A coarse pointer with no hover is a finger. Requiring Cmd or Ctrl to open a
+ * link is fine with a keyboard attached and impossible without one, so on a
+ * touchscreen a plain tap has to be enough.
+ */
+export function isTouchPointer(matches?: boolean): boolean {
+  if (matches !== undefined) {
+    return matches;
+  }
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+}
+
+/**
+ * Whether this event should open a link. A modifier guards it on a desktop so
+ * a click still goes to the terminal; a touchscreen has no modifier to hold.
+ */
+export function shouldOpenLink(
+  event: Pick<MouseEvent, "metaKey" | "ctrlKey">,
+  options?: { platform?: string; touchPointer?: boolean }
+): boolean {
+  return (
+    isTouchPointer(options?.touchPointer)
+    || isLinkOpenModifierPressed(event, options?.platform)
+  );
+}
+
 export function isLinkOpenModifierPressed(
   event: Pick<MouseEvent, "metaKey" | "ctrlKey">,
   platform?: string

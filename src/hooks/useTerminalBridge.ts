@@ -44,7 +44,7 @@ import {
   noteTerminalOutput,
 } from "../lib/tmuxAttachWatchdog";
 import { recordPaneOutput, recordSessionEvent } from "../lib/sessionRecorder";
-import { isLinkOpenModifierPressed } from "../lib/terminalMouse";
+import { isLinkOpenModifierPressed, shouldOpenLink } from "../lib/terminalMouse";
 import { findTerminalWebLinkMatches } from "../lib/terminalLinks";
 import {
   getActiveStatusResizeSuppression,
@@ -1251,7 +1251,7 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
     allowProposedApi: true,
     linkHandler: {
       activate: (event, text) => {
-        if (!isLinkOpenModifierPressed(event)) {
+        if (!shouldOpenLink(event)) {
           return;
         }
         try {
@@ -1709,6 +1709,37 @@ function readTerminalVisualTextSnapshot(
 }
 
 /** Focus the xterm instance for a given terminal (e.g. after renaming). */
+/**
+ * The text a phone cannot select by hand.
+ *
+ * With the WebGL renderer the screen is pixels on a canvas, so there is no DOM
+ * text for the browser to select, and xterm's own selection is driven by mouse
+ * drags a touchscreen never produces. Returning the visible screen gives the
+ * one thing that was actually wanted: getting the text out.
+ */
+export function readTerminalVisibleText(terminalId: string): string {
+  const xterm = instances.get(terminalId)?.xterm;
+  if (!xterm) {
+    return "";
+  }
+
+  const selection = xterm.getSelection();
+  if (selection) {
+    return selection;
+  }
+
+  const buffer = xterm.buffer.active;
+  const lines: string[] = [];
+  for (let row = 0; row < xterm.rows; row += 1) {
+    lines.push(buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? "");
+  }
+  // Trailing blank rows are padding, not content.
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") {
+    lines.pop();
+  }
+  return lines.join("\n");
+}
+
 export function focusTerminalInstance(terminalId: string) {
   instances.get(terminalId)?.xterm.focus();
   // Focusing on a phone is what raises the keyboard, which shrinks the box the

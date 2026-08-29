@@ -1,6 +1,9 @@
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useUiStore } from "../../stores/useUiStore";
-import { sendSyntheticTerminalInput } from "../../hooks/useTerminalBridge";
+import {
+  readTerminalVisibleText,
+  sendSyntheticTerminalInput,
+} from "../../hooks/useTerminalBridge";
 
 /**
  * The keys a phone keyboard does not have.
@@ -50,6 +53,15 @@ export function MobileKeyBar() {
     event.preventDefault();
   };
 
+  // A finger cannot drag-select a canvas, so offer the text directly: the
+  // selection if there is one, otherwise what is on screen.
+  const copyVisible = () => {
+    const text = readTerminalVisibleText(activeTerminalId);
+    if (text) {
+      void navigator.clipboard?.writeText(text).catch(() => {});
+    }
+  };
+
   return (
     <div className="mobile-key-bar" role="toolbar" aria-label="Terminal keys">
       <button
@@ -62,6 +74,16 @@ export function MobileKeyBar() {
         onClick={() => setCtrlArmed(!isCtrlArmed)}
       >
         ctrl
+      </button>
+      <button
+        type="button"
+        className="mobile-key"
+        title="Copy the selection, or the visible screen"
+        onPointerDown={keepFocus}
+        onMouseDown={keepFocus}
+        onClick={copyVisible}
+      >
+        copy
       </button>
       {KEYS.map((key) => (
         <button

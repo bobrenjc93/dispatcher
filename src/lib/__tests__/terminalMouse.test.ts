@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isLinkOpenModifierPressed, shouldSyncTmuxFocusOnMouseDown } from "../terminalMouse";
+import { isLinkOpenModifierPressed, shouldSyncTmuxFocusOnMouseDown, shouldOpenLink } from "../terminalMouse";
 
 describe("terminalMouse", () => {
   it("uses Cmd as the link-open modifier on macOS", () => {
@@ -32,5 +32,23 @@ describe("terminalMouse", () => {
 
   it("does not sync tmux focus for non-primary clicks", () => {
     expect(shouldSyncTmuxFocusOnMouseDown({ button: 2, metaKey: false, ctrlKey: false }, "MacIntel")).toBe(false);
+  });
+});
+
+describe("shouldOpenLink", () => {
+  it("needs a modifier when there is a keyboard", () => {
+    const plain = { metaKey: false, ctrlKey: false };
+    expect(shouldOpenLink(plain, { platform: "MacIntel", touchPointer: false })).toBe(false);
+    expect(
+      shouldOpenLink({ metaKey: true, ctrlKey: false }, { platform: "MacIntel", touchPointer: false })
+    ).toBe(true);
+  });
+
+  it("opens on a plain tap on a touchscreen", () => {
+    // A phone has no Cmd or Ctrl to hold, so requiring one made links
+    // unopenable there.
+    expect(
+      shouldOpenLink({ metaKey: false, ctrlKey: false }, { platform: "iPhone", touchPointer: true })
+    ).toBe(true);
   });
 });
