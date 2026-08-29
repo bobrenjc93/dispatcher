@@ -142,6 +142,22 @@ describe("tmux state across a reload", () => {
     expect(result.sessions[WINDOW]?.tmuxControlSessionId).toBe(TRANSPORT);
   });
 
+  it("keeps a live transport's tab hidden so it cannot be closed by hand", () => {
+    // Closing a transport tab closes the ssh PTY carrying `tmux -CC`, which
+    // takes every tmux tab on that host with it. The tab is hidden for that
+    // reason, and restoring must not surface it: it reads as a stray "Shell"
+    // tab and clicking its close button silently kills the whole connection.
+    const base = snapshot(new Set([TRANSPORT]));
+    (base.nodes["n-transport"] as { hidden?: boolean }).hidden = true;
+
+    const result = normalizeRestoredTmuxState(base);
+
+    expect(result.sessions[TRANSPORT]).toBeDefined();
+    expect((result.nodes["n-transport"] as { hidden?: boolean }).hidden).toBe(true);
+    // A hidden non-transport tab is still surfaced; it would be unreachable.
+    expect(result.nodes["n-window"]).toBeDefined();
+  });
+
   it("leaves an unrelated live local terminal alone", () => {
     const base = snapshot(new Set([TRANSPORT]));
     base.sessions["local-1"] = session("local-1", { backendKind: "local" });

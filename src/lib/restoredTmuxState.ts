@@ -283,7 +283,15 @@ export function normalizeRestoredTmuxState(
         continue;
       }
 
-      if (node.hidden) {
+      // A hidden node is normally a leftover that would otherwise be an
+      // unreachable tab, so restoring makes it visible again. A live transport
+      // is the exception: it is deliberately hidden because closing that tab
+      // closes the ssh PTY carrying `tmux -CC`, taking every tmux tab on that
+      // host with it. Surfacing it offers the user a "Shell" tab that looks
+      // like clutter and is actually the connection. A transport that is gone
+      // has already been deleted above, node and all, so anything still here
+      // is live.
+      if (node.hidden && getEffectiveBackendKind(session) !== "tmux-transport") {
         nodes[nodeId] = {
           ...node,
           hidden: false,
