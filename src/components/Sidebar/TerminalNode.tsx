@@ -79,7 +79,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     if (shouldIgnoreDragStartTarget(e.target)) return;
-    startDrag({ type: "terminal", terminalId, projectId, nodeId }, e.clientX, e.clientY, e.currentTarget as HTMLElement);
+    startDrag({ type: "terminal", terminalId, projectId, nodeId }, e.clientX, e.clientY, e.currentTarget as HTMLElement, e.pointerType);
   };
 
   const nodeClassName = [

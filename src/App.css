@@ -423,6 +423,9 @@ body.sidebar-dragging,
 body.sidebar-dragging * {
   user-select: none !important;
   -webkit-user-select: none !important;
+  /* A touch drag starts from a long press, which is also what summons iOS's
+     selection callout. Without this the magnifier appears on top of the drag. */
+  -webkit-touch-callout: none !important;
 }
 
 /* Delete buttons on hover */

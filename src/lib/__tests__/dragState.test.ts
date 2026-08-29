@@ -124,6 +124,100 @@ describe("dragState", () => {
     expect(onReorderChild).toHaveBeenCalledWith("root", "dragged-node", "target-node", "after");
   });
 
+  it("reorders terminals from a touch long press", () => {
+    // A finger cannot start a drag by moving: the sidebar scrolls, so the
+    // browser claims the gesture and fires pointercancel before any movement
+    // threshold is reached. Pressing and holding is what starts a touch drag.
+    vi.useFakeTimers();
+    try {
+      const dragged = document.createElement("div");
+      dragged.dataset.nodeId = "dragged-node";
+      dragged.dataset.projectId = "project";
+      dragged.dataset.parentNodeId = "root";
+      const target = document.createElement("div");
+      target.dataset.nodeId = "target-node";
+      target.dataset.projectId = "project";
+      target.dataset.parentNodeId = "root";
+      document.body.append(dragged, target);
+      mockRect(target, 100, 20);
+
+      const onReorderChild = vi.fn();
+      registerDragCallbacks({
+        onMoveTerminal: vi.fn(),
+        onReorderChild,
+        onReorderProject: vi.fn(),
+      });
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: vi.fn(() => target),
+      });
+
+      startDrag({
+        type: "terminal",
+        terminalId: "terminal",
+        projectId: "project",
+        nodeId: "dragged-node",
+      }, 0, 0, dragged, "touch");
+
+      // Held still, so the press alone becomes a drag — no movement needed,
+      // because movement is how the browser decides to scroll instead.
+      vi.advanceTimersByTime(400);
+      expect(dragged.classList.contains("is-dragging")).toBe(true);
+
+      document.dispatchEvent(pointerEvent("pointermove", 0, 120));
+      document.dispatchEvent(pointerEvent("pointerup", 0, 120));
+
+      expect(onReorderChild).toHaveBeenCalledWith("root", "dragged-node", "target-node", "after");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a touch that moves before the long press scroll instead of dragging", () => {
+    vi.useFakeTimers();
+    try {
+      const dragged = document.createElement("div");
+      dragged.dataset.nodeId = "dragged-node";
+      dragged.dataset.projectId = "project";
+      dragged.dataset.parentNodeId = "root";
+      const target = document.createElement("div");
+      target.dataset.nodeId = "target-node";
+      target.dataset.projectId = "project";
+      target.dataset.parentNodeId = "root";
+      document.body.append(dragged, target);
+      mockRect(target, 100, 20);
+
+      const onReorderChild = vi.fn();
+      registerDragCallbacks({
+        onMoveTerminal: vi.fn(),
+        onReorderChild,
+        onReorderProject: vi.fn(),
+      });
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: vi.fn(() => target),
+      });
+
+      startDrag({
+        type: "terminal",
+        terminalId: "terminal",
+        projectId: "project",
+        nodeId: "dragged-node",
+      }, 0, 0, dragged, "touch");
+
+      // Moved straight away: that is a scroll, and it must not reorder.
+      document.dispatchEvent(pointerEvent("pointermove", 0, 60));
+      vi.advanceTimersByTime(400);
+      document.dispatchEvent(pointerEvent("pointermove", 0, 120));
+      document.dispatchEvent(pointerEvent("pointerup", 0, 120));
+
+      expect(onReorderChild).not.toHaveBeenCalled();
+      expect(document.body.classList.contains("sidebar-dragging")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("completes an active drag from the mouseup fallback after pointercancel", () => {
     const dragged = document.createElement("div");
     dragged.dataset.nodeId = "dragged-node";

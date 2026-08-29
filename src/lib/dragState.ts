@@ -40,6 +40,9 @@ let startX = 0;
 let startY = 0;
 let draggedEl: HTMLElement | null = null;
 
+let pointerTypeStarted: string | undefined;
+let longPressTimer: number | null = null;
+
 let lastIndicatorEl: HTMLElement | null = null;
 let lastDragOverEl: HTMLElement | null = null;
 let previousBodyUserSelect: string | null = null;
@@ -55,9 +58,25 @@ const THRESHOLD = 5;
  */
 const TOUCH_THRESHOLD = 16;
 
+/**
+ * A finger cannot start a drag by moving, the way a mouse does. The sidebar
+ * scrolls, so the browser claims a moving touch as a scroll gesture and fires
+ * pointercancel long before any movement threshold is met — the drag was being
+ * cancelled before it could ever activate, which is why reordering by touch did
+ * nothing. Touch drags therefore start from a press that stays put, which is
+ * also what every native list-reorder does.
+ */
+const TOUCH_LONG_PRESS_MS = 400;
+/** Movement before the long press fires means the user is scrolling. */
+const TOUCH_LONG_PRESS_SLOP = 10;
+
+export function isTouchLikePointer(pointerType?: string): boolean {
+  return pointerType === "touch" || pointerType === "pen";
+}
+
 /** How far a pointer may travel before a press becomes a drag. */
 export function dragActivationThreshold(pointerType?: string): number {
-  return pointerType === "touch" || pointerType === "pen" ? TOUCH_THRESHOLD : THRESHOLD;
+  return isTouchLikePointer(pointerType) ? TOUCH_THRESHOLD : THRESHOLD;
 }
 
 /** Manhattan distance, matching how the threshold is expressed. */
@@ -145,16 +164,35 @@ function getMidY(el: HTMLElement): number {
   return rect.top + rect.height / 2;
 }
 
+function activateDrag() {
+  if (active) {
+    return;
+  }
+  clearLongPressTimer();
+  active = true;
+  draggedEl?.classList.add("is-dragging");
+  setTextSelectionSuppressed();
+  clearDocumentSelection();
+}
+
 function handleDragMove(e: PointerEvent | MouseEvent) {
   if (!info) return;
 
   if (!active) {
-    const pointerType = "pointerType" in e ? e.pointerType : undefined;
+    const pointerType = "pointerType" in e ? e.pointerType : pointerTypeStarted;
+    if (isTouchLikePointer(pointerType)) {
+      // Waiting on the long press. Movement now is a scroll, not a drag, so
+      // get out of the way and let the list scroll.
+      if (
+        Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY)
+        > TOUCH_LONG_PRESS_SLOP
+      ) {
+        end();
+      }
+      return;
+    }
     if (exceedsDragThreshold(e.clientX - startX, e.clientY - startY, pointerType)) {
-      active = true;
-      draggedEl?.classList.add("is-dragging");
-      setTextSelectionSuppressed();
-      clearDocumentSelection();
+      activateDrag();
     } else {
       return;
     }
@@ -283,6 +321,25 @@ function handlePointerCancel() {
   }
 }
 
+function clearLongPressTimer() {
+  if (longPressTimer !== null) {
+    window.clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
+/**
+ * Once a touch drag is live the page must stop scrolling under it. touch-action
+ * is fixed when the gesture begins, so it cannot be used here; preventing the
+ * default on a non-passive touchmove is what actually holds the list still, and
+ * it only works because the long press means no scroll has started yet.
+ */
+function handleTouchMove(e: TouchEvent) {
+  if (active && e.cancelable) {
+    e.preventDefault();
+  }
+}
+
 function preventClick(e: MouseEvent) {
   e.stopPropagation();
   e.preventDefault();
@@ -290,6 +347,7 @@ function preventClick(e: MouseEvent) {
 
 function end() {
   clearIndicators();
+  clearLongPressTimer();
   if (active) {
     draggedEl?.classList.remove("is-dragging");
     // Prevent the click event that follows pointerup after a drag
@@ -300,21 +358,40 @@ function end() {
   document.removeEventListener("pointercancel", handlePointerCancel);
   document.removeEventListener("mousemove", handleMouseMove);
   document.removeEventListener("mouseup", handleMouseUp);
+  document.removeEventListener("touchmove", handleTouchMove);
   restoreTextSelection();
   info = null;
   active = false;
   draggedEl = null;
+  pointerTypeStarted = undefined;
 }
 
-export function startDrag(dragInfo: DragInfo, x: number, y: number, element: HTMLElement) {
+export function startDrag(
+  dragInfo: DragInfo,
+  x: number,
+  y: number,
+  element: HTMLElement,
+  pointerType?: string
+) {
   info = dragInfo;
   startX = x;
   startY = y;
   active = false;
   draggedEl = element;
+  pointerTypeStarted = pointerType;
   document.addEventListener("pointermove", handlePointerMove);
   document.addEventListener("pointerup", handlePointerUp);
   document.addEventListener("pointercancel", handlePointerCancel);
   document.addEventListener("mousemove", handleMouseMove);
   document.addEventListener("mouseup", handleMouseUp);
+  if (isTouchLikePointer(pointerType)) {
+    document.addEventListener("touchmove", handleTouchMove, { passive: false });
+    clearLongPressTimer();
+    longPressTimer = window.setTimeout(() => {
+      longPressTimer = null;
+      if (info) {
+        activateDrag();
+      }
+    }, TOUCH_LONG_PRESS_MS);
+  }
 }

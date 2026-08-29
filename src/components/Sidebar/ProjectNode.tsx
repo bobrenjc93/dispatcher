@@ -60,7 +60,7 @@ export function ProjectNode({
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     if (shouldIgnoreDragStartTarget(e.target)) return;
-    startDrag({ type: "project", projectId: project.id }, e.clientX, e.clientY, e.currentTarget as HTMLElement);
+    startDrag({ type: "project", projectId: project.id }, e.clientX, e.clientY, e.currentTarget as HTMLElement, e.pointerType);
   };
 
   return (
