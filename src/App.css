@@ -460,9 +460,21 @@ body.sidebar-dragging * {
   background: var(--bg-active);
 }
 
-.sidebar-project-header:hover .sidebar-delete-btn,
-.sidebar-terminal-node:hover .sidebar-delete-btn {
-  opacity: 1;
+/* Revealing a control on hover is what makes iOS treat the first tap on a row
+   as a hover and require a second one to activate it — the "tap twice to
+   switch tabs" behaviour. Only offer it where there is a real pointer. */
+@media (hover: hover) {
+  .sidebar-project-header:hover .sidebar-delete-btn,
+  .sidebar-terminal-node:hover .sidebar-delete-btn {
+    opacity: 1;
+  }
+}
+
+/* With no hover to reveal it, the close control has to be there already. */
+@media (hover: none) {
+  .sidebar-delete-btn {
+    opacity: 1;
+  }
 }
 
 .sidebar-delete-btn:hover {

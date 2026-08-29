@@ -133,6 +133,11 @@ Set `DISPATCHER_WEB_PORT` to change the port it starts looking from.
 
 ### On a phone
 
+Hover styles are scoped to devices that have a pointer. Revealing a control on
+hover — the sidebar's close button — makes iOS treat the first tap on a row as
+a hover and demand a second to activate it, which is why switching tabs took
+two taps. With no hover to reveal it, the close button is simply always there.
+
 Dragging to reorder needs a bigger movement budget on a touchscreen than a
 mouse: a finger never holds still, and once a press becomes a drag the click
 that would have selected the tab is deliberately swallowed. A mouse-sized
