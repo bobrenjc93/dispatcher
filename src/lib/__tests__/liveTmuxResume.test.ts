@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { normalizeRestoredTmuxState } from "../restoredTmuxState";
 import type { TerminalSession } from "../../types/terminal";
 import type { TreeNode } from "../../types/project";
+import { useTerminalStore } from "../../stores/useTerminalStore";
 
 const TRANSPORT = "transport-1";
 const WINDOW = "window-1";
@@ -113,6 +114,32 @@ describe("tmux state across a reload", () => {
     const result = normalizeRestoredTmuxState(snapshot(new Set()));
 
     expect(result.sessions[TRANSPORT]).toBeUndefined();
+  });
+
+  it("survives rehydration with enough state left to reattach", () => {
+    // The two halves have to line up: whatever the store's persist merge
+    // produces is exactly what normalization gets. Rehydration used to drop
+    // every transport and clear each tab's transport link, so by the time this
+    // logic ran there was nothing left to resume — the daemon held a live ssh
+    // session that the UI could no longer reach. Each half read correctly on
+    // its own, which is why this is asserted across the seam.
+    const { merge } = (useTerminalStore as unknown as {
+      persist: { getOptions: () => { merge: (persisted: unknown, current: unknown) => { sessions: Record<string, TerminalSession>; activeTerminalId: string | null } } };
+    }).persist.getOptions();
+    const base = snapshot(new Set([TRANSPORT]));
+    const rehydrated = merge(
+      { sessions: base.sessions, activeTerminalId: base.activeTerminalId },
+      { sessions: {}, activeTerminalId: null }
+    );
+
+    const result = normalizeRestoredTmuxState({
+      ...base,
+      sessions: rehydrated.sessions,
+      activeTerminalId: rehydrated.activeTerminalId ?? base.activeTerminalId,
+    });
+
+    expect(result.sessions[TRANSPORT]?.backendKind).toBe("tmux-transport");
+    expect(result.sessions[WINDOW]?.tmuxControlSessionId).toBe(TRANSPORT);
   });
 
   it("leaves an unrelated live local terminal alone", () => {

@@ -279,12 +279,16 @@ export const useTerminalStore = create<TerminalStore>()(
         const merged = { ...current, ...(persisted as Partial<TerminalStore>) };
         const updated: Record<string, TerminalSession> = {};
         for (const [id, session] of Object.entries(merged.sessions)) {
-          if (session.backendKind === "tmux-transport") {
-            continue;
-          }
-
+          // Transports are kept. The PTY carrying `tmux -CC` outlives the UI —
+          // the daemon holds it open precisely so a restart can reattach — and
+          // whether it is still running is not knowable here. Dropping them
+          // here meant a restart threw away the only handle to a live ssh
+          // session, and left every tmux tab pointing at nothing.
+          const isRestoredTmuxTransport = session.backendKind === "tmux-transport";
           const isRestoredTmuxWindow = session.backendKind === "tmux-window";
           const isRestoredTmuxPane = session.backendKind === "tmux-pane";
+          const isRestoredTmux =
+            isRestoredTmuxTransport || isRestoredTmuxWindow || isRestoredTmuxPane;
           updated[id] = {
             ...session,
             notes: session.notes ?? "",
@@ -301,19 +305,19 @@ export const useTerminalStore = create<TerminalStore>()(
             isPinnedGray: session.isPinnedGray ?? false,
             notifyOnInaction: session.notifyOnInaction ?? false,
             bounceOnAttention: session.bounceOnAttention ?? false,
-            backendKind:
-              isRestoredTmuxWindow || isRestoredTmuxPane
-                ? session.backendKind
-                : "local",
+            backendKind: isRestoredTmux ? session.backendKind : "local",
             restoredFromBackendKind:
               isRestoredTmuxWindow || isRestoredTmuxPane
                 ? session.backendKind
                 : undefined,
-            tmuxControlSessionId: undefined,
-            tmuxConnectionKey:
-              isRestoredTmuxWindow || isRestoredTmuxPane
-                ? session.tmuxConnectionKey
-                : undefined,
+            // Which tabs are still connected depends on what the backend
+            // reports alive, which this merge cannot see.
+            // normalizeRestoredTmuxState makes that call and clears this
+            // itself when it downgrades a tab to a placeholder. Clearing it
+            // here pre-empted that decision: every tab came back looking
+            // disconnected, so nothing could be reattached.
+            tmuxControlSessionId: isRestoredTmux ? session.tmuxControlSessionId : undefined,
+            tmuxConnectionKey: isRestoredTmux ? session.tmuxConnectionKey : undefined,
             tmuxWindowId: isRestoredTmuxWindow || isRestoredTmuxPane ? session.tmuxWindowId : undefined,
             tmuxPaneId: isRestoredTmuxPane ? session.tmuxPaneId : undefined,
           };

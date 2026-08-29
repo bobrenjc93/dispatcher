@@ -196,7 +196,7 @@ describe("useTerminalStore", () => {
       expect(result.sessions["t2"].notifyOnInaction).toBe(false);
     });
 
-    it("marks restored tmux sessions for startup normalization while clearing live tmux state", () => {
+    it("hands restored tmux sessions to startup normalization with their transport link intact", () => {
       const { merge } = (useTerminalStore as any).persist.getOptions();
       const persisted = {
         sessions: {
@@ -252,17 +252,23 @@ describe("useTerminalStore", () => {
       };
 
       const result = merge(persisted, { sessions: {}, activeTerminalId: null });
-      expect(result.sessions.transport).toBeUndefined();
+      // The transport PTY outlives the UI, so rehydration keeps it and lets
+      // normalizeRestoredTmuxState decide from the live terminal list whether
+      // it can be resumed. Dropping it here made a live ssh session
+      // unreachable, and left every tmux tab below pointing at nothing.
+      expect(result.sessions.transport).toBeDefined();
+      expect(result.sessions.transport.backendKind).toBe("tmux-transport");
+      expect(result.sessions.transport.tmuxControlSessionId).toBe("transport");
       expect(result.sessions.window).toBeDefined();
       expect(result.sessions.window.backendKind).toBe("tmux-window");
       expect(result.sessions.window.restoredFromBackendKind).toBe("tmux-window");
-      expect(result.sessions.window.tmuxControlSessionId).toBeUndefined();
+      expect(result.sessions.window.tmuxControlSessionId).toBe("transport");
       expect(result.sessions.window.tmuxConnectionKey).toBe("server-session-key");
       expect(result.sessions.window.tmuxWindowId).toBe("@1");
       expect(result.sessions.pane).toBeDefined();
       expect(result.sessions.pane.backendKind).toBe("tmux-pane");
       expect(result.sessions.pane.restoredFromBackendKind).toBe("tmux-pane");
-      expect(result.sessions.pane.tmuxControlSessionId).toBeUndefined();
+      expect(result.sessions.pane.tmuxControlSessionId).toBe("transport");
       expect(result.sessions.pane.tmuxConnectionKey).toBe("server-session-key");
       expect(result.sessions.pane.tmuxWindowId).toBe("@1");
       expect(result.sessions.pane.tmuxPaneId).toBe("%1");
