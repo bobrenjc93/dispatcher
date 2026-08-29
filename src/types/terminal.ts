@@ -19,7 +19,11 @@ export interface TerminalSession {
   isPinnedGreen?: boolean;
   isPinnedGray?: boolean;
   notifyOnInaction?: boolean;
-  /** Bounce the dock icon when this tab starts needing attention. */
+  /**
+   * Bounce the dock icon when this tab starts needing attention. Shown as
+   * "Bounce on Inaction"; the stored name is left alone so existing settings
+   * survive.
+   */
   bounceOnAttention?: boolean;
   backendKind: TerminalBackendKind;
   restoredFromBackendKind?: TerminalBackendKind;

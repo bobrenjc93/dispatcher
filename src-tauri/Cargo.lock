@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "dispatcher"
-version = "0.3.147"
+version = "0.3.148"
 dependencies = [
  "anyhow",
  "axum",

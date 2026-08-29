@@ -373,13 +373,15 @@ Save any scrollback with `tmux capture-pane -p -S - -t <pane>`, then
 `tmux kill-server` — which destroys every session on that host. This is not
 something Dispatcher causes, and no client-side change can avoid it.
 
-### Bounce When Done and Notify on Inaction
+### Bounce on Inaction and Notify on Inaction
+
+Both alert you about a tab you are not looking at; they differ in how.
 
 Two per-tab alerts, both on the right-click menu, and easy to confuse:
 
 | | fires when | how it tells you |
 |---|---|---|
-| **Bounce When Done** | the tab *starts* needing attention — the moment the status dot turns | the dock icon bounces, and keeps bouncing until you click Dispatcher |
+| **Bounce on Inaction** | the tab *starts* needing attention — the moment the status dot turns | the dock icon bounces, and keeps bouncing until you click Dispatcher |
 | **Notify on Inaction** | the tab has been *quiet* for a while after being busy | a one-second chime |
 
 Roughly: Bounce is for "something just happened", Notify is for "this has
