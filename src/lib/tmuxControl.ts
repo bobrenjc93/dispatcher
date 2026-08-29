@@ -69,6 +69,12 @@ interface PendingCommand {
   command: string;
   resolve: (lines: string[]) => void;
   reject: (error: Error) => void;
+  // Runs synchronously as the reply block closes, before the awaiting
+  // continuation resumes. tmux control mode is one ordered stream, so this is
+  // the only point where a caller can sample pane state that is guaranteed to
+  // describe exactly what the reply describes — by the time an `await`
+  // resumes, later %output in the same chunk has already been applied.
+  onSettle?: () => void;
 }
 
 class TmuxCommandResponseError extends Error {}
@@ -142,6 +148,10 @@ interface TmuxPaneState {
   historyRefreshRetryAttempts: number;
   visibleRedrawTimer: number | null;
   visibleRedrawRaceCount: number;
+  // When the currently pending repair was first asked for. The quiet-output
+  // wait is measured against this so a pane that never goes quiet still gets
+  // repaired instead of deferring forever.
+  visibleRedrawRequestedAt: number;
   backgroundViewportRefreshTimer: number | null;
   backgroundViewportRefreshInFlight: boolean;
   // Wall-clock time of the last tmux %output chunk for this pane. Visible
@@ -319,6 +329,9 @@ const TMUX_HISTORY_RACE_RETRY_MAX_MS = 2_500;
 const TMUX_VISIBLE_REDRAW_SETTLE_MS = 180;
 const TMUX_VISIBLE_REDRAW_RETRY_MS = 300;
 const TMUX_VISIBLE_REDRAW_QUIET_MS = 1_200;
+// Longest a pending repair will hold out for a quiet pane before redrawing
+// over live output anyway.
+const TMUX_VISIBLE_REDRAW_QUIET_DEADLINE_MS = 5_000;
 const TMUX_VISIBLE_REDRAW_RETRY_MAX_MS = 3_000;
 const TMUX_BACKGROUND_VIEWPORT_REFRESH_DEBOUNCE_MS = 350;
 const TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS = 1_000;
@@ -362,6 +375,7 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.historyRefreshRetryAttempts ??= 0;
   pane.visibleRedrawTimer ??= null;
   pane.visibleRedrawRaceCount ??= 0;
+  pane.visibleRedrawRequestedAt ??= 0;
   pane.backgroundViewportRefreshTimer ??= null;
   pane.backgroundViewportRefreshInFlight ??= false;
   pane.lastTmuxOutputAt ??= 0;
@@ -900,6 +914,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       historyRefreshRetryAttempts: 0,
       visibleRedrawTimer: null,
       visibleRedrawRaceCount: 0,
+      visibleRedrawRequestedAt: 0,
       backgroundViewportRefreshTimer: null,
       backgroundViewportRefreshInFlight: false,
       lastTmuxOutputAt: 0,
@@ -2114,6 +2129,7 @@ function upsertWindowProjection(
         historyRefreshRetryAttempts: 0,
         visibleRedrawTimer: null,
         visibleRedrawRaceCount: 0,
+        visibleRedrawRequestedAt: 0,
         backgroundViewportRefreshTimer: null,
         backgroundViewportRefreshInFlight: false,
         lastTmuxOutputAt: 0,
@@ -2512,6 +2528,7 @@ function clearPaneVisibleRedraw(pane: TmuxPaneState) {
     window.clearTimeout(pane.visibleRedrawTimer);
     pane.visibleRedrawTimer = null;
   }
+  pane.visibleRedrawRequestedAt = 0;
 }
 
 function clearPaneBackgroundViewportRefresh(pane: TmuxPaneState) {
@@ -2549,6 +2566,17 @@ function getVisibleRedrawQuietDelayMs(pane: TmuxPaneState, reason: string, now: 
   if (
     !shouldRequireQuietPaneOutputForVisibleRedraw(reason)
     || pane.lastTmuxOutputAt <= 0
+  ) {
+    return 0;
+  }
+
+  // Waiting for quiet is an optimisation, not a precondition: it avoids
+  // fighting a TUI mid-redraw. A pane running a spinner never goes quiet, so
+  // an unbounded wait would defer the repair forever and leave the corrupted
+  // frame on screen. Past the deadline, repair anyway.
+  if (
+    pane.visibleRedrawRequestedAt > 0
+    && now - pane.visibleRedrawRequestedAt >= TMUX_VISIBLE_REDRAW_QUIET_DEADLINE_MS
   ) {
     return 0;
   }
@@ -2895,17 +2923,6 @@ function isTmuxOutputLikelyToNeedAuthoritativeRedraw(output: string): boolean {
   );
 }
 
-function shouldRetryVisibleRedraw(reason: string): boolean {
-  return (
-    reason.includes("output-settle")
-    || reason.includes("raced-output")
-    || reason.includes("history-in-flight")
-    || reason.includes("layout-change")
-    || reason.includes("resize")
-    || reason.includes("layout-redraw-barrier")
-  );
-}
-
 function schedulePaneVisibleRedraw(
   session: TmuxControlSession,
   pane: TmuxPaneState,
@@ -2921,6 +2938,12 @@ function schedulePaneVisibleRedraw(
   if (pane.visibleRedrawTimer !== null) {
     window.clearTimeout(pane.visibleRedrawTimer);
     pane.visibleRedrawTimer = null;
+  }
+  if (pane.visibleRedrawRequestedAt === 0) {
+    // Stamped once per pending repair. Deferrals that reschedule this timer
+    // keep the original stamp, so the quiet-wait deadline measures how long
+    // the repair has been owed rather than restarting on every deferral.
+    pane.visibleRedrawRequestedAt = Date.now();
   }
 
   const paneId = pane.paneId;
@@ -2954,6 +2977,9 @@ function schedulePaneVisibleRedraw(
       return;
     }
 
+    // The repair is running now; a retry it schedules starts its own
+    // quiet-wait deadline rather than inheriting an already-expired one.
+    currentPane.visibleRedrawRequestedAt = 0;
     debugLog("tmux.capture", "repair visible pane after settled output", {
       sessionId: session.id,
       paneId,
@@ -2970,7 +2996,11 @@ function schedulePaneVisibleRedraw(
   }, nextDelayMs);
 }
 
-async function sendCommand(session: TmuxControlSession, command: string): Promise<string[]> {
+async function sendCommand(
+  session: TmuxControlSession,
+  command: string,
+  options?: { onSettle?: () => void }
+): Promise<string[]> {
   if (
     !session.controlModeActive
     || controlSessions.get(session.id) !== session
@@ -2992,7 +3022,7 @@ async function sendCommand(session: TmuxControlSession, command: string): Promis
   });
 
   return new Promise<string[]>((resolve, reject) => {
-    const pending: PendingCommand = { command, resolve, reject };
+    const pending: PendingCommand = { command, resolve, reject, onSettle: options?.onSettle };
     session.pendingCommands.push(pending);
     writeTerminal(session.transportTerminalId, `${command}\n`).catch((error) => {
       session.pendingCommands = session.pendingCommands.filter((entry) => entry !== pending);
@@ -3440,13 +3470,21 @@ async function capturePaneFullContent(
   );
 
   try {
+    // Output that preceded the capture's %end is already inside the capture.
+    let outputGenerationAtCapture = outputGeneration;
     const lines = await sendCommand(
       session,
       buildTmuxPaneCaptureCommand({
         paneId: pane.paneId,
         alternateScreen: pane.alternateOn,
         historySize: requestedHistorySize,
-      })
+      }),
+      {
+        onSettle: () => {
+          outputGenerationAtCapture =
+            session.panes.get(pane.paneId)?.outputGeneration ?? outputGeneration;
+        },
+      }
     );
     const currentPane = session.panes.get(pane.paneId);
     const terminal = getTerminalSession(pane.terminalId);
@@ -3489,7 +3527,7 @@ async function capturePaneFullContent(
       });
       return;
     }
-    const racedOutput = currentPane.outputGeneration !== outputGeneration;
+    const racedOutput = currentPane.outputGeneration !== outputGenerationAtCapture;
     // Initial captures on a continuously-streaming pane (e.g. a TUI mid-
     // redraw right after `tmux -CC a`) can race with %output on every
     // attempt. Discarding the capture each time livelocks: the reattached
@@ -3510,6 +3548,7 @@ async function capturePaneFullContent(
         terminalId: pane.terminalId,
         reason: options.reason,
         outputGeneration,
+        outputGenerationAtCapture,
         currentOutputGeneration: currentPane.outputGeneration,
       });
       if (options.initial) {
@@ -3542,7 +3581,7 @@ async function capturePaneFullContent(
     const cursor = await resolvePaneCursorForCapture(
       session,
       currentPane,
-      outputGeneration,
+      outputGenerationAtCapture,
       options.reason,
       { outputRaceRepair: "history", acceptRacedCursor: acceptRacedCapture }
     );
@@ -3677,13 +3716,22 @@ async function redrawVisiblePaneContent(
     cursorY: pane.cursorY,
   });
 
+  // Everything tmux emitted before the capture's %end is already in the
+  // capture, so only output that lands after this point makes it stale.
+  let outputGenerationAtCapture = outputGeneration;
   const lines = await sendCommand(
     session,
     buildTmuxPaneCaptureCommand({
       paneId: pane.paneId,
       alternateScreen: alternateOn,
       includeHistory: false,
-    })
+    }),
+    {
+      onSettle: () => {
+        outputGenerationAtCapture =
+          session.panes.get(pane.paneId)?.outputGeneration ?? outputGeneration;
+      },
+    }
   );
   const currentPane = session.panes.get(pane.paneId);
   const terminal = getTerminalSession(pane.terminalId);
@@ -3735,7 +3783,7 @@ async function redrawVisiblePaneContent(
     });
     return;
   }
-  if (currentPane.outputGeneration !== outputGeneration) {
+  if (currentPane.outputGeneration !== outputGenerationAtCapture) {
     if (!options?.backgroundRefresh) {
       currentPane.visibleRedrawRaceCount += 1;
     }
@@ -3745,9 +3793,15 @@ async function redrawVisiblePaneContent(
       terminalId: pane.terminalId,
       reason,
       outputGeneration,
+      outputGenerationAtCapture,
       currentOutputGeneration: currentPane.outputGeneration,
       visibleRedrawRaceCount: currentPane.visibleRedrawRaceCount,
     });
+    // Always reschedule. Whatever prompted this redraw — focus, resize, a
+    // layout change — is a repair the pane is still owed, and the diff-
+    // rendering TUIs these panes run only rewrite cells they believe changed,
+    // so no later write will fix the frame on its own. Dropping the retry
+    // strands the pane on a corrupted grid indefinitely.
     if (options?.backgroundRefresh) {
       scheduleBackgroundPaneViewportRefresh(
         session,
@@ -3755,7 +3809,7 @@ async function redrawVisiblePaneContent(
         `${reason}-raced-output`,
         TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS
       );
-    } else if (shouldRetryVisibleRedraw(reason)) {
+    } else {
       schedulePaneVisibleRedraw(
         session,
         currentPane,
@@ -3769,7 +3823,7 @@ async function redrawVisiblePaneContent(
   const cursor = await resolvePaneCursorForCapture(
     session,
     currentPane,
-    outputGeneration,
+    outputGenerationAtCapture,
     reason,
     { outputRaceRepair: options?.backgroundRefresh ? "background" : "visible" }
   );
@@ -4683,6 +4737,7 @@ function processControlLine(session: TmuxControlSession, line: string) {
         command: current.pending?.command ?? null,
         responseLines: current.lines.length,
       });
+      current.pending?.onSettle?.();
       current.pending?.resolve(current.lines);
       return;
     }

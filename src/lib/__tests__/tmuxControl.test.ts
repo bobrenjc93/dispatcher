@@ -375,6 +375,31 @@ function completeTmuxCommandWithLines(
   );
 }
 
+/**
+ * Complete a command and have pane output land immediately after its %end, in
+ * the same transport chunk. tmux control mode is one ordered stream, so this
+ * is what a genuine race looks like: the output is applied before the awaiting
+ * capture continuation resumes, and the capture cannot contain it. Output
+ * delivered *before* the %end is by definition already inside the capture.
+ */
+function completeTmuxCommandWithRacedOutput(
+  transportTerminalId: string,
+  commandId: number,
+  lines: readonly string[],
+  racedOutput: string
+) {
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
+      `%begin ${commandId} 0`,
+      ...lines,
+      `%end ${commandId} 0`,
+      racedOutput,
+      "",
+    ].join("\n")
+  );
+}
+
 function getWrittenTmuxCommand(index: number): string {
   const call = writeTerminalMock.mock.calls[index] as unknown as [string, string] | undefined;
   expect(call).toBeDefined();
@@ -874,7 +899,6 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -t %1\n"
     );
 
-    routeTmuxTransportOutput(transportTerminalId, "%output %1 live update\n");
     routeTmuxTransportOutput(
       transportTerminalId,
       [
@@ -883,11 +907,19 @@ describe("tmuxControl", () => {
         "%begin 5 0",
         "stale captured screen",
         "%end 5 0",
+        // After the capture's %end, so the capture cannot contain it.
+        "%output %1 live update",
         "%begin 6 0",
         "%end 6 0",
         "",
       ].join("\n")
     );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // Answer the cursor query the replay would need, so that the raced-output
+    // check is the only thing standing between the capture and the screen.
+    completeTmuxCommandWithLines(transportTerminalId, 7, ["4\t7"]);
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -901,6 +933,108 @@ describe("tmuxControl", () => {
       paneTerminalId,
       expect.stringContaining("stale captured screen"),
       expect.anything()
+    );
+
+    // The repair is still owed. A focus-viewport redraw used to drop its retry
+    // on a race, stranding the pane on whatever partial frame it had; the pane
+    // keeps emitting, so the quiet-output wait must not defer it forever
+    // either.
+    writeTerminalMock.mockClear();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+  });
+
+  it("applies a visible redraw capture holding output that arrived before its reply", async () => {
+    const transportTerminalId = "transport-fresh-visible-redraw";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfirst tui frame\n");
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    // The %output lands before the capture's %end, so tmux had already applied
+    // it to the pane grid when capture-pane ran and the capture contains it.
+    // Treating that as a race is what used to strand busy panes: a TUI with a
+    // spinner emits on every capture round trip, so the repair never landed.
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%output %1 \\033[31;2H\\033[Kconcurrent tui frame",
+        "%begin 4 0",
+        "authoritative frame",
+        "%end 4 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    completeTmuxCommandWithLines(transportTerminalId, 5, ["4\t7"]);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(queueTerminalOutputMock).toHaveBeenCalledWith(
+      paneTerminalId,
+      expect.stringContaining("authoritative frame"),
+      expect.anything()
+    );
+  });
+
+  it("repairs a pane that never goes quiet instead of waiting for silence forever", async () => {
+    const transportTerminalId = "transport-never-quiet-redraw";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfirst tui frame\n");
+    await vi.advanceTimersByTimeAsync(1_200);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    completeTmuxCommandWithRacedOutput(
+      transportTerminalId,
+      4,
+      ["stale authoritative frame"],
+      "%output %1 \\033[31;2H\\033[Kraced tui frame"
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A spinner keeps the pane emitting faster than the quiet window, so the
+    // retry must stop holding out for silence and repair anyway.
+    writeTerminalMock.mockClear();
+    for (let frame = 0; frame < 12; frame += 1) {
+      await vi.advanceTimersByTimeAsync(500);
+      routeTmuxTransportOutput(
+        transportTerminalId,
+        `%output %1 \\033[31;2H\\033[Kspinner frame ${frame}\n`
+      );
+    }
+
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
     );
   });
 
@@ -996,15 +1130,11 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -t %1\n"
     );
 
-    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Knewer tui frame\n");
-    routeTmuxTransportOutput(
+    completeTmuxCommandWithRacedOutput(
       transportTerminalId,
-      [
-        "%begin 4 0",
-        "stale authoritative frame",
-        "%end 4 0",
-        "",
-      ].join("\n")
+      4,
+      ["stale authoritative frame"],
+      "%output %1 \\033[31;2H\\033[Knewer tui frame"
     );
     await Promise.resolve();
     await Promise.resolve();
@@ -1036,8 +1166,12 @@ describe("tmuxControl", () => {
 
     routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfirst tui frame\n");
     await vi.advanceTimersByTimeAsync(1_200);
-    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Ksecond tui frame\n");
-    completeTmuxCommandWithLines(transportTerminalId, 4, ["stale authoritative frame 1"]);
+    completeTmuxCommandWithRacedOutput(
+      transportTerminalId,
+      4,
+      ["stale authoritative frame 1"],
+      "%output %1 \\033[31;2H\\033[Ksecond tui frame"
+    );
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -1049,8 +1183,12 @@ describe("tmuxControl", () => {
     );
 
     await vi.advanceTimersByTimeAsync(300);
-    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kthird tui frame\n");
-    completeTmuxCommandWithLines(transportTerminalId, 5, ["stale authoritative frame 2"]);
+    completeTmuxCommandWithRacedOutput(
+      transportTerminalId,
+      5,
+      ["stale authoritative frame 2"],
+      "%output %1 \\033[31;2H\\033[Kthird tui frame"
+    );
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -1062,8 +1200,12 @@ describe("tmuxControl", () => {
     );
 
     await vi.advanceTimersByTimeAsync(300);
-    routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033[31;2H\\033[Kfourth tui frame\n");
-    completeTmuxCommandWithLines(transportTerminalId, 6, ["still stale authoritative frame"]);
+    completeTmuxCommandWithRacedOutput(
+      transportTerminalId,
+      6,
+      ["still stale authoritative frame"],
+      "%output %1 \\033[31;2H\\033[Kfourth tui frame"
+    );
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -1714,15 +1856,11 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -S -50000 -t %1\n"
     );
 
-    routeTmuxTransportOutput(transportTerminalId, "%output %1 live after focus\n");
-    routeTmuxTransportOutput(
+    completeTmuxCommandWithRacedOutput(
       transportTerminalId,
-      [
-        "%begin 8 0",
-        "stale full history",
-        "%end 8 0",
-        "",
-      ].join("\n")
+      8,
+      ["stale full history"],
+      "%output %1 live after focus"
     );
     await Promise.resolve();
     await Promise.resolve();
@@ -1756,15 +1894,19 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -t %1\n"
     );
 
-    routeTmuxTransportOutput(transportTerminalId, "%output %1 live before initial replay\n");
-    completeTmuxCommandWithLines(transportTerminalId, 3, ["stale initial history"]);
+    completeTmuxCommandWithRacedOutput(
+      transportTerminalId,
+      3,
+      ["stale initial history"],
+      "%output %1 live after initial replay"
+    );
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
 
     expect(queueTerminalOutputMock).toHaveBeenCalledWith(
       paneTerminalId,
-      "live before initial replay"
+      "live after initial replay"
     );
     expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
       paneTerminalId,
@@ -1826,10 +1968,12 @@ describe("tmuxControl", () => {
     // A busy pane keeps racing every capture attempt with fresh %output.
     let commandId = 3;
     for (let raceRound = 0; raceRound < 3; raceRound += 1) {
-      routeTmuxTransportOutput(transportTerminalId, `%output %1 stream ${raceRound}\n`);
-      completeTmuxCommandWithLines(transportTerminalId, commandId, [
-        `raced frame ${raceRound}`,
-      ]);
+      completeTmuxCommandWithRacedOutput(
+        transportTerminalId,
+        commandId,
+        [`raced frame ${raceRound}`],
+        `%output %1 stream ${raceRound}`
+      );
       commandId += 1;
       await Promise.resolve();
       await Promise.resolve();
@@ -1849,8 +1993,12 @@ describe("tmuxControl", () => {
 
     // Fourth attempt races too, but the retry budget is exhausted: the
     // capture is applied anyway so the reattached pane shows a full frame.
-    routeTmuxTransportOutput(transportTerminalId, "%output %1 stream final\n");
-    completeTmuxCommandWithLines(transportTerminalId, commandId, ["accepted frame"]);
+    completeTmuxCommandWithRacedOutput(
+      transportTerminalId,
+      commandId,
+      ["accepted frame"],
+      "%output %1 stream final"
+    );
     commandId += 1;
     await Promise.resolve();
     await Promise.resolve();
@@ -1860,8 +2008,12 @@ describe("tmuxControl", () => {
       'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}"\n'
     );
 
-    routeTmuxTransportOutput(transportTerminalId, "%output %1 stream during cursor\n");
-    completeTmuxCommandWithLines(transportTerminalId, commandId, ["4\t7"]);
+    completeTmuxCommandWithRacedOutput(
+      transportTerminalId,
+      commandId,
+      ["4\t7"],
+      "%output %1 stream during cursor"
+    );
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -1936,15 +2088,11 @@ describe("tmuxControl", () => {
       "capture-pane -p -e -C -S -12 -t %1\n"
     );
 
-    routeTmuxTransportOutput(transportTerminalId, "%output %1 live after focus\n");
-    routeTmuxTransportOutput(
+    completeTmuxCommandWithRacedOutput(
       transportTerminalId,
-      [
-        "%begin 9 0",
-        "stale full history",
-        "%end 9 0",
-        "",
-      ].join("\n")
+      9,
+      ["stale full history"],
+      "%output %1 live after focus"
     );
     await Promise.resolve();
     await Promise.resolve();
