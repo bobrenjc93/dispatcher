@@ -1,5 +1,6 @@
 import { normalizeRestoredTmuxState } from "./restoredTmuxState";
 import { debugLog } from "./debugLog";
+import { isPrimaryClient } from "./replication";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useProjectStore } from "../stores/useProjectStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
@@ -175,9 +176,17 @@ export function applySharedAppState(
   useLayoutStore.setState({
     layouts: layoutState.layouts,
   });
+  // Which tab is active belongs to the desktop window. A replica changes tabs
+  // by relaying the intent, and the master's next snapshot carries the result
+  // back — so adopting a replica's own value here would let a snapshot that
+  // was in flight when the click happened revert it, on either side.
+  const localActiveTerminalId = useTerminalStore.getState().activeTerminalId;
+  const keepLocalActiveTerminal = isPrimaryClient() && localActiveTerminalId !== null;
   useTerminalStore.setState({
     sessions: terminalState.sessions,
-    activeTerminalId: terminalState.activeTerminalId ?? null,
+    activeTerminalId: keepLocalActiveTerminal
+      ? localActiveTerminalId
+      : terminalState.activeTerminalId ?? null,
   });
 
   writeAppStateSnapshotToLocalStorage(snapshot);

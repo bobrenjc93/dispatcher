@@ -5827,7 +5827,12 @@ export function handleTransportTerminalExit(terminalId: string) {
 // The desktop window is the only tmux driver, so it is also the one that
 // performs these when a replica relays them.
 registerActionHandler("focusTerminal", (terminalId) => {
-  handleTmuxTerminalFocus(terminalId);
+  // Move the master's own active tab too, not just tmux's focus. The master
+  // publishes the shared document, so leaving its value behind meant the next
+  // snapshot reverted the replica that asked for the change.
+  const preferredTerminalId = resolvePreferredTerminalFocus(terminalId);
+  useTerminalStore.getState().setActiveTerminal(preferredTerminalId);
+  handleTmuxTerminalFocus(preferredTerminalId);
 });
 registerActionHandler("renameTerminal", (terminalId, name) => {
   void renameTmuxTerminal(terminalId, name);

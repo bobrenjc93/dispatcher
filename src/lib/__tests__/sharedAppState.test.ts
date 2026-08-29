@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { isPrimaryClientMock } = vi.hoisted(() => ({ isPrimaryClientMock: vi.fn(() => true) }));
+vi.mock("../replication", () => ({ isPrimaryClient: isPrimaryClientMock }));
 import {
   APP_STATE_LAYOUTS_KEY,
   APP_STATE_PROJECTS_KEY,
@@ -124,5 +127,57 @@ describe("shared app state", () => {
 
     expect(result.restored).toBe(false);
     expect(Object.keys(useTerminalStore.getState().sessions)).toEqual(["t1"]);
+  });
+});
+
+describe("who owns the active tab", () => {
+  function snapshotWithActive(activeTerminalId: string | null): AppStateSnapshot {
+    useProjectStore.setState({
+      projects: { p: { id: "p", name: "p", rootGroupId: "root", expanded: true } as never },
+      projectOrder: ["p"],
+      activeProjectId: "p",
+      nodes: {
+        root: { id: "root", type: "group", parentId: null, children: ["n1", "n2"] } as never,
+        n1: { id: "n1", type: "terminal", parentId: "root", terminalId: "t1" } as never,
+        n2: { id: "n2", type: "terminal", parentId: "root", terminalId: "t2" } as never,
+      },
+    });
+    useTerminalStore.setState({
+      sessions: { t1: session("t1"), t2: session("t2") },
+      activeTerminalId,
+    });
+    return buildAppStateSnapshot();
+  }
+
+  it("keeps the desktop's active tab when a replica's snapshot arrives", () => {
+    // The desktop publishes the shared document. A snapshot already in flight
+    // when the user clicked used to land afterwards and revert the click.
+    isPrimaryClientMock.mockReturnValue(true);
+    const stale = snapshotWithActive("t1");
+    useTerminalStore.setState({ activeTerminalId: "t2" });
+
+    applySharedAppState(stale, "test");
+
+    expect(useTerminalStore.getState().activeTerminalId).toBe("t2");
+  });
+
+  it("adopts the master's active tab in a replica", () => {
+    isPrimaryClientMock.mockReturnValue(false);
+    const fromMaster = snapshotWithActive("t1");
+    useTerminalStore.setState({ activeTerminalId: "t2" });
+
+    applySharedAppState(fromMaster, "test");
+
+    expect(useTerminalStore.getState().activeTerminalId).toBe("t1");
+  });
+
+  it("adopts one when the desktop has none yet, as on a cold start", () => {
+    isPrimaryClientMock.mockReturnValue(true);
+    const fromElsewhere = snapshotWithActive("t1");
+    useTerminalStore.setState({ activeTerminalId: null });
+
+    applySharedAppState(fromElsewhere, "test");
+
+    expect(useTerminalStore.getState().activeTerminalId).toBe("t1");
   });
 });

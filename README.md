@@ -117,6 +117,10 @@ What this gives you:
 - **One workspace.** Projects, tabs, splits, notes, titles and the active tab
   are the same document in both. Open a tab in the browser and it appears in the
   desktop window, and the other way around.
+- **The desktop owns which tab is active.** A replica switching tabs relays the
+  intent and adopts the result, rather than setting it locally and publishing
+  it. Both writing that field would let a snapshot already in flight when you
+  clicked land afterwards and revert the click — on either side.
 - **The desktop decides sizing.** A replica renders the grid the desktop is
   using, so line wrapping matches instead of reflowing per window.
 
