@@ -33,14 +33,20 @@ const ACTION_EVENT = "dispatcher-action";
  * How much of each terminal the master remembers for replicas that join late.
  *
  * This is the only history a replica can ever have: the desktop keeps 50k lines
- * of xterm scrollback, but a phone starts empty and sees exactly what was
- * mirrored to it. The old 256KB bought very little on an agent pane, where most
- * bytes are a TUI repainting itself rather than new lines, so scrollback on
- * mobile ran out almost immediately. Snapshots are sent per terminal rather
- * than as one message, so raising this does not turn a replica's first frame
- * into a multi-megabyte payload.
+ * of xterm scrollback, but a replica starts empty and sees exactly what was
+ * mirrored to it.
+ *
+ * The number has to clear one full-history replay in a single piece. Restoring
+ * a tmux pane's scrollback arrives here as one write, and those run to 722KB on
+ * a real agent pane — so the old 256KB budget cut a replay down to its last
+ * third and the replica's history began partway through a frame. Sized well
+ * clear of that, because a pane that has been running longer produces a larger
+ * one, and the cost of being short is losing history rather than wasting bytes.
+ *
+ * Snapshots are sent per terminal, so this bounds one message rather than being
+ * multiplied by the number of terminals in the workspace.
  */
-const SNAPSHOT_LIMIT_BYTES = 1024 * 1024;
+const SNAPSHOT_LIMIT_BYTES = 4 * 1024 * 1024;
 /** Mirror frames are coalesced over this window to keep the IPC chatter down. */
 const MIRROR_FLUSH_MS = 16;
 
