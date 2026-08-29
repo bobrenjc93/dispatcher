@@ -24,6 +24,7 @@ import {
   disposeTerminalInstance,
   focusTerminalInstance,
   refitAllTerminalsToViewport,
+  presentTerminalForViewport,
   scrollTerminalToBottom,
 } from "./hooks/useTerminalBridge";
 import { useFileDrop } from "./hooks/useFileDrop";
@@ -119,7 +120,7 @@ export default function App() {
     const terminalId = useTerminalStore.getState().activeTerminalId;
     refitAllTerminalsToViewport();
     if (terminalId) {
-      scrollTerminalToBottom(terminalId);
+      scrollTerminalToBottom(terminalId, { afterKeyboard: true });
     }
   }, []);
   useSoftKeyboardViewport(isCompact, handleSoftKeyboardViewport);
@@ -137,7 +138,7 @@ export default function App() {
       if (!terminalId) {
         return;
       }
-      scrollTerminalToBottom(terminalId);
+      scrollTerminalToBottom(terminalId, { afterKeyboard: true });
       focusTerminalInstance(terminalId);
     }, 250);
     return () => window.clearTimeout(timer);
@@ -813,6 +814,15 @@ export default function App() {
   useEffect(() => {
     setMobileNavOpen(false);
   }, [activeTerminalId]);
+
+  // A tab arriving from the parking lot keeps the font it had when it was last
+  // shown, which on a phone renders enormous until something re-fits it.
+  useEffect(() => {
+    if (!isCompact || !activeTerminalId) {
+      return;
+    }
+    presentTerminalForViewport(activeTerminalId);
+  }, [isCompact, activeTerminalId]);
   const activeLayoutKey = (() => {
     if (!activeProject) return null;
     if (activeTerminalId) {

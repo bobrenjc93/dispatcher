@@ -159,7 +159,16 @@ The choice is per-device, so a phone can differ from the desktop.
 Two boxes can be scrolled away from the prompt and both are handled: xterm's
 own scrollback, and — because in readable mode the grid is larger than the
 screen — the `.terminal-container` that scrolls the element itself. The second
-is the one a soft keyboard pushes off screen.
+is the one a soft keyboard pushes off screen, and it is also the one that
+decides whether to keep following: consulting only xterm meant that scrolling
+up while an agent was producing output yanked you back on every chunk. A few
+pixels of slack count as pinned, so fractional layout does not switch following
+off by itself.
+
+Switching tabs re-fits the one you land on. A parked tab keeps the font it had
+when it was last shown, so a tab last seen on the desktop came back enormous on
+a phone; its sideways scroll is reset too, so you get the start of the lines
+rather than the middle.
 
 The terminal opens on the newest output and stays there as output arrives,
 unless you scroll up — then it leaves you where you put it until you scroll

@@ -1877,7 +1877,7 @@ export function focusTerminalInstance(terminalId: string) {
   // Focusing on a phone is what raises the keyboard, which shrinks the box the
   // terminal lives in. Pin here as well as on the viewport change, so the
   // prompt is already in view rather than needing a scroll afterwards.
-  scrollTerminalToBottom(terminalId);
+  scrollTerminalToBottom(terminalId, { afterKeyboard: true });
 }
 
 export function refreshAllTerminalFrontends(reason: string) {
@@ -1981,12 +1981,42 @@ export function applyMirroredTerminalOutput(terminalId: string, data: string) {
 
 /** True when the viewport is showing the newest line. */
 export function isTerminalScrolledToBottom(terminalId: string): boolean {
-  const xterm = instances.get(terminalId)?.xterm;
-  if (!xterm) {
+  const instance = instances.get(terminalId);
+  if (!instance) {
     return true;
   }
-  const buffer = xterm.buffer.active;
-  return buffer.viewportY >= buffer.baseY;
+
+  const buffer = instance.xterm.buffer.active;
+  if (buffer.viewportY < buffer.baseY) {
+    return false;
+  }
+
+  // On a narrow screen the grid is larger than the screen, so the box that
+  // scrolls is `.terminal-container` rather than xterm's own scrollback.
+  // Asking only xterm meant that while the reader had scrolled up there, every
+  // chunk of output still counted as "at the bottom" and yanked them back.
+  const scroller = findScrollContainer(instance.element);
+  if (!scroller) {
+    return true;
+  }
+  return isScrolledToBottom(scroller.scrollTop, scroller.scrollHeight, scroller.clientHeight);
+}
+
+/**
+ * Whether a scrolling box is close enough to the bottom to keep following.
+ *
+ * A tolerance matters because fractional layout leaves a pixel or two of slack
+ * at the true bottom; without it a terminal that is visually pinned would
+ * decide the reader had scrolled away and stop following.
+ */
+export const FOLLOW_BOTTOM_TOLERANCE_PX = 8;
+
+export function isScrolledToBottom(
+  scrollTop: number,
+  scrollHeight: number,
+  clientHeight: number
+): boolean {
+  return scrollHeight - clientHeight - scrollTop <= FOLLOW_BOTTOM_TOLERANCE_PX;
 }
 
 /**
@@ -2003,7 +2033,41 @@ export function isTerminalScrolledToBottom(terminalId: string): boolean {
  * iOS keeps resizing and scrolling for a few hundred milliseconds after the
  * keyboard starts moving.
  */
-export function scrollTerminalToBottom(terminalId: string) {
+/**
+ * Re-fit a terminal that has just become visible, and put it at the prompt.
+ *
+ * A tab that was parked keeps whatever font it had when it was last on screen.
+ * Coming back to it on a phone — a much narrower viewport than the desktop it
+ * was sized for — it renders enormous until something happens to re-fit it,
+ * which is why switching tabs looked zoomed in. The horizontal scroll is reset
+ * too, or a tab left scrolled sideways comes back showing the middle of its
+ * lines.
+ */
+export function presentTerminalForViewport(terminalId: string) {
+  const apply = () => {
+    const instance = instances.get(terminalId);
+    if (!instance) {
+      return;
+    }
+    fitTerminalFontToViewport(terminalId);
+    const scroller = findScrollContainer(instance.element);
+    if (scroller) {
+      scroller.scrollLeft = 0;
+    }
+    scrollTerminalToBottom(terminalId, { afterKeyboard: true });
+  };
+
+  apply();
+  if (typeof requestAnimationFrame === "function") {
+    // Again once laid out: a tab that just appeared measures as nothing.
+    requestAnimationFrame(apply);
+  }
+}
+
+export function scrollTerminalToBottom(
+  terminalId: string,
+  options?: { afterKeyboard?: boolean }
+) {
   const scroll = () => {
     const instance = instances.get(terminalId);
     if (!instance) {
@@ -2020,7 +2084,10 @@ export function scrollTerminalToBottom(terminalId: string) {
   if (typeof requestAnimationFrame === "function") {
     requestAnimationFrame(scroll);
   }
-  if (typeof window !== "undefined") {
+  // Only the keyboard needs the late pass. Scheduling one for every chunk of
+  // output would leave a timer in flight that yanks the reader back a moment
+  // after they scroll away.
+  if (options?.afterKeyboard && typeof window !== "undefined") {
     window.setTimeout(scroll, KEYBOARD_SETTLE_MS);
   }
 }
