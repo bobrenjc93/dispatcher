@@ -37,7 +37,7 @@ export function shouldBounceDock(args: {
 }
 
 /** How often to bounce again while the window is still ignored. */
-const BOUNCE_REPEAT_MS = 3_000;
+const BOUNCE_REPEAT_MS = 5_000;
 
 let bounceTimer: number | null = null;
 let unlistenFocus: (() => void) | null = null;
