@@ -163,6 +163,21 @@ The terminal is also focused on load, so the first tap types rather than
 merely focusing. iOS will not raise the keyboard until that first tap
 regardless — it only opens one in response to a gesture, never on load.
 
+### Dictation
+
+Dictation revises as it listens, sending the whole phrase so far on every
+update and expecting the target to replace its value. A text input does that; a
+terminal cannot, because it has no value — only a byte stream. Left alone,
+"can you do it for me" arrives as
+`ccancan ycan youcan you dcan you docan you do it for me?can you do it for me?`.
+
+iOS fires no composition events for dictation, so there is nothing to bracket
+the utterance with. What it does do is send a strictly longer string beginning
+with the previous one, so Dispatcher sends only the new part, and drops the
+duplicate final result. A revision more than five seconds after the last one is
+treated as a fresh utterance, and anything containing a control character ends
+one.
+
 A soft keyboard has no Ctrl, Esc, Tab or arrows, so a key bar sits under the
 terminal with **esc**, **tab**, **^C**, **^R** and the four arrows. **ctrl** is
 sticky: tap it, then tap a letter, and the two are folded into a control code —

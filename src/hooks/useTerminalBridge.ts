@@ -24,6 +24,7 @@ import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
 import { toControlCharacter } from "../lib/keyboardShortcuts";
+import { resolveDictationInput, type DictationState } from "../lib/dictationInput";
 import { debugLog } from "../lib/debugLog";
 import { getScopedStorageKey } from "../lib/storageNamespace";
 import {
@@ -954,6 +955,9 @@ function isTransientFocusSequence(data: string): boolean {
   return data === "\u001b[I" || data === "\u001b[O";
 }
 
+/** Per-terminal dictation revision tracking; see `resolveDictationInput`. */
+const dictationStates = new Map<string, DictationState>();
+
 export function handleTerminalInputData(terminalId: string, inputFromKeyboard: string) {
   let data = inputFromKeyboard;
 
@@ -965,6 +969,24 @@ export function handleTerminalInputData(terminalId: string, inputFromKeyboard: s
     if (chord) {
       data = chord;
     }
+  }
+
+  // iOS dictation re-sends the whole phrase on every revision, expecting the
+  // target to replace its value. A terminal has no value to replace, so the
+  // revisions would concatenate; send only what is new.
+  const dictation = resolveDictationInput({
+    data,
+    previous: dictationStates.get(terminalId) ?? null,
+    now: Date.now(),
+  });
+  if (dictation.next === null) {
+    dictationStates.delete(terminalId);
+  } else {
+    dictationStates.set(terminalId, dictation.next);
+  }
+  data = dictation.emit;
+  if (data.length === 0) {
+    return;
   }
 
   pushKeyDebug(`xterm.onData:${terminalId}`, describeTerminalData(data));
