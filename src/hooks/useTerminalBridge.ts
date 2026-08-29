@@ -25,6 +25,14 @@ import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
 import { toControlCharacter } from "../lib/keyboardShortcuts";
 import { resolveDictationInput, type DictationState } from "../lib/dictationInput";
+import {
+  cellFromPoint,
+  movedTooFarForLongPress,
+  selectionFromCells,
+  wordRangeAt,
+  LONG_PRESS_MS,
+  type TerminalCell,
+} from "../lib/terminalTouchSelection";
 import { debugLog } from "../lib/debugLog";
 import { getScopedStorageKey } from "../lib/storageNamespace";
 import {
@@ -44,7 +52,7 @@ import {
   noteTerminalOutput,
 } from "../lib/tmuxAttachWatchdog";
 import { recordPaneOutput, recordSessionEvent } from "../lib/sessionRecorder";
-import { isLinkOpenModifierPressed, shouldOpenLink } from "../lib/terminalMouse";
+import { isLinkOpenModifierPressed, isTouchPointer, shouldOpenLink } from "../lib/terminalMouse";
 import { findTerminalWebLinkMatches } from "../lib/terminalLinks";
 import {
   getActiveStatusResizeSuppression,
@@ -1366,6 +1374,7 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
     return true;
   });
 
+  attachTouchSelection(terminalId, instance);
   instances.set(terminalId, instance);
   // Output that arrived before the frontend existed is still buffered;
   // schedule a drain now that there is an xterm to render it into.
@@ -1373,6 +1382,129 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
     scheduleBufferedWrite(terminalId);
   }
   return instance;
+}
+
+/** Marks the scrolling box while a selection is being dragged. */
+const TOUCH_SELECTING_CLASS = "terminal-touch-selecting";
+
+/**
+ * Long-press to start selecting, then drag to move the far end of the range.
+ *
+ * A long press is the one gesture scrolling does not already use, so it can
+ * take over without stealing the pan. While selecting, the scrolling ancestor
+ * has its touch handling disabled, or the drag would scroll instead of extend.
+ */
+function attachTouchSelection(terminalId: string, instance: TerminalInstance) {
+  if (!isTouchPointer()) {
+    return;
+  }
+
+  const element = instance.element;
+  let anchor: TerminalCell | null = null;
+  let pressAt: { x: number; y: number } | null = null;
+  let pressTimer: number | null = null;
+
+  const cancelPendingPress = () => {
+    if (pressTimer !== null) {
+      window.clearTimeout(pressTimer);
+      pressTimer = null;
+    }
+    pressAt = null;
+  };
+
+  const scroller = () => findScrollContainer(element);
+
+  const endSelection = () => {
+    anchor = null;
+    scroller()?.classList.remove(TOUCH_SELECTING_CLASS);
+    element.classList.remove(TOUCH_SELECTING_CLASS);
+  };
+
+  const cellAt = (touch: { clientX: number; clientY: number }): TerminalCell | null => {
+    const size = getTerminalCellSize(terminalId);
+    if (!size) {
+      return null;
+    }
+    const rect = element.getBoundingClientRect();
+    return cellFromPoint({
+      x: touch.clientX,
+      y: touch.clientY,
+      rect: { left: rect.left, top: rect.top },
+      cellWidth: size.width,
+      cellHeight: size.height,
+      cols: instance.xterm.cols,
+      rows: instance.xterm.rows,
+      viewportY: instance.xterm.buffer.active.viewportY,
+    });
+  };
+
+  element.addEventListener("touchstart", (event) => {
+    // A fresh touch while a selection is up dismisses it, the way tapping
+    // away from selected text does everywhere else.
+    if (anchor !== null) {
+      instance.xterm.clearSelection();
+      endSelection();
+      return;
+    }
+    if (event.touches.length !== 1) {
+      return;
+    }
+    const touch = event.touches[0];
+    pressAt = { x: touch.clientX, y: touch.clientY };
+    pressTimer = window.setTimeout(() => {
+      pressTimer = null;
+      const cell = cellAt(touch);
+      if (!cell) {
+        return;
+      }
+      anchor = cell;
+      scroller()?.classList.add(TOUCH_SELECTING_CLASS);
+      element.classList.add(TOUCH_SELECTING_CLASS);
+
+      // Start on the word under the finger rather than a single cell, which
+      // is almost always what was meant and is hard to hit deliberately.
+      const line = instance.xterm.buffer.active.getLine(cell.row)?.translateToString(true) ?? "";
+      const word = wordRangeAt(line, cell.col);
+      anchor = { col: word.start, row: cell.row };
+      const range = selectionFromCells(anchor, { col: word.end, row: cell.row }, instance.xterm.cols);
+      instance.xterm.select(range.column, range.row, range.length);
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  element.addEventListener("touchmove", (event) => {
+    if (anchor === null) {
+      // Still deciding: a finger that travels was panning, not pressing.
+      if (pressAt && event.touches.length === 1) {
+        const touch = event.touches[0];
+        if (movedTooFarForLongPress(pressAt, { x: touch.clientX, y: touch.clientY })) {
+          cancelPendingPress();
+        }
+      }
+      return;
+    }
+
+    const touch = event.touches[0];
+    const focus = touch ? cellAt(touch) : null;
+    if (!focus) {
+      return;
+    }
+    // The scroller is inert now, so this drag is ours; stop the browser
+    // treating it as a pan.
+    event.preventDefault();
+    const range = selectionFromCells(anchor, focus, instance.xterm.cols);
+    instance.xterm.select(range.column, range.row, range.length);
+  }, { passive: false });
+
+  const finish = () => {
+    cancelPendingPress();
+    // The selection stays put so it can be copied; only the drag is over.
+    scroller()?.classList.remove(TOUCH_SELECTING_CLASS);
+  };
+  element.addEventListener("touchend", finish, { passive: true });
+  element.addEventListener("touchcancel", () => {
+    cancelPendingPress();
+    endSelection();
+  }, { passive: true });
 }
 
 export function ensureTerminalFrontend(terminalId: string) {

@@ -169,11 +169,17 @@ Opening a link needs Cmd (or Ctrl) held on a desktop, so a click still reaches
 the terminal. A touchscreen has no modifier to hold, so there a plain tap opens
 the link.
 
-Selecting by dragging does not work on a phone and cannot be made to: the
-terminal draws through WebGL, so the screen is pixels on a canvas with no DOM
-text for the browser to select, and xterm's own selection is driven by mouse
-drags a touchscreen never produces. The key bar has a **copy** button instead —
-it copies the selection if there is one, and otherwise the visible screen.
+Selecting text is a mode, because a plain drag already scrolls. **Long-press**
+the terminal and it selects the word under your finger; **drag** from there to
+move the far end of the range, in either direction. Tap anywhere to dismiss it.
+The key bar's **copy** button takes the selection, or the visible screen when
+there is none.
+
+It has to work this way because the terminal draws through WebGL: the screen is
+pixels on a canvas with no DOM text for the browser to select, and xterm's own
+selection comes from mouse drags a touchscreen never produces. While a range is
+being dragged, the scrolling box has its touch handling disabled, or extending
+the selection would pan instead.
 
 ### Dictation
 

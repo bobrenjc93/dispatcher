@@ -1703,6 +1703,13 @@ body.sidebar-dragging * {
     touch-action: pan-x pan-y pinch-zoom;
   }
 
+  /* While a selection is being dragged the gesture belongs to the terminal,
+     not to the box it scrolls in — otherwise extending the range just pans. */
+  .app-compact .terminal-container.terminal-touch-selecting {
+    touch-action: none;
+    overflow: hidden;
+  }
+
   /* Keys a soft keyboard does not have. Sits under the terminal, above the
      keyboard when it is open. */
   .mobile-key-bar {
