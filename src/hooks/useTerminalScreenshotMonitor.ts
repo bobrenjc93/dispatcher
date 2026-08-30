@@ -42,7 +42,13 @@ import type { TerminalSession } from "../types/terminal";
 const SCREENSHOT_INTERVAL_MS = 5_000;
 // A stable tab becomes stale after this window. Background stale tabs require
 // attention until the user looks at them; acknowledged stale tabs turn brown.
-const SCREENSHOT_INACTIVITY_MS = 10_000;
+//
+// Long enough that an agent thinking, or running a command that prints nothing
+// for a while, is not mistaken for one that has stopped. Ten seconds caught far
+// too much of that: a pause in the middle of work looks exactly like the end of
+// it, and an indicator that cries wolf is worse than no indicator, because the
+// one that matters stops being read.
+const SCREENSHOT_INACTIVITY_MS = 20_000;
 // Long inactivity applies to brown tabs only. Unacknowledged stale tabs keep
 // needing attention because they still need the user's attention.
 const SCREENSHOT_LONG_INACTIVITY_MS = 60 * 60 * 1000;
