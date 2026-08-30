@@ -2554,6 +2554,12 @@ export function fitTerminalFontToViewport(terminalId: string) {
     return;
   }
 
+  // Clear the anchor before working out a new one. Everything below can bail —
+  // a tab mid-switch measures as nothing, a parked terminal returns carrying
+  // whatever offset it last had — and an offset from another geometry does not
+  // just look wrong, it moves the grid somewhere no gesture reaches.
+  instance.element.style.transform = "";
+
   const preferredSize = useFontStore.getState().fontSize;
   if (!isCompactViewport()) {
     if (instance.xterm.options.fontSize !== preferredSize) {
@@ -2610,11 +2616,28 @@ export function fitTerminalFontToViewport(terminalId: string) {
   // alignment, which only bottom-aligns a grid that does not shrink — and a
   // shrunk grid clips its own newest rows away with no way to reach them.
   const heightPerFontUnit = cell.height / currentSize;
-  const gridHeight = Math.ceil(rows * heightPerFontUnit * nextSize);
+  const rowHeight = heightPerFontUnit * nextSize;
+  // xterm renders into a child of this element, and that child is as tall as
+  // the whole grid — 938px against a 597px box on the device this was measured
+  // on. The element itself is height: 100%, so measuring it answers the size
+  // of the box rather than the size of the grid, which is the wrong end of the
+  // question. Rows times row height is the grid, and matches what the rendered
+  // screen reports.
+  const gridHeight = Math.ceil(rows * rowHeight);
+  // Against the element, not the box around it: the grid starts at the
+  // element's top edge, so the room it has is the element's height. Using the
+  // container instead left the last row hanging past the bottom by the
+  // container's padding.
+  const availableHeight = instance.element.clientHeight;
   const anchorPx = useUiStore.getState().compactTouchGesture === "history"
-    ? resolveGridBottomAnchorPx(gridHeight, mount.clientHeight)
+    ? resolveGridBottomAnchorPx(gridHeight, availableHeight, rowHeight)
     : 0;
-  instance.element.style.marginTop = anchorPx > 0 ? `${-anchorPx}px` : "";
+  if (anchorPx > 0) {
+    // Transform, not margin. This element sits in a content-sized box, so a
+    // margin changes the height that the offset is measured against and the
+    // anchor grows on every pass.
+    instance.element.style.transform = `translateY(${-anchorPx}px)`;
+  }
 }
 
 /**
@@ -2623,9 +2646,16 @@ export function fitTerminalFontToViewport(terminalId: string) {
  */
 export function resolveGridBottomAnchorPx(
   gridHeightPx: number,
-  viewportHeightPx: number
+  viewportHeightPx: number,
+  rowHeightPx: number
 ): number {
-  if (!(gridHeightPx > 0) || !(viewportHeightPx > 0)) {
+  if (!(gridHeightPx > 0) || !(rowHeightPx > 0)) {
+    return 0;
+  }
+  // A box with no room for even one row is a tab still being laid out, not a
+  // viewport. Anchoring against it computes an offset close to the whole grid
+  // and moves it off the screen entirely, where nothing brings it back.
+  if (viewportHeightPx < rowHeightPx) {
     return 0;
   }
   return Math.max(0, Math.ceil(gridHeightPx - viewportHeightPx));
