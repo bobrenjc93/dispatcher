@@ -148,6 +148,8 @@ export default function App() {
   const setDetailPanelCollapsed = useUiStore((s) => s.setDetailPanelCollapsed);
   const compactTerminalFit = useUiStore((s) => s.compactTerminalFit);
   const setCompactTerminalFit = useUiStore((s) => s.setCompactTerminalFit);
+  const compactTouchGesture = useUiStore((s) => s.compactTouchGesture);
+  const setCompactTouchGesture = useUiStore((s) => s.setCompactTouchGesture);
 
   // The notes column has no room next to a terminal on a phone; start hidden
   // there, and restore the desktop preference when there is space again.
@@ -1088,7 +1090,11 @@ export default function App() {
     : "Dispatcher";
 
   return (
-    <div className={`app${isCompact ? " app-compact" : ""}`}>
+    <div
+      className={`app${isCompact ? " app-compact" : ""}${
+        isCompact && compactTouchGesture === "history" ? " touch-history" : ""
+      }`}
+    >
       {isCompact && (
         <div className="mobile-topbar">
           <button
@@ -1122,6 +1128,20 @@ export default function App() {
             }
           >
             Fit
+          </button>
+          <button
+            className={`mobile-fit-toggle${compactTouchGesture === "pan" ? " is-active" : ""}`}
+            aria-label={
+              compactTouchGesture === "pan"
+                ? "Swipe to scroll history instead of moving around the grid"
+                : "Swipe to move around the grid instead of scrolling history"
+            }
+            aria-pressed={compactTouchGesture === "pan"}
+            onClick={() =>
+              setCompactTouchGesture(compactTouchGesture === "pan" ? "history" : "pan")
+            }
+          >
+            {compactTouchGesture === "pan" ? "Pan" : "Scroll"}
           </button>
           <button
             className="mobile-notes-toggle"

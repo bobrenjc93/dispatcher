@@ -9,13 +9,27 @@ import { getScopedStorageKey } from "../lib/storageNamespace";
  */
 export type CompactTerminalFit = "readable" | "fit-width";
 
+/**
+ * What a vertical swipe does on a narrow screen.
+ *
+ * Two things want that gesture. The grid can be taller than the phone, so the
+ * box around it scrolls to move over the parts that do not fit; and xterm keeps
+ * the scrollback in its own scroller *inside* that box. A touch gesture chains
+ * outward, never inward, so whenever the outer box can scroll it takes the
+ * swipe and the history underneath is unreachable. Rather than pick one, this
+ * says which the swipe belongs to.
+ */
+export type CompactTouchGesture = "history" | "pan";
+
 interface UiStore {
   isTerminalNotesOpen: boolean;
   isDetailPanelCollapsed: boolean;
   compactTerminalFit: CompactTerminalFit;
+  compactTouchGesture: CompactTouchGesture;
   /** On-screen Ctrl is armed; the next character becomes a control code. */
   isCtrlArmed: boolean;
   setCompactTerminalFit: (fit: CompactTerminalFit) => void;
+  setCompactTouchGesture: (gesture: CompactTouchGesture) => void;
   setCtrlArmed: (armed: boolean) => void;
   setTerminalNotesOpen: (isOpen: boolean) => void;
   setDetailPanelCollapsed: (isCollapsed: boolean) => void;
@@ -29,8 +43,10 @@ export const useUiStore = create<UiStore>()(
       isTerminalNotesOpen: false,
       isDetailPanelCollapsed: false,
       compactTerminalFit: "readable",
+      compactTouchGesture: "history",
       isCtrlArmed: false,
       setCompactTerminalFit: (fit) => set({ compactTerminalFit: fit }),
+      setCompactTouchGesture: (gesture) => set({ compactTouchGesture: gesture }),
       // Deliberately left out of partialize: a modifier armed yesterday should
       // not still be armed today.
       setCtrlArmed: (armed) => set({ isCtrlArmed: armed }),
@@ -47,6 +63,7 @@ export const useUiStore = create<UiStore>()(
         isTerminalNotesOpen: state.isTerminalNotesOpen,
         isDetailPanelCollapsed: state.isDetailPanelCollapsed,
         compactTerminalFit: state.compactTerminalFit,
+        compactTouchGesture: state.compactTouchGesture,
       }),
     }
   )

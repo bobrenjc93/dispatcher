@@ -1718,6 +1718,22 @@ body.sidebar-dragging * {
     touch-action: pan-x pan-y pinch-zoom;
   }
 
+  /* Hand the vertical swipe to xterm's scrollback.
+     The grid can be taller than the phone, so this box scrolls to reach the
+     rows that do not fit — but the scrollback lives in a scroller *inside* it,
+     and a touch gesture chains outward, never inward. Whenever this box can
+     scroll vertically it takes the swipe and the history is unreachable.
+     Stopping it here leaves xterm's scroller as the innermost one, so the swipe
+     lands there instead. The grid is pinned to its bottom because that is where
+     the prompt is; the rows above it are what the Pan toggle is for. Horizontal
+     panning is untouched — nothing else competes for that gesture. */
+  .app-compact.touch-history .terminal-container {
+    overflow-y: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
+
   /* Safari zooms the page whenever a focused input's text is under 16px, and a
      zoomed page pans under the finger instead of scrolling — so tapping the
      terminal to type left the whole app panning and the scrollback out of

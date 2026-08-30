@@ -1070,6 +1070,14 @@ useUiStore.subscribe((state, previous) => {
   if (state.compactTerminalFit !== previous.compactTerminalFit) {
     refitAllTerminalsToViewport();
   }
+  // Switching what a swipe does moves which box holds the scroll offset, so
+  // whichever one is now live has to be put back at the newest output — or the
+  // toggle lands the reader somewhere in the middle of the grid.
+  if (state.compactTouchGesture !== previous.compactTouchGesture) {
+    for (const terminalId of instances.keys()) {
+      scrollTerminalToBottom(terminalId);
+    }
+  }
 });
 
 if (typeof window !== "undefined") {
@@ -2043,6 +2051,38 @@ export function isScrolledToBottom(
  * too, or a tab left scrolled sideways comes back showing the middle of its
  * lines.
  */
+/**
+ * Report which box actually scrolls, and whether the other one can be reached.
+ *
+ * There are two vertical scrollers in play and only one holds the scrollback.
+ * xterm's `.xterm-viewport` is a *descendant* of the terminal element, while
+ * the box `findScrollContainer` finds is an *ancestor* — so when the ancestor
+ * scrolls, a gesture chains outward and can never fall through to the
+ * scrollback underneath it.
+ */
+function logTerminalScrollGeometry(
+  terminalId: string,
+  instance: TerminalInstance,
+  scroller: HTMLElement | null
+) {
+  const viewport = instance.element.querySelector<HTMLElement>(".xterm-viewport");
+  debugLog("terminal.frontend", "scroll geometry", {
+    terminalId,
+    compact: isCompactViewport(),
+    outerScroller: scroller?.className ?? null,
+    outerScrollHeight: scroller?.scrollHeight ?? null,
+    outerClientHeight: scroller?.clientHeight ?? null,
+    outerScrollsVertically: scroller
+      ? scroller.scrollHeight > scroller.clientHeight
+      : false,
+    viewportScrollHeight: viewport?.scrollHeight ?? null,
+    viewportClientHeight: viewport?.clientHeight ?? null,
+    scrollbackReachable: viewport
+      ? viewport.scrollHeight > viewport.clientHeight
+      : null,
+  });
+}
+
 export function presentTerminalForViewport(terminalId: string) {
   const apply = () => {
     const instance = instances.get(terminalId);
@@ -2054,6 +2094,7 @@ export function presentTerminalForViewport(terminalId: string) {
     if (scroller) {
       scroller.scrollLeft = 0;
     }
+    logTerminalScrollGeometry(terminalId, instance, scroller);
     scrollTerminalToBottom(terminalId, { afterKeyboard: true });
   };
 
