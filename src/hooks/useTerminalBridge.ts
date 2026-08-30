@@ -1383,6 +1383,7 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
   });
 
   attachTouchSelection(terminalId, instance);
+  attachTouchScrollback(terminalId, instance);
   instances.set(terminalId, instance);
   // Output that arrived before the frontend existed is still buffered;
   // schedule a drain now that there is an xterm to render it into.
@@ -1394,6 +1395,118 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
 
 /** Marks the scrolling box while a selection is being dragged. */
 const TOUCH_SELECTING_CLASS = "terminal-touch-selecting";
+
+/** Movement before a swipe is committed to one axis. */
+const TOUCH_AXIS_LOCK_SLOP_PX = 8;
+
+/**
+ * Turn a finger's travel into whole lines of scrollback.
+ *
+ * The remainder is carried between moves: a finger produces many small deltas,
+ * and rounding each one on its own throws most of them away, so a slow drag
+ * would move nothing at all.
+ */
+export function consumeTouchScrollLines(
+  carryLines: number,
+  deltaPx: number,
+  cellHeightPx: number
+): { lines: number; carryLines: number } {
+  if (!Number.isFinite(deltaPx) || !(cellHeightPx > 0)) {
+    return { lines: 0, carryLines };
+  }
+
+  const total = carryLines + deltaPx / cellHeightPx;
+  const lines = Math.trunc(total);
+  return { lines, carryLines: total - lines };
+}
+
+/**
+ * Scroll the buffer with a finger.
+ *
+ * xterm has no scrollable element to hand the gesture to — `.xterm-viewport`
+ * is `overflow-y: scroll` but nothing inside it is ever taller, so scrollback
+ * moves only through `scrollLines()`, which the wheel drives. A phone produces
+ * no wheel events, so the history was unreachable by touch no matter which box
+ * the browser gave the swipe to.
+ *
+ * Only the vertical axis is taken, and only once the swipe has committed to it,
+ * so panning sideways across a wide grid still belongs to the box that scrolls.
+ */
+function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
+  if (!isTouchPointer()) {
+    return;
+  }
+
+  const element = instance.element;
+  let tracking = false;
+  let startX = 0;
+  let startY = 0;
+  let lastY = 0;
+  let axis: "undecided" | "vertical" | "horizontal" = "undecided";
+  let carryLines = 0;
+
+  element.addEventListener("touchstart", (event) => {
+    tracking = event.touches.length === 1;
+    if (!tracking) {
+      return;
+    }
+    const touch = event.touches[0];
+    startX = touch.clientX;
+    startY = touch.clientY;
+    lastY = touch.clientY;
+    axis = "undecided";
+    carryLines = 0;
+  }, { passive: true });
+
+  element.addEventListener("touchmove", (event) => {
+    if (!tracking || event.touches.length !== 1) {
+      return;
+    }
+    // A long press already claimed this drag to extend a selection.
+    if (element.classList.contains(TOUCH_SELECTING_CLASS)) {
+      return;
+    }
+    if (!isCompactViewport() || useUiStore.getState().compactTouchGesture !== "history") {
+      return;
+    }
+
+    const touch = event.touches[0];
+    if (axis === "undecided") {
+      const dx = Math.abs(touch.clientX - startX);
+      const dy = Math.abs(touch.clientY - startY);
+      if (dx + dy < TOUCH_AXIS_LOCK_SLOP_PX) {
+        return;
+      }
+      axis = dy > dx ? "vertical" : "horizontal";
+    }
+    if (axis !== "vertical") {
+      return;
+    }
+
+    const cell = getTerminalCellSize(terminalId);
+    if (!cell) {
+      return;
+    }
+
+    // Dragging the finger up walks towards newer output, matching the way the
+    // content follows the finger everywhere else on a touch screen.
+    const consumed = consumeTouchScrollLines(carryLines, lastY - touch.clientY, cell.height);
+    lastY = touch.clientY;
+    carryLines = consumed.carryLines;
+    if (consumed.lines !== 0) {
+      instance.xterm.scrollLines(consumed.lines);
+    }
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+  }, { passive: false });
+
+  const stop = () => {
+    tracking = false;
+  };
+  element.addEventListener("touchend", stop, { passive: true });
+  element.addEventListener("touchcancel", stop, { passive: true });
+}
 
 /**
  * Long-press to start selecting, then drag to move the far end of the range.
