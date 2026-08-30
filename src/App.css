@@ -899,15 +899,6 @@ body.sidebar-dragging * {
   padding: 4px 0 0 4px;
 }
 
-/* Gives the terminal box the height of the whole buffer so the browser has
-   something real to scroll. Zero-height unless the native proxy is driving. */
-.terminal-history-spacer {
-  width: 1px;
-  height: 0;
-  flex: none;
-  pointer-events: none;
-}
-
 .terminal-paste-progress {
   position: absolute;
   right: 12px;
@@ -1727,21 +1718,20 @@ body.sidebar-dragging * {
     touch-action: pan-x pan-y pinch-zoom;
   }
 
-  /* Scroll the buffer natively.
-     xterm's own scroller is synthetic — nothing inside it is ever taller than
-     it is — so a phone has nothing to scroll and the history stays out of
-     reach. A spacer gives this box the height of the whole buffer, the grid is
-     pinned over it, and the buffer is moved to follow the box. The scrolling is
-     then the browser's, so momentum and rubber-banding come for free instead of
-     being reimplemented. Horizontal panning is untouched. */
+  /* Hand the vertical swipe to xterm's scrollback.
+     The grid can be taller than the phone, so this box scrolls to reach the
+     rows that do not fit — but the scrollback lives in a scroller *inside* it,
+     and a touch gesture chains outward, never inward. Whenever this box can
+     scroll vertically it takes the swipe and the history is unreachable.
+     Stopping it here leaves xterm's scroller as the innermost one, so the swipe
+     lands there instead. The grid is pinned to its bottom because that is where
+     the prompt is; the rows above it are what the Pan toggle is for. Horizontal
+     panning is untouched — nothing else competes for that gesture. */
   .app-compact.touch-history .terminal-container {
-    position: relative;
-  }
-
-  .app-compact.touch-history .terminal-container > .xterm {
-    position: sticky;
-    top: 0;
-    z-index: 1;
+    overflow-y: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
   }
 
   /* Safari zooms the page whenever a focused input's text is under 16px, and a
