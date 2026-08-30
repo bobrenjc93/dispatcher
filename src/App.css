@@ -1727,11 +1727,13 @@ body.sidebar-dragging * {
      lands there instead. The grid is pinned to its bottom because that is where
      the prompt is; the rows above it are what the Pan toggle is for. Horizontal
      panning is untouched — nothing else competes for that gesture. */
+  /* The grid is anchored to its bottom by a negative margin worked out against
+     the measured heights, not by flex alignment. As a flex item the grid is
+     shrinkable by default, and a shrunk grid leaves `.xterm-screen`
+     overflowing it — the newest rows end up clipped off the bottom with no way
+     to reach them, which is the opposite of what anchoring is for. */
   .app-compact.touch-history .terminal-container {
     overflow-y: hidden;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
   }
 
   /* Safari zooms the page whenever a focused input's text is under 16px, and a

@@ -1074,6 +1074,7 @@ useUiStore.subscribe((state, previous) => {
   // whichever one is now live has to be put back at the newest output — or the
   // toggle lands the reader somewhere in the middle of the grid.
   if (state.compactTouchGesture !== previous.compactTouchGesture) {
+    refitAllTerminalsToViewport();
     for (const terminalId of instances.keys()) {
       scrollTerminalToBottom(terminalId);
     }
@@ -2471,6 +2472,32 @@ export function fitTerminalFontToViewport(terminalId: string) {
   const shouldOverflow = fit === "readable" && gridWidth > mount.clientWidth;
   instance.element.style.width = shouldOverflow ? `${gridWidth}px` : "";
   instance.element.style.flexShrink = shouldOverflow ? "0" : "";
+
+  // When a swipe scrolls history, hold the grid against the bottom of the box.
+  // The newest rows are the ones worth seeing, and the rows above the fold are
+  // what Pan is for. Measured and applied here rather than left to flex
+  // alignment, which only bottom-aligns a grid that does not shrink — and a
+  // shrunk grid clips its own newest rows away with no way to reach them.
+  const heightPerFontUnit = cell.height / currentSize;
+  const gridHeight = Math.ceil(rows * heightPerFontUnit * nextSize);
+  const anchorPx = useUiStore.getState().compactTouchGesture === "history"
+    ? resolveGridBottomAnchorPx(gridHeight, mount.clientHeight)
+    : 0;
+  instance.element.style.marginTop = anchorPx > 0 ? `${-anchorPx}px` : "";
+}
+
+/**
+ * How far a grid has to be pulled up for its last row to sit on the bottom of
+ * the box. Zero when it already fits — there is nothing to hide.
+ */
+export function resolveGridBottomAnchorPx(
+  gridHeightPx: number,
+  viewportHeightPx: number
+): number {
+  if (!(gridHeightPx > 0) || !(viewportHeightPx > 0)) {
+    return 0;
+  }
+  return Math.max(0, Math.ceil(gridHeightPx - viewportHeightPx));
 }
 
 export function getTerminalCellSize(terminalId: string): { width: number; height: number } | null {

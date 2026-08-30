@@ -1130,18 +1130,17 @@ export default function App() {
             Fit
           </button>
           <button
-            className={`mobile-fit-toggle${compactTouchGesture === "pan" ? " is-active" : ""}`}
+            className="mobile-fit-toggle"
             aria-label={
               compactTouchGesture === "pan"
                 ? "Swipe to scroll history instead of moving around the grid"
                 : "Swipe to move around the grid instead of scrolling history"
             }
-            aria-pressed={compactTouchGesture === "pan"}
             onClick={() =>
               setCompactTouchGesture(compactTouchGesture === "pan" ? "history" : "pan")
             }
           >
-            {compactTouchGesture === "pan" ? "Pan" : "Scroll"}
+            {compactTouchGesture === "pan" ? "Scroll" : "Pan"}
           </button>
           <button
             className="mobile-notes-toggle"
