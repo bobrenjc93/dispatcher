@@ -1490,6 +1490,46 @@ interface HistoryScrollProxy {
   spacer: HTMLElement;
   /** Set while we move the box ourselves, so the sync does not chase itself. */
   applying: boolean;
+  /** When the reader last moved it, including momentum after they let go. */
+  lastUserScrollAt: number;
+}
+
+/**
+ * How long after the last hand-driven scroll the terminal leaves the box alone.
+ *
+ * Every upward swipe begins at the bottom, so a follow-the-tail check taken
+ * mid-gesture always says "still at the bottom" and pins the reader back —
+ * on a pane that never stops emitting, that is every attempt to scroll up.
+ * Momentum keeps firing scroll events after the finger lifts, so the wait is
+ * measured from the last of those rather than from the touch ending.
+ */
+const PROXY_SCROLL_SETTLE_MS = 400;
+
+/**
+ * Whether the terminal may pin itself to the newest line.
+ *
+ * Being at the bottom is not enough on its own: an upward swipe starts there,
+ * so a check taken while one is in flight always agrees, and the reader gets
+ * dragged back the instant the next chunk of output lands.
+ */
+export function shouldFollowTailAfterScroll(args: {
+  atBottom: boolean;
+  msSinceUserScroll: number;
+  settleMs?: number;
+}): boolean {
+  return args.atBottom && args.msSinceUserScroll >= (args.settleMs ?? PROXY_SCROLL_SETTLE_MS);
+}
+
+/** True while a hand-driven scroll is still in flight. */
+export function isProxyScrollSettling(terminalId: string): boolean {
+  const proxy = historyScrollProxies.get(terminalId);
+  if (!proxy || !isHistoryScrollProxyActive()) {
+    return false;
+  }
+  return !shouldFollowTailAfterScroll({
+    atBottom: true,
+    msSinceUserScroll: Date.now() - proxy.lastUserScrollAt,
+  });
 }
 
 const historyScrollProxies = new Map<string, HistoryScrollProxy>();
@@ -1595,13 +1635,14 @@ function attachHistoryScrollProxy(
   spacer.setAttribute("aria-hidden", "true");
   container.appendChild(spacer);
 
-  const proxy: HistoryScrollProxy = { container, spacer, applying: false };
+  const proxy: HistoryScrollProxy = { container, spacer, applying: false, lastUserScrollAt: 0 };
   historyScrollProxies.set(terminalId, proxy);
 
   container.addEventListener("scroll", () => {
     if (proxy.applying || !isHistoryScrollProxyActive()) {
       return;
     }
+    proxy.lastUserScrollAt = Date.now();
     applyHistoryScrollPosition(terminalId, proxy, instance);
   }, { passive: true });
 
@@ -1612,7 +1653,9 @@ function attachHistoryScrollProxy(
     if (!isHistoryScrollProxyActive() || proxy.applying) {
       return;
     }
-    syncHistoryScrollProxy(terminalId, { follow: isHistoryScrollProxyAtBottom(proxy) });
+    syncHistoryScrollProxy(terminalId, {
+      follow: isHistoryScrollProxyAtBottom(proxy) && !isProxyScrollSettling(terminalId),
+    });
   });
 
   syncHistoryScrollProxy(terminalId, { follow: true });
@@ -2298,6 +2341,12 @@ export function isTerminalScrolledToBottom(terminalId: string): boolean {
   const instance = instances.get(terminalId);
   if (!instance) {
     return true;
+  }
+
+  // A scroll still under way owns the position, and asking mid-gesture always
+  // answers "at the bottom" because that is where an upward swipe starts.
+  if (isProxyScrollSettling(terminalId)) {
+    return false;
   }
 
   const buffer = instance.xterm.buffer.active;
