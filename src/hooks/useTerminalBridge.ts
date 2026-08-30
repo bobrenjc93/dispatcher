@@ -2536,14 +2536,6 @@ export function fitTerminalFontToViewport(terminalId: string) {
     return;
   }
 
-  // Clear the bottom anchor before working out a new one. Everything below
-  // here can bail — a tab mid-switch measures as nothing, and a parked
-  // terminal comes back carrying whatever offset it had last — and an offset
-  // left over from another geometry does not merely look wrong, it pulls the
-  // grid off the top of the screen entirely. Unanchored is always recoverable;
-  // anchored by the wrong amount is not.
-  instance.element.style.marginTop = "";
-
   const preferredSize = useFontStore.getState().fontSize;
   if (!isCompactViewport()) {
     if (instance.xterm.options.fontSize !== preferredSize) {
@@ -2600,27 +2592,11 @@ export function fitTerminalFontToViewport(terminalId: string) {
   // alignment, which only bottom-aligns a grid that does not shrink — and a
   // shrunk grid clips its own newest rows away with no way to reach them.
   const heightPerFontUnit = cell.height / currentSize;
-  const rowHeight = heightPerFontUnit * nextSize;
-  // Measure the grid rather than predicting it, once the font has settled.
-  // Predicting assumes a row is exactly the measured cell height, and whatever
-  // the renderer rounds is multiplied by the row count — on a tall grid that
-  // is the difference between the last line sitting on the bottom edge and
-  // being clipped through. Right after a font change the element still has its
-  // old size, so the prediction is the better answer for that one pass.
-  const predictedGridHeight = Math.ceil(rows * rowHeight);
-  const measuredGridHeight = nextSize === currentSize
-    ? instance.element.getBoundingClientRect().height
-    : 0;
-  const gridHeight = measuredGridHeight > 0 ? measuredGridHeight : predictedGridHeight;
-  // The box's own padding is not room the grid can occupy, so anchoring
-  // against the padded height leaves the last row hanging past the bottom.
-  const contentHeight = getTerminalMountContentSize(mount).height;
+  const gridHeight = Math.ceil(rows * heightPerFontUnit * nextSize);
   const anchorPx = useUiStore.getState().compactTouchGesture === "history"
-    ? resolveGridBottomAnchorPx(gridHeight, contentHeight, rowHeight)
+    ? resolveGridBottomAnchorPx(gridHeight, mount.clientHeight)
     : 0;
-  if (anchorPx > 0) {
-    instance.element.style.marginTop = `${-anchorPx}px`;
-  }
+  instance.element.style.marginTop = anchorPx > 0 ? `${-anchorPx}px` : "";
 }
 
 /**
@@ -2629,19 +2605,9 @@ export function fitTerminalFontToViewport(terminalId: string) {
  */
 export function resolveGridBottomAnchorPx(
   gridHeightPx: number,
-  viewportHeightPx: number,
-  rowHeightPx: number
+  viewportHeightPx: number
 ): number {
-  if (!(gridHeightPx > 0) || !(rowHeightPx > 0)) {
-    return 0;
-  }
-  // A box with no room for even one row is a tab still being laid out, not a
-  // viewport. Anchoring against it computes an offset close to the whole grid
-  // and pulls it off the top of the screen — the reader gets a blank pane, or
-  // the last row stranded at the top, and no gesture brings it back. Leaving
-  // it unanchored for a frame is recoverable; the next pass places it once the
-  // real height is known.
-  if (viewportHeightPx < rowHeightPx) {
+  if (!(gridHeightPx > 0) || !(viewportHeightPx > 0)) {
     return 0;
   }
   return Math.max(0, Math.ceil(gridHeightPx - viewportHeightPx));
