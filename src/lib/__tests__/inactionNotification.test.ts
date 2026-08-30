@@ -10,6 +10,7 @@ const base = {
   effectiveChangedAt: 5_000,
   lastNotifiedChangedAt: 0,
   documentHasFocus: false,
+  hasAcknowledgedCurrentOutput: false,
 };
 
 describe("shouldNotifyOnInaction", () => {
@@ -33,6 +34,22 @@ describe("shouldNotifyOnInaction", () => {
     // user already watching tells them nothing they cannot see, and is how a
     // notification sound ends up switched off for good.
     expect(shouldNotifyOnInaction({ ...base, documentHasFocus: true })).toBe(false);
+  });
+
+  it("says nothing about output the reader has already seen", () => {
+    // The case this exists for: a tab stops working while you are watching it,
+    // you switch to another app, and twenty seconds later the clock runs out.
+    // Nothing changed in between — being told about it is being told about
+    // output you had just finished reading.
+    expect(
+      shouldNotifyOnInaction({ ...base, hasAcknowledgedCurrentOutput: true })
+    ).toBe(false);
+  });
+
+  it("still fires for output that arrived after the reader looked away", () => {
+    expect(
+      shouldNotifyOnInaction({ ...base, hasAcknowledgedCurrentOutput: false })
+    ).toBe(true);
   });
 
   it("waits for the inactivity threshold and real activity", () => {

@@ -22,6 +22,36 @@ function status(patch: Partial<TerminalScreenshotStatusInput> = {}) {
 }
 
 describe("terminalScreenshotStatus", () => {
+  it("does not demand attention for output the reader watched arrive", () => {
+    // A tab finishes at t=0 while it is the open tab and the reader is
+    // watching. They switch to another app at t=5, and the inactivity window
+    // runs out at t=20. Nothing changed in between, so there is nothing to
+    // call them back to — the monitor keeps acknowledgement current while a
+    // tab is watched, which is what makes this output count as seen.
+    expect(status({
+      effectiveChangedAt: 0,
+      acknowledgedTime: 5_000,
+      isActiveTab: false,
+      now: 20_000,
+    })).toMatchObject({
+      hasAcknowledgedCurrentOutput: true,
+      nextNeedsAttention: false,
+      nextPossiblyDone: true,
+    });
+  });
+
+  it("still demands attention for output that landed after they looked away", () => {
+    expect(status({
+      acknowledgedTime: 5_000,
+      effectiveChangedAt: 6_000,
+      isActiveTab: false,
+      now: 20_000,
+    })).toMatchObject({
+      hasAcknowledgedCurrentOutput: false,
+      nextNeedsAttention: true,
+    });
+  });
+
   it("marks an unacknowledged background tab as needing attention after it goes idle", () => {
     expect(status()).toMatchObject({
       hasAcknowledgedCurrentOutput: false,
