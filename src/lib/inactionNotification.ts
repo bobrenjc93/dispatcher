@@ -114,12 +114,22 @@ export function shouldNotifyOnInaction(args: {
   effectiveChangedAt: number;
   lastNotifiedChangedAt: number;
   documentHasFocus: boolean;
+  hasAcknowledgedCurrentOutput: boolean;
 }): boolean {
   // The point of the sound is to reach someone who is somewhere else. Playing
   // it at a user with Dispatcher already in front of them tells them nothing
   // they cannot see, and a sound that fires while you are watching is the kind
   // that gets turned off.
   if (args.documentHasFocus) {
+    return false;
+  }
+
+  // Quiet is not news. A tab that stops working while you are reading it, and
+  // is then still quiet twenty seconds later, has told you nothing you did not
+  // already see — but the clock runs regardless of whether you were watching,
+  // so switching to another app was enough to be told about output you had
+  // just finished reading. Only output you have not seen is worth a sound.
+  if (args.hasAcknowledgedCurrentOutput) {
     return false;
   }
 

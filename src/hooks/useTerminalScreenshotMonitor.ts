@@ -525,6 +525,7 @@ export function useTerminalScreenshotMonitor() {
       now: number;
       staleStartedAt: number;
       effectiveChangedAt: number;
+      hasAcknowledgedCurrentOutput: boolean;
     }) => {
       const wasEnabled = notificationEnabledByTab.get(args.tabRootTerminalId) === true;
       notificationEnabledByTab.set(args.tabRootTerminalId, args.enabled);
@@ -551,6 +552,7 @@ export function useTerminalScreenshotMonitor() {
         effectiveChangedAt: args.effectiveChangedAt,
         lastNotifiedChangedAt: notifiedChangedAt,
         documentHasFocus: document.hasFocus(),
+        hasAcknowledgedCurrentOutput: args.hasAcknowledgedCurrentOutput,
       })) {
         return;
       }
@@ -647,8 +649,9 @@ export function useTerminalScreenshotMonitor() {
         latestSessions.some((session) => session.hasDetectedActivity)
         || lastUserInputAt > 0
         || lastOutputAt > 0;
-      const acknowledgedTime = acknowledgedAt.get(args.tabRootTerminalId) ?? 0;
       const isActiveTab = args.activeTabRootTerminalId === args.tabRootTerminalId;
+      refreshAcknowledgementWhileWatched(args.tabRootTerminalId, isActiveTab, args.now);
+      const acknowledgedTime = acknowledgedAt.get(args.tabRootTerminalId) ?? 0;
       const {
         hasAcknowledgedCurrentOutput,
         idleStartedAt,
@@ -684,6 +687,7 @@ export function useTerminalScreenshotMonitor() {
         now: args.now,
         staleStartedAt,
         effectiveChangedAt,
+        hasAcknowledgedCurrentOutput,
       });
       maybeBounceDockForAttention({
         tabRootTerminalId: args.tabRootTerminalId,
@@ -771,6 +775,27 @@ export function useTerminalScreenshotMonitor() {
         latestStore.setNeedsAttention(terminalId, nextNeedsAttention);
         latestStore.setPossiblyDone(terminalId, nextPossiblyDone);
         latestStore.setLongInactive(terminalId, nextLongInactive);
+      }
+    };
+
+    /**
+     * Keep a tab's acknowledgement current while it is genuinely being watched.
+     *
+     * Acknowledgement is otherwise stamped only when a tab is switched to, so
+     * output that arrived while the reader sat watching it still counted as
+     * unseen the moment they looked away — a tab that finished in front of
+     * them would demand attention twenty seconds later, about output they had
+     * already read. Watching means both: the tab is the open one *and* the
+     * window is in front of the user, since a tab left open behind another app
+     * is not being read.
+     */
+    const refreshAcknowledgementWhileWatched = (
+      tabRootTerminalId: string,
+      isActiveTab: boolean,
+      now: number
+    ) => {
+      if (isActiveTab && document.hasFocus()) {
+        acknowledgedAt.set(tabRootTerminalId, now);
       }
     };
 
@@ -1036,8 +1061,9 @@ export function useTerminalScreenshotMonitor() {
             latestSessions.some((session) => session.hasDetectedActivity)
             || lastUserInputAt > 0
             || lastOutputAt > 0;
-          const acknowledgedTime = acknowledgedAt.get(tabRootTerminalId) ?? 0;
           const isActiveTab = activeTabRootTerminalId === tabRootTerminalId;
+          refreshAcknowledgementWhileWatched(tabRootTerminalId, isActiveTab, now);
+          const acknowledgedTime = acknowledgedAt.get(tabRootTerminalId) ?? 0;
           const {
             hasAcknowledgedCurrentOutput,
             idleStartedAt,
@@ -1073,6 +1099,7 @@ export function useTerminalScreenshotMonitor() {
             now,
             staleStartedAt,
             effectiveChangedAt,
+            hasAcknowledgedCurrentOutput,
           });
           maybeBounceDockForAttention({
             tabRootTerminalId,
