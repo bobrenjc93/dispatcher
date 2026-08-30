@@ -2293,9 +2293,27 @@ function logTerminalScrollGeometry(
   scroller: HTMLElement | null
 ) {
   const viewport = instance.element.querySelector<HTMLElement>(".xterm-viewport");
+  const screen = instance.element.querySelector<HTMLElement>(".xterm-screen");
+  const mount = instance.element.parentElement;
+  const cell = getTerminalCellSize(terminalId);
+  // Which box overflows decides everything, and it is not visible from a
+  // desktop window: there the grid fits, so nothing overflows anywhere. The
+  // element is set to height: 100% on attach, so it is the size of its box —
+  // meaning any overflow has to be inside it, and the question is whether
+  // xterm's own viewport is a real scroller on a phone or not.
   debugLog("terminal.frontend", "scroll geometry", {
     terminalId,
     compact: isCompactViewport(),
+    gesture: useUiStore.getState().compactTouchGesture,
+    fit: useUiStore.getState().compactTerminalFit,
+    rows: instance.xterm.rows,
+    cols: instance.xterm.cols,
+    cellHeight: cell?.height ?? null,
+    gridHeightFromRows: cell ? Math.ceil(instance.xterm.rows * cell.height) : null,
+    mountClientHeight: mount?.clientHeight ?? null,
+    mountContentHeight: mount ? getTerminalMountContentSize(mount).height : null,
+    elementHeight: instance.element.getBoundingClientRect().height,
+    screenHeight: screen?.getBoundingClientRect().height ?? null,
     outerScroller: scroller?.className ?? null,
     outerScrollHeight: scroller?.scrollHeight ?? null,
     outerClientHeight: scroller?.clientHeight ?? null,
