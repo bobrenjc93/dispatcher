@@ -23,14 +23,16 @@ export function shouldBounceDock(args: {
   enabled: boolean;
   wasNeedsAttention: boolean;
   nextNeedsAttention: boolean;
-  isActiveTab: boolean;
   documentHasFocus: boolean;
 }): boolean {
   if (!args.enabled || !args.nextNeedsAttention || args.wasNeedsAttention) {
     return false;
   }
-  // Bouncing at someone already reading the tab is just noise.
-  if (args.isActiveTab && args.documentHasFocus) {
+  // A bounce exists to pull someone back from another app. With Dispatcher in
+  // front of them there is nothing to pull them back from, whichever tab they
+  // happen to be reading — the sidebar dot already says a background tab wants
+  // looking at.
+  if (args.documentHasFocus) {
     return false;
   }
   return true;
