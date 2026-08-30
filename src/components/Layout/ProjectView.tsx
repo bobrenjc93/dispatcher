@@ -14,6 +14,9 @@ import {
 } from "../../lib/tmuxControl";
 import { getTerminalCellSize } from "../../hooks/useTerminalBridge";
 import { getScopedStorageKey } from "../../lib/storageNamespace";
+import { findTerminalIds } from "../../lib/layoutUtils";
+import { isReplicaClient } from "../../lib/replication";
+import { useMirrorHydrationStore } from "../../stores/useMirrorHydrationStore";
 
 const DETAIL_PANEL_WIDTH_KEY = getScopedStorageKey("dispatcher.detailPanelWidth");
 const DEFAULT_DETAIL_PANEL_WIDTH = 260;
@@ -85,6 +88,14 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
   // Split actions still target whichever pane is currently focused.
   const splitTarget = activeTerminalId ?? layoutId;
   const isDisconnectedTmuxPlaceholder = isDisconnectedTmuxPlaceholderTerminal(layoutId);
+  // A replica renders nothing until the desktop sends it this terminal's
+  // content, which over a phone connection is long enough that an empty pane
+  // reads as a broken tab. Say it is still coming instead.
+  const hydratedTerminalIds = useMirrorHydrationStore((s) => s.hydratedTerminalIds);
+  const isAwaitingMirror =
+    isReplicaClient()
+    && !isDisconnectedTmuxPlaceholder
+    && !findTerminalIds(layout).some((id) => hydratedTerminalIds.has(id));
   const isTmuxLayout = isTmuxWindowTerminal(layoutId);
 
   const handleTmuxPaneDragEnd = useCallback(
@@ -150,7 +161,12 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
         </button>
       )}
       <div className="terminal-canvas" ref={terminalCanvasRef}>
-        {isDisconnectedTmuxPlaceholder ? (
+        {isAwaitingMirror ? (
+          <div className="terminal-loading-view">
+            <div className="terminal-loading-spinner" aria-hidden="true" />
+            <p className="terminal-loading-copy" role="status">Loading terminal…</p>
+          </div>
+        ) : isDisconnectedTmuxPlaceholder ? (
           <div className="tmux-placeholder-view">
             <div className="tmux-placeholder-card">
               <div className="tmux-placeholder-label">tmux -CC</div>

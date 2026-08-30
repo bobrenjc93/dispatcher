@@ -22,6 +22,7 @@ import {
   applyMirroredTerminalSize,
   resetMirroredTerminal,
 } from "./useTerminalBridge";
+import { useMirrorHydrationStore } from "../stores/useMirrorHydrationStore";
 
 /**
  * Declares an action the desktop window knows how to perform, and hands back a
@@ -77,10 +78,15 @@ export function useReplicationChannels() {
     }
 
     if (isReplicaClient()) {
+      const { markTerminalHydrated } = useMirrorHydrationStore.getState();
       void startMirrorConsumer((frame) => {
         switch (frame.kind) {
           case "output":
             applyMirroredTerminalOutput(frame.terminalId, frame.data);
+            // First content for this terminal is what turns the loading state
+            // off. Keyed on output rather than on reset or size, because those
+            // arrive before there is anything to show.
+            markTerminalHydrated(frame.terminalId);
             return;
           case "size":
             applyMirroredTerminalSize(frame.terminalId, frame.cols, frame.rows);
