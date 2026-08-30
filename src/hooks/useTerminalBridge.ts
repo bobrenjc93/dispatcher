@@ -2536,6 +2536,14 @@ export function fitTerminalFontToViewport(terminalId: string) {
     return;
   }
 
+  // Clear the bottom anchor before working out a new one. Everything below
+  // here can bail — a tab mid-switch measures as nothing, and a parked
+  // terminal comes back carrying whatever offset it had last — and an offset
+  // left over from another geometry does not merely look wrong, it pulls the
+  // grid off the top of the screen entirely. Unanchored is always recoverable;
+  // anchored by the wrong amount is not.
+  instance.element.style.marginTop = "";
+
   const preferredSize = useFontStore.getState().fontSize;
   if (!isCompactViewport()) {
     if (instance.xterm.options.fontSize !== preferredSize) {
@@ -2594,9 +2602,11 @@ export function fitTerminalFontToViewport(terminalId: string) {
   const heightPerFontUnit = cell.height / currentSize;
   const gridHeight = Math.ceil(rows * heightPerFontUnit * nextSize);
   const anchorPx = useUiStore.getState().compactTouchGesture === "history"
-    ? resolveGridBottomAnchorPx(gridHeight, mount.clientHeight)
+    ? resolveGridBottomAnchorPx(gridHeight, mount.clientHeight, heightPerFontUnit * nextSize)
     : 0;
-  instance.element.style.marginTop = anchorPx > 0 ? `${-anchorPx}px` : "";
+  if (anchorPx > 0) {
+    instance.element.style.marginTop = `${-anchorPx}px`;
+  }
 }
 
 /**
@@ -2605,9 +2615,19 @@ export function fitTerminalFontToViewport(terminalId: string) {
  */
 export function resolveGridBottomAnchorPx(
   gridHeightPx: number,
-  viewportHeightPx: number
+  viewportHeightPx: number,
+  rowHeightPx: number
 ): number {
-  if (!(gridHeightPx > 0) || !(viewportHeightPx > 0)) {
+  if (!(gridHeightPx > 0) || !(rowHeightPx > 0)) {
+    return 0;
+  }
+  // A box with no room for even one row is a tab still being laid out, not a
+  // viewport. Anchoring against it computes an offset close to the whole grid
+  // and pulls it off the top of the screen — the reader gets a blank pane, or
+  // the last row stranded at the top, and no gesture brings it back. Leaving
+  // it unanchored for a frame is recoverable; the next pass places it once the
+  // real height is known.
+  if (viewportHeightPx < rowHeightPx) {
     return 0;
   }
   return Math.max(0, Math.ceil(gridHeightPx - viewportHeightPx));
