@@ -2600,9 +2600,23 @@ export function fitTerminalFontToViewport(terminalId: string) {
   // alignment, which only bottom-aligns a grid that does not shrink — and a
   // shrunk grid clips its own newest rows away with no way to reach them.
   const heightPerFontUnit = cell.height / currentSize;
-  const gridHeight = Math.ceil(rows * heightPerFontUnit * nextSize);
+  const rowHeight = heightPerFontUnit * nextSize;
+  // Measure the grid rather than predicting it, once the font has settled.
+  // Predicting assumes a row is exactly the measured cell height, and whatever
+  // the renderer rounds is multiplied by the row count — on a tall grid that
+  // is the difference between the last line sitting on the bottom edge and
+  // being clipped through. Right after a font change the element still has its
+  // old size, so the prediction is the better answer for that one pass.
+  const predictedGridHeight = Math.ceil(rows * rowHeight);
+  const measuredGridHeight = nextSize === currentSize
+    ? instance.element.getBoundingClientRect().height
+    : 0;
+  const gridHeight = measuredGridHeight > 0 ? measuredGridHeight : predictedGridHeight;
+  // The box's own padding is not room the grid can occupy, so anchoring
+  // against the padded height leaves the last row hanging past the bottom.
+  const contentHeight = getTerminalMountContentSize(mount).height;
   const anchorPx = useUiStore.getState().compactTouchGesture === "history"
-    ? resolveGridBottomAnchorPx(gridHeight, mount.clientHeight, heightPerFontUnit * nextSize)
+    ? resolveGridBottomAnchorPx(gridHeight, contentHeight, rowHeight)
     : 0;
   if (anchorPx > 0) {
     instance.element.style.marginTop = `${-anchorPx}px`;

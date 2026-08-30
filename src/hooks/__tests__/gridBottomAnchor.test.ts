@@ -26,6 +26,17 @@ describe("anchoring the grid to the bottom of its box", () => {
     expect(resolveGridBottomAnchorPx(1139, 17, 17)).toBe(1122);
   });
 
+  it("anchors against the room the grid actually has, not the padded box", () => {
+    // The container carries 4px of top padding. Anchoring against the padded
+    // height leaves the last row hanging 4px past the bottom edge, clipped
+    // through with no way to scroll to it.
+    const paddedBox = 412;
+    const contentBox = paddedBox - 4;
+
+    expect(resolveGridBottomAnchorPx(1139, contentBox, 17)).toBe(731);
+    expect(resolveGridBottomAnchorPx(1139, paddedBox, 17)).toBe(727);
+  });
+
   it("stays put when either side has not been measured", () => {
     expect(resolveGridBottomAnchorPx(1139, 0, 17)).toBe(0);
     expect(resolveGridBottomAnchorPx(0, 412, 17)).toBe(0);
