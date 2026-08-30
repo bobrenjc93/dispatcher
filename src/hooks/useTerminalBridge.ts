@@ -1433,6 +1433,47 @@ export function consumeTouchScrollLines(
  * Only the vertical axis is taken, and only once the swipe has committed to it,
  * so panning sideways across a wide grid still belongs to the box that scrolls.
  */
+/** Nominal frame, so friction means the same thing whatever the refresh rate. */
+const MOMENTUM_FRAME_MS = 1000 / 60;
+/** Speed lost per frame. Lower stops sooner. */
+const MOMENTUM_FRICTION = 0.95;
+/** Below this a flick has effectively stopped; anything less looks like drift. */
+const MOMENTUM_MIN_VELOCITY_PX_PER_MS = 0.02;
+/** A slow drag that happens to end while moving should not fling. */
+const MOMENTUM_MIN_RELEASE_VELOCITY_PX_PER_MS = 0.15;
+/** How much of the newest sample a velocity estimate takes on. */
+const MOMENTUM_VELOCITY_SMOOTHING = 0.3;
+
+/**
+ * Carry a flick forward after the finger lifts.
+ *
+ * The browser does this itself for anything it scrolls, but xterm's scrollback
+ * is not something the browser scrolls — it is buffer state moved by
+ * `scrollLines()`. Driving that from touch deltas alone stops dead on release,
+ * so the decay has to be modelled rather than inherited.
+ *
+ * Framed as decay-per-frame but applied against real elapsed time, so a dropped
+ * frame slows the flick by the same amount it would have if it had rendered.
+ */
+export function stepMomentum(args: {
+  velocityPxPerMs: number;
+  elapsedMs: number;
+  friction?: number;
+}): { velocityPxPerMs: number; distancePx: number } {
+  const elapsedMs = Math.max(0, args.elapsedMs);
+  const decay = Math.pow(args.friction ?? MOMENTUM_FRICTION, elapsedMs / MOMENTUM_FRAME_MS);
+  const velocityPxPerMs = args.velocityPxPerMs * decay;
+  return {
+    velocityPxPerMs,
+    distancePx: args.velocityPxPerMs * elapsedMs,
+  };
+}
+
+/** Whether a flick still has enough left in it to be worth another frame. */
+export function isMomentumSpent(velocityPxPerMs: number): boolean {
+  return Math.abs(velocityPxPerMs) < MOMENTUM_MIN_VELOCITY_PX_PER_MS;
+}
+
 function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
   if (!isTouchPointer()) {
     return;
@@ -1445,8 +1486,52 @@ function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
   let lastY = 0;
   let axis: "undecided" | "vertical" | "horizontal" = "undecided";
   let carryLines = 0;
+  let velocityPxPerMs = 0;
+  let lastMoveAt = 0;
+  let momentumFrame: number | null = null;
+
+  const stopMomentum = () => {
+    if (momentumFrame !== null) {
+      cancelAnimationFrame(momentumFrame);
+      momentumFrame = null;
+    }
+    velocityPxPerMs = 0;
+  };
+
+  const runMomentum = () => {
+    let previousAt = performance.now();
+    const advance = () => {
+      momentumFrame = null;
+      const cell = getTerminalCellSize(terminalId);
+      if (!cell || isMomentumSpent(velocityPxPerMs)) {
+        velocityPxPerMs = 0;
+        return;
+      }
+
+      const now = performance.now();
+      const step = stepMomentum({ velocityPxPerMs, elapsedMs: now - previousAt });
+      previousAt = now;
+      velocityPxPerMs = step.velocityPxPerMs;
+
+      const consumed = consumeTouchScrollLines(carryLines, step.distancePx, cell.height);
+      carryLines = consumed.carryLines;
+      if (consumed.lines !== 0) {
+        const before = instance.xterm.buffer.active.viewportY;
+        instance.xterm.scrollLines(consumed.lines);
+        // Ran into the top or the bottom. Coasting against a hard edge just
+        // burns frames, and without a rubber-band there is nothing to show.
+        if (instance.xterm.buffer.active.viewportY === before) {
+          velocityPxPerMs = 0;
+          return;
+        }
+      }
+      momentumFrame = requestAnimationFrame(advance);
+    };
+    momentumFrame = requestAnimationFrame(advance);
+  };
 
   element.addEventListener("touchstart", (event) => {
+    stopMomentum();
     tracking = event.touches.length === 1;
     if (!tracking) {
       return;
@@ -1457,6 +1542,7 @@ function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
     lastY = touch.clientY;
     axis = "undecided";
     carryLines = 0;
+    lastMoveAt = performance.now();
   }, { passive: true });
 
   element.addEventListener("touchmove", (event) => {
@@ -1491,7 +1577,19 @@ function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
 
     // Dragging the finger up walks towards newer output, matching the way the
     // content follows the finger everywhere else on a touch screen.
-    const consumed = consumeTouchScrollLines(carryLines, lastY - touch.clientY, cell.height);
+    const deltaPx = lastY - touch.clientY;
+    const now = performance.now();
+    const sinceLastMove = now - lastMoveAt;
+    if (sinceLastMove > 0) {
+      // Smoothed, because a single frame's delta is noisy enough that a flick
+      // can be judged by whichever sample happened to land last.
+      const instant = deltaPx / sinceLastMove;
+      velocityPxPerMs = velocityPxPerMs * (1 - MOMENTUM_VELOCITY_SMOOTHING)
+        + instant * MOMENTUM_VELOCITY_SMOOTHING;
+    }
+    lastMoveAt = now;
+
+    const consumed = consumeTouchScrollLines(carryLines, deltaPx, cell.height);
     lastY = touch.clientY;
     carryLines = consumed.carryLines;
     if (consumed.lines !== 0) {
@@ -1502,11 +1600,26 @@ function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
     }
   }, { passive: false });
 
-  const stop = () => {
+  element.addEventListener("touchend", () => {
+    const wasVertical = tracking && axis === "vertical";
     tracking = false;
-  };
-  element.addEventListener("touchend", stop, { passive: true });
-  element.addEventListener("touchcancel", stop, { passive: true });
+    // A finger that had come to rest before lifting was placing the view
+    // deliberately, so leave it exactly where it was put.
+    if (
+      !wasVertical
+      || Math.abs(velocityPxPerMs) < MOMENTUM_MIN_RELEASE_VELOCITY_PX_PER_MS
+      || performance.now() - lastMoveAt > 100
+    ) {
+      stopMomentum();
+      return;
+    }
+    runMomentum();
+  }, { passive: true });
+
+  element.addEventListener("touchcancel", () => {
+    tracking = false;
+    stopMomentum();
+  }, { passive: true });
 }
 
 /**
