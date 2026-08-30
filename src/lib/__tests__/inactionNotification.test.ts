@@ -9,6 +9,7 @@ const base = {
   staleStartedAt: 15_000,
   effectiveChangedAt: 5_000,
   lastNotifiedChangedAt: 0,
+  documentHasFocus: false,
 };
 
 describe("shouldNotifyOnInaction", () => {
@@ -25,6 +26,13 @@ describe("shouldNotifyOnInaction", () => {
       ...base,
       lastNotifiedChangedAt: base.effectiveChangedAt,
     })).toBe(false);
+  });
+
+  it("stays silent while Dispatcher is the window in front of you", () => {
+    // The sound exists to reach someone who is somewhere else. Firing it at a
+    // user already watching tells them nothing they cannot see, and is how a
+    // notification sound ends up switched off for good.
+    expect(shouldNotifyOnInaction({ ...base, documentHasFocus: true })).toBe(false);
   });
 
   it("waits for the inactivity threshold and real activity", () => {

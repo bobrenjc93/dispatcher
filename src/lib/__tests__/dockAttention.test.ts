@@ -5,7 +5,6 @@ const base = {
   enabled: true,
   wasNeedsAttention: false,
   nextNeedsAttention: true,
-  isActiveTab: false,
   documentHasFocus: false,
 };
 
@@ -26,16 +25,15 @@ describe("shouldBounceDock", () => {
     expect(shouldBounceDock({ ...base, nextNeedsAttention: false })).toBe(false);
   });
 
-  it("does not bounce at a user already looking at the tab", () => {
-    expect(
-      shouldBounceDock({ ...base, isActiveTab: true, documentHasFocus: true })
-    ).toBe(false);
+  it("does not bounce while Dispatcher is the window in front of you", () => {
+    // Whichever tab is open. A bounce pulls someone back from another app, and
+    // there is nothing to pull them back from; the sidebar dot already says a
+    // background tab wants looking at.
+    expect(shouldBounceDock({ ...base, documentHasFocus: true })).toBe(false);
   });
 
-  it("still bounces for the active tab when Dispatcher is in the background", () => {
+  it("bounces when Dispatcher is in the background", () => {
     // The whole point is pulling the user back from another app.
-    expect(
-      shouldBounceDock({ ...base, isActiveTab: true, documentHasFocus: false })
-    ).toBe(true);
+    expect(shouldBounceDock({ ...base, documentHasFocus: false })).toBe(true);
   });
 });

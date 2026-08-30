@@ -550,6 +550,7 @@ export function useTerminalScreenshotMonitor() {
         staleStartedAt: args.staleStartedAt,
         effectiveChangedAt: args.effectiveChangedAt,
         lastNotifiedChangedAt: notifiedChangedAt,
+        documentHasFocus: document.hasFocus(),
       })) {
         return;
       }
@@ -576,7 +577,6 @@ export function useTerminalScreenshotMonitor() {
         enabled: args.enabled,
         wasNeedsAttention: args.wasNeedsAttention,
         nextNeedsAttention: args.nextNeedsAttention,
-        isActiveTab: args.isActiveTab,
         documentHasFocus: document.hasFocus(),
       })) {
         return;
