@@ -1075,6 +1075,7 @@ useUiStore.subscribe((state, previous) => {
   // toggle lands the reader somewhere in the middle of the grid.
   if (state.compactTouchGesture !== previous.compactTouchGesture) {
     for (const terminalId of instances.keys()) {
+      syncHistoryScrollProxy(terminalId, { follow: true });
       scrollTerminalToBottom(terminalId);
     }
   }
@@ -1400,6 +1401,58 @@ const TOUCH_SELECTING_CLASS = "terminal-touch-selecting";
 const TOUCH_AXIS_LOCK_SLOP_PX = 8;
 
 /**
+ * Where a scroll position lands in the buffer, and how far the grid has to
+ * shift to show it.
+ *
+ * The document being scrolled is every line the buffer holds — scrollback and
+ * the current screen as one surface. xterm can only draw `rows` of them at a
+ * time, positioned at `baseY` at the furthest, so past that point the grid
+ * stops moving and the element itself is shifted instead. On a phone the grid
+ * is routinely taller than the screen (67 rows in a 24-row viewport here), so
+ * both parts are needed: scrolling through history *and* over the rows of the
+ * current screen that do not fit.
+ */
+export function resolveProxyScrollPosition(args: {
+  scrollTopPx: number;
+  cellHeightPx: number;
+  bufferLines: number;
+  rows: number;
+  baseY: number;
+}): { line: number; offsetPx: number } {
+  if (!(args.cellHeightPx > 0)) {
+    return { line: 0, offsetPx: 0 };
+  }
+
+  const maxDocumentLine = Math.max(0, args.bufferLines - 1);
+  const documentLine = Math.min(
+    maxDocumentLine,
+    Math.max(0, Math.round(args.scrollTopPx / args.cellHeightPx))
+  );
+  const line = Math.min(documentLine, Math.max(0, args.baseY));
+  return {
+    line,
+    offsetPx: Math.max(0, documentLine - line) * args.cellHeightPx,
+  };
+}
+
+/**
+ * How tall the scrollable surface is beyond the grid element itself.
+ *
+ * The grid occupies `rows` of the document in normal flow, so the spacer only
+ * has to account for the lines above it.
+ */
+export function resolveProxySpacerHeight(
+  bufferLines: number,
+  rows: number,
+  cellHeightPx: number
+): number {
+  if (!(cellHeightPx > 0)) {
+    return 0;
+  }
+  return Math.max(0, (bufferLines - rows) * cellHeightPx);
+}
+
+/**
  * Turn a finger's travel into whole lines of scrollback.
  *
  * The remainder is carried between moves: a finger produces many small deltas,
@@ -1432,6 +1485,139 @@ export function consumeTouchScrollLines(
  * Only the vertical axis is taken, and only once the swipe has committed to it,
  * so panning sideways across a wide grid still belongs to the box that scrolls.
  */
+interface HistoryScrollProxy {
+  container: HTMLElement;
+  spacer: HTMLElement;
+  /** Set while we move the box ourselves, so the sync does not chase itself. */
+  applying: boolean;
+}
+
+const historyScrollProxies = new Map<string, HistoryScrollProxy>();
+
+/** Whether the browser should own the vertical gesture for this terminal. */
+export function isHistoryScrollProxyActive(): boolean {
+  return isCompactViewport() && useUiStore.getState().compactTouchGesture === "history";
+}
+
+/**
+ * Let the browser scroll the buffer natively.
+ *
+ * xterm's own scroller is synthetic — nothing inside it is ever taller than it
+ * is — so a phone has nothing to scroll and the history stays out of reach. A
+ * spacer next to the grid gives the box real height, the grid is pinned in
+ * place with `sticky`, and the buffer is moved to follow the box. Scrolling is
+ * then the browser's, so the momentum and rubber-banding come for free rather
+ * than being reimplemented.
+ */
+/** Move the buffer and the grid to wherever the box is now scrolled. */
+function applyHistoryScrollPosition(
+  terminalId: string,
+  proxy: HistoryScrollProxy,
+  instance: TerminalInstance
+) {
+  const cell = getTerminalCellSize(terminalId);
+  if (!cell) {
+    return;
+  }
+
+  const buffer = instance.xterm.buffer.active;
+  const position = resolveProxyScrollPosition({
+    scrollTopPx: proxy.container.scrollTop,
+    cellHeightPx: cell.height,
+    bufferLines: buffer.length,
+    rows: instance.xterm.rows,
+    baseY: buffer.baseY,
+  });
+  instance.xterm.scrollToLine(position.line);
+  instance.element.style.transform = position.offsetPx > 0
+    ? `translateY(${-position.offsetPx}px)`
+    : "";
+}
+
+function isHistoryScrollProxyAtBottom(proxy: HistoryScrollProxy): boolean {
+  return isScrolledToBottom(
+    proxy.container.scrollTop,
+    proxy.container.scrollHeight,
+    proxy.container.clientHeight
+  );
+}
+
+function syncHistoryScrollProxy(terminalId: string, options?: { follow?: boolean }) {
+  const proxy = historyScrollProxies.get(terminalId);
+  const instance = instances.get(terminalId);
+  if (!proxy || !instance) {
+    return;
+  }
+
+  if (!isHistoryScrollProxyActive()) {
+    proxy.spacer.style.height = "0px";
+    instance.element.style.transform = "";
+    return;
+  }
+
+  const cell = getTerminalCellSize(terminalId);
+  if (!cell) {
+    return;
+  }
+
+  const buffer = instance.xterm.buffer.active;
+  proxy.spacer.style.height =
+    `${resolveProxySpacerHeight(buffer.length, instance.xterm.rows, cell.height)}px`;
+
+  if (options?.follow) {
+    proxy.applying = true;
+    proxy.container.scrollTop = proxy.container.scrollHeight;
+    // The bottom of the document is past the last line the grid can move to,
+    // so the newest rows are only reachable through the element offset —
+    // clearing it here would jump back to the top of the grid.
+    applyHistoryScrollPosition(terminalId, proxy, instance);
+    // Released next frame: the scroll event this just caused has to see the
+    // flag, or it maps a position we set ourselves back onto the buffer.
+    requestAnimationFrame(() => {
+      proxy.applying = false;
+    });
+  }
+}
+
+function attachHistoryScrollProxy(
+  terminalId: string,
+  instance: TerminalInstance,
+  container: HTMLElement
+) {
+  const existing = historyScrollProxies.get(terminalId);
+  if (existing?.container === container) {
+    return;
+  }
+  existing?.spacer.remove();
+
+  const spacer = document.createElement("div");
+  spacer.className = "terminal-history-spacer";
+  spacer.setAttribute("aria-hidden", "true");
+  container.appendChild(spacer);
+
+  const proxy: HistoryScrollProxy = { container, spacer, applying: false };
+  historyScrollProxies.set(terminalId, proxy);
+
+  container.addEventListener("scroll", () => {
+    if (proxy.applying || !isHistoryScrollProxyActive()) {
+      return;
+    }
+    applyHistoryScrollPosition(terminalId, proxy, instance);
+  }, { passive: true });
+
+  // Output grows the document, so the surface has to grow with it — and keep
+  // the reader pinned to the newest line only if that is where they already
+  // were. Anywhere else is a deliberate position and must be left alone.
+  instance.xterm.onRender(() => {
+    if (!isHistoryScrollProxyActive() || proxy.applying) {
+      return;
+    }
+    syncHistoryScrollProxy(terminalId, { follow: isHistoryScrollProxyAtBottom(proxy) });
+  });
+
+  syncHistoryScrollProxy(terminalId, { follow: true });
+}
+
 function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
   if (!isTouchPointer()) {
     return;
@@ -1467,6 +1653,13 @@ function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
       return;
     }
     if (!isCompactViewport() || useUiStore.getState().compactTouchGesture !== "history") {
+      return;
+    }
+    // The native proxy owns the gesture whenever it actually has height to
+    // scroll. This stays as the fallback for when it does not, so a phone is
+    // never left with no way to reach the history at all.
+    const proxy = historyScrollProxies.get(terminalId);
+    if (proxy && proxy.container.scrollHeight > proxy.container.clientHeight) {
       return;
     }
 
@@ -2636,6 +2829,7 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
 
     // Attach the persistent element to the current mount point.
     attachTerminalInstance(inst, mountPoint);
+    attachHistoryScrollProxy(terminalId, inst, mountPoint);
 
     xtermRef.current = inst.xterm;
     fitAddonRef.current = inst.fitAddon;
