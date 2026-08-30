@@ -819,12 +819,18 @@ export default function App() {
 
   // A tab arriving from the parking lot keeps the font it had when it was last
   // shown, which on a phone renders enormous until something re-fits it.
+  //
+  // Scrolling history is something you go into for the tab you are reading,
+  // not a setting that follows you around: it hides the rows above the fold,
+  // which is rarely what you want the moment a different tab appears. Every
+  // tab therefore opens on Pan, showing the whole grid.
   useEffect(() => {
     if (!isCompact || !activeTerminalId) {
       return;
     }
+    setCompactTouchGesture("pan");
     presentTerminalForViewport(activeTerminalId);
-  }, [isCompact, activeTerminalId]);
+  }, [isCompact, activeTerminalId, setCompactTouchGesture]);
   const activeLayoutKey = (() => {
     if (!activeProject) return null;
     if (activeTerminalId) {

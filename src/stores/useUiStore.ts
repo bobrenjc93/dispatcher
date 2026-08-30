@@ -18,6 +18,11 @@ export type CompactTerminalFit = "readable" | "fit-width";
  * outward, never inward, so whenever the outer box can scroll it takes the
  * swipe and the history underneath is unreachable. Rather than pick one, this
  * says which the swipe belongs to.
+ *
+ * Pan is the resting state and every tab opens on it, because scrolling
+ * history hides the rows above the fold — worth it for the tab you are reading
+ * back through, rarely what you want the moment a different tab appears.
+ * Deliberately not persisted for the same reason.
  */
 export type CompactTouchGesture = "history" | "pan";
 
@@ -43,7 +48,7 @@ export const useUiStore = create<UiStore>()(
       isTerminalNotesOpen: false,
       isDetailPanelCollapsed: false,
       compactTerminalFit: "readable",
-      compactTouchGesture: "history",
+      compactTouchGesture: "pan",
       isCtrlArmed: false,
       setCompactTerminalFit: (fit) => set({ compactTerminalFit: fit }),
       setCompactTouchGesture: (gesture) => set({ compactTouchGesture: gesture }),
@@ -63,7 +68,6 @@ export const useUiStore = create<UiStore>()(
         isTerminalNotesOpen: state.isTerminalNotesOpen,
         isDetailPanelCollapsed: state.isDetailPanelCollapsed,
         compactTerminalFit: state.compactTerminalFit,
-        compactTouchGesture: state.compactTouchGesture,
       }),
     }
   )
