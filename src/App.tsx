@@ -57,7 +57,7 @@ import {
   splitTmuxTerminal,
 } from "./lib/tmuxControl";
 import { onTerminalExit } from "./lib/terminalEvents";
-import { collectVisibleTerminalRefs, findProjectIdForTerminal } from "./lib/treeUtils";
+import { collectVisibleTerminalRefs, findProjectIdForTerminal, resolveSiblingInsertIndex } from "./lib/treeUtils";
 import {
   APP_STATE_LAYOUTS_KEY,
   APP_STATE_PROJECTS_KEY,
@@ -101,6 +101,7 @@ export default function App() {
   const addNode = useProjectStore((s) => s.addNode);
   const removeNode = useProjectStore((s) => s.removeNode);
   const addChildToNode = useProjectStore((s) => s.addChildToNode);
+  const insertChildAt = useProjectStore((s) => s.insertChildAt);
   const removeChildFromNode = useProjectStore((s) => s.removeChildFromNode);
   const nodes = useProjectStore((s) => s.nodes);
   const sessions = useTerminalStore((s) => s.sessions);
@@ -465,13 +466,26 @@ export default function App() {
         terminalId,
         parentId: project.rootGroupId,
       });
-      addChildToNode(project.rootGroupId, nodeId);
+      // tmux tabs already open directly below the focused one via
+      // `new-window -a`; this is the same rule for local terminals, which
+      // until now were always appended to the end of the list.
+      const latestNodes = useProjectStore.getState().nodes;
+      const insertIndex = resolveSiblingInsertIndex(
+        latestNodes[project.rootGroupId]?.children ?? [],
+        latestNodes,
+        sourceTerminalId
+      );
+      if (insertIndex === null) {
+        addChildToNode(project.rootGroupId, nodeId);
+      } else {
+        insertChildAt(project.rootGroupId, nodeId, insertIndex);
+      }
 
       addSession(terminalId, terminalName, inheritedCwd);
       // Each tab terminal gets its own standalone layout
       initLayout(terminalId, terminalId);
     },
-    [projects, addNode, addChildToNode, addSession, initLayout, updateSessionCwd]
+    [projects, addNode, addChildToNode, insertChildAt, addSession, initLayout, updateSessionCwd]
   );
 
   const handleNewTerminalLocal = useCallback(() => {
