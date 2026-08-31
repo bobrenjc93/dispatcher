@@ -1,4 +1,3 @@
-import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { debugLogError } from "./debugLog";
 
 type AudioContextConstructor = new () => AudioContext;
@@ -142,15 +141,17 @@ export function shouldNotifyOnInaction(args: {
   );
 }
 
+/**
+ * The sound, and only the sound.
+ *
+ * This used to also call requestUserAttention, which bounces the dock on
+ * macOS — so a tab with the sound enabled bounced regardless of the bounce
+ * setting, through a path that logs nothing and that the bounce toggle does
+ * not reach. Bouncing belongs to the setting named after it; turning that off
+ * has to be enough to stop every bounce.
+ */
 export async function notifyTerminalInaction() {
-  await Promise.all([
-    playInactionNotificationSound().catch((error) => {
-      debugLogError("status.notification", "failed to play notification sound", error);
-    }),
-    getCurrentWindow()
-      .requestUserAttention(UserAttentionType.Informational)
-      .catch((error) => {
-        debugLogError("status.notification", "failed to request app attention", error);
-      }),
-  ]);
+  await playInactionNotificationSound().catch((error) => {
+    debugLogError("status.notification", "failed to play notification sound", error);
+  });
 }
