@@ -235,3 +235,31 @@ export function findDisconnectedTmuxWindowPlaceholder(
 
   return null;
 }
+
+/**
+ * Where a newly opened terminal belongs among its siblings.
+ *
+ * Directly after the tab it was opened from. A new terminal belongs next to
+ * the one whose work prompted it — appending sends it past every other tab,
+ * which on a long list means hunting for the thing you just created.
+ *
+ * Returns null when the source has no place in this list — opened from a
+ * different project, or with nothing focused at all — leaving the end as the
+ * only sensible answer.
+ */
+export function resolveSiblingInsertIndex(
+  siblingIds: readonly string[],
+  nodes: Record<string, TreeNode>,
+  sourceTerminalId: string | undefined
+): number | null {
+  if (!sourceTerminalId) {
+    return null;
+  }
+
+  const sourceIndex = siblingIds.findIndex((childId) => {
+    const child = nodes[childId];
+    return child?.type === "terminal" && child.terminalId === sourceTerminalId;
+  });
+
+  return sourceIndex >= 0 ? sourceIndex + 1 : null;
+}
