@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useUiStore } from "../../stores/useUiStore";
+import { readClipboardText } from "../../lib/clipboardRead";
 import {
   pasteTextIntoTerminalById,
   readTerminalVisibleText,
@@ -34,10 +36,84 @@ const KEYS: KeyDefinition[] = [
   { label: "\u2192", data: `${ESC}[C`, title: "Right" },
 ];
 
+/**
+ * A field to paste into, for when the page cannot read the clipboard itself.
+ *
+ * The terminal is a canvas, so a long-press over it offers nothing to paste
+ * into. A real text field does, and the browser will happily fill one from the
+ * clipboard on the user's own gesture even where it refuses to hand the same
+ * text to script. Two extra taps, but it works on plain HTTP.
+ */
+function PasteTarget(props: { onSubmit: (text: string) => void; onCancel: () => void }) {
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    // Best effort: iOS may decline to raise the keyboard for a focus it did not
+    // consider user-initiated, in which case tapping the field does it.
+    inputRef.current?.focus();
+  }, []);
+
+  return (
+    <div
+      className="paste-target-backdrop"
+      role="presentation"
+      onPointerDown={props.onCancel}
+    >
+      <div
+        className="paste-target"
+        role="dialog"
+        aria-label="Paste into terminal"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <p className="paste-target-hint">Long-press the box, choose Paste.</p>
+        <textarea
+          ref={inputRef}
+          className="paste-target-input"
+          rows={2}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          placeholder="Paste here"
+          onPaste={(event) => {
+            // Take the text off the event rather than reading the field back:
+            // this fires before the value lands, and it is the only path that
+            // sees the paste whole, newlines and all.
+            const text = event.clipboardData?.getData("text");
+            if (text) {
+              event.preventDefault();
+              props.onSubmit(text);
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              props.onCancel();
+            }
+          }}
+        />
+        <div className="paste-target-actions">
+          <button type="button" className="mobile-key" onClick={props.onCancel}>
+            cancel
+          </button>
+          <button
+            type="button"
+            className="mobile-key"
+            onClick={() => props.onSubmit(inputRef.current?.value ?? "")}
+          >
+            send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MobileKeyBar() {
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const isCtrlArmed = useUiStore((s) => s.isCtrlArmed);
   const setCtrlArmed = useUiStore((s) => s.setCtrlArmed);
+  const [isPasteTargetOpen, setPasteTargetOpen] = useState(false);
 
   if (!activeTerminalId) {
     return null;
@@ -64,65 +140,80 @@ export function MobileKeyBar() {
   };
 
   // A phone keyboard has no paste key, and the terminal is a canvas, so the
-  // usual long-press-to-paste never reaches it. Reading the clipboard here is
-  // the browser's own — the phone's clipboard, not the desktop's, which is
-  // what someone pasting on their phone means.
+  // usual long-press-to-paste never reaches it. The clipboard read is the
+  // browser's own — the phone's clipboard, not the desktop's, which is what
+  // someone pasting on their phone means. Over plain HTTP there is no clipboard
+  // API to ask, so fall back to a field the user can paste into by hand.
   const pasteClipboard = () => {
-    void navigator.clipboard?.readText()
-      .then((text) => {
-        if (text) {
-          return pasteTextIntoTerminalById(activeTerminalId, text);
-        }
-      })
-      .catch(() => {});
+    void readClipboardText(navigator.clipboard).then((text) => {
+      if (text) {
+        return pasteTextIntoTerminalById(activeTerminalId, text);
+      }
+      setPasteTargetOpen(true);
+    });
+  };
+
+  const submitPastedText = (text: string) => {
+    setPasteTargetOpen(false);
+    if (text) {
+      void pasteTextIntoTerminalById(activeTerminalId, text);
+    }
   };
 
   return (
-    <div className="mobile-key-bar" role="toolbar" aria-label="Terminal keys">
-      <button
-        type="button"
-        className={`mobile-key${isCtrlArmed ? " is-armed" : ""}`}
-        aria-pressed={isCtrlArmed}
-        title="Ctrl — then press a key"
-        onPointerDown={keepFocus}
-        onMouseDown={keepFocus}
-        onClick={() => setCtrlArmed(!isCtrlArmed)}
-      >
-        ctrl
-      </button>
-      <button
-        type="button"
-        className="mobile-key"
-        title="Copy the selection, or the visible screen"
-        onPointerDown={keepFocus}
-        onMouseDown={keepFocus}
-        onClick={copyVisible}
-      >
-        copy
-      </button>
-      <button
-        type="button"
-        className="mobile-key"
-        title="Paste from the clipboard"
-        onPointerDown={keepFocus}
-        onMouseDown={keepFocus}
-        onClick={pasteClipboard}
-      >
-        paste
-      </button>
-      {KEYS.map((key) => (
+    <>
+      {isPasteTargetOpen && (
+        <PasteTarget
+          onSubmit={submitPastedText}
+          onCancel={() => setPasteTargetOpen(false)}
+        />
+      )}
+      <div className="mobile-key-bar" role="toolbar" aria-label="Terminal keys">
         <button
-          key={key.label}
           type="button"
-          className="mobile-key"
-          title={key.title}
+          className={`mobile-key${isCtrlArmed ? " is-armed" : ""}`}
+          aria-pressed={isCtrlArmed}
+          title="Ctrl — then press a key"
           onPointerDown={keepFocus}
           onMouseDown={keepFocus}
-          onClick={() => send(key.data)}
+          onClick={() => setCtrlArmed(!isCtrlArmed)}
         >
-          {key.label}
+          ctrl
         </button>
-      ))}
-    </div>
+        <button
+          type="button"
+          className="mobile-key"
+          title="Copy the selection, or the visible screen"
+          onPointerDown={keepFocus}
+          onMouseDown={keepFocus}
+          onClick={copyVisible}
+        >
+          copy
+        </button>
+        <button
+          type="button"
+          className="mobile-key"
+          title="Paste from the clipboard"
+          onPointerDown={keepFocus}
+          onMouseDown={keepFocus}
+          onClick={pasteClipboard}
+        >
+          paste
+        </button>
+        {KEYS.map((key) => (
+          <button
+            key={key.label}
+            type="button"
+            className="mobile-key"
+            title={key.title}
+            onPointerDown={keepFocus}
+            onMouseDown={keepFocus}
+            onClick={() => send(key.data)}
+          >
+            {key.label}
+          </button>
+        ))}
+      </div>
+    </>
   );
 }
