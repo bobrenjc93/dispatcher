@@ -424,6 +424,30 @@ async function pasteClipboardIntoTerminal(terminalId: string, xterm: Terminal) {
   await pasteTextIntoTerminal(terminalId, xterm, text);
 }
 
+/**
+ * Paste text into a terminal from anywhere in the UI.
+ *
+ * A replica has no PTY and no tmux layer, so the desktop's paste route is not
+ * available to it. xterm's own paste is, and it goes out through onData — the
+ * same path ordinary typing takes to be relayed — which also keeps bracketed
+ * paste, so a multi-line paste arrives as one paste rather than being run a
+ * line at a time.
+ */
+export async function pasteTextIntoTerminalById(terminalId: string, text: string) {
+  const instance = instances.get(terminalId);
+  if (!instance || !text) {
+    return;
+  }
+
+  if (isReplicaClient()) {
+    instance.xterm.focus();
+    instance.xterm.paste(text);
+    return;
+  }
+
+  await pasteTextIntoTerminal(terminalId, instance.xterm, text);
+}
+
 async function copyTerminalSelectionToClipboard(terminalId: string, xterm: Terminal) {
   const text = xterm.getSelection();
   if (!text) {

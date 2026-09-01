@@ -1,6 +1,7 @@
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useUiStore } from "../../stores/useUiStore";
 import {
+  pasteTextIntoTerminalById,
   readTerminalVisibleText,
   sendSyntheticTerminalInput,
 } from "../../hooks/useTerminalBridge";
@@ -62,6 +63,20 @@ export function MobileKeyBar() {
     }
   };
 
+  // A phone keyboard has no paste key, and the terminal is a canvas, so the
+  // usual long-press-to-paste never reaches it. Reading the clipboard here is
+  // the browser's own — the phone's clipboard, not the desktop's, which is
+  // what someone pasting on their phone means.
+  const pasteClipboard = () => {
+    void navigator.clipboard?.readText()
+      .then((text) => {
+        if (text) {
+          return pasteTextIntoTerminalById(activeTerminalId, text);
+        }
+      })
+      .catch(() => {});
+  };
+
   return (
     <div className="mobile-key-bar" role="toolbar" aria-label="Terminal keys">
       <button
@@ -84,6 +99,16 @@ export function MobileKeyBar() {
         onClick={copyVisible}
       >
         copy
+      </button>
+      <button
+        type="button"
+        className="mobile-key"
+        title="Paste from the clipboard"
+        onPointerDown={keepFocus}
+        onMouseDown={keepFocus}
+        onClick={pasteClipboard}
+      >
+        paste
       </button>
       {KEYS.map((key) => (
         <button
