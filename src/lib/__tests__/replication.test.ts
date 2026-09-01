@@ -13,9 +13,9 @@ const {
   mirrorTerminalOutput,
   performAction,
   registerActionHandler,
+  requestMirrorSnapshot,
   setReplicaCount,
   trimSnapshotBuffer,
-  orderSnapshotTerminalIds,
 } = await import("../replication");
 const { handleTmuxTerminalFocus, renameTmuxTerminal } = await import("../tmuxControl");
 
@@ -178,21 +178,32 @@ describe("desktop-as-master replication", () => {
     const buffer = "x".repeat(100);
     expect(trimSnapshotBuffer(buffer, 10)).toHaveLength(10);
   });
+  it("asks for one terminal's history at a time, not the whole workspace", () => {
+    // Every snapshot a replica receives gets an xterm built for it and the
+    // whole buffer parsed in, mounted or not — so replaying a twenty-terminal
+    // workspace on join is what left a freshly loaded phone unresponsive.
+    isWebClient.mockReturnValue(true);
+    requestMirrorSnapshot("term-a");
 
-  it("sends the tab the replica is about to show before the rest", () => {
-    // A workspace of twenty terminals is tens of megabytes of scrollback. In
-    // map order the one terminal actually on screen can be last, so the reader
-    // watches a spinner while tabs they cannot see arrive ahead of it.
-    expect(orderSnapshotTerminalIds(["a", "b", "c"], "c")).toEqual(["c", "a", "b"]);
+    const calls = relayCalls();
+    const [, payload] = calls[calls.length - 1] as [
+      string,
+      { action: { name: string; args: unknown[] } },
+    ];
+    expect(payload.action.name).toBe("requestSnapshot");
+    expect(payload.action.args[1]).toBe("term-a");
   });
 
-  it("leaves the order alone when the active tab is not among them", () => {
-    expect(orderSnapshotTerminalIds(["a", "b"], "gone")).toEqual(["a", "b"]);
-    expect(orderSnapshotTerminalIds(["a", "b"], null)).toEqual(["a", "b"]);
-  });
+  it("asks only once per terminal", () => {
+    isWebClient.mockReturnValue(true);
+    requestMirrorSnapshot("term-b");
+    const afterFirst = relayCalls().length;
 
-  it("keeps every terminal, just reordered", () => {
-    const ids = ["a", "b", "c", "d"];
-    expect(orderSnapshotTerminalIds(ids, "b").sort()).toEqual(ids);
+    // Mount effects re-run; a second ask would replay the entire buffer again.
+    requestMirrorSnapshot("term-b");
+    expect(relayCalls()).toHaveLength(afterFirst);
+
+    requestMirrorSnapshot("term-c");
+    expect(relayCalls()).toHaveLength(afterFirst + 1);
   });
 });

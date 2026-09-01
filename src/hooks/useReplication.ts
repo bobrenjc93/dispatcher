@@ -10,7 +10,6 @@ import {
   markReplicaEventSeen,
   performAction,
   registerActionHandler,
-  requestMirrorSnapshot,
   setReplicaCount,
   startActionListener,
   startMirrorConsumer,
@@ -83,9 +82,8 @@ export function useReplicationChannels() {
         switch (frame.kind) {
           case "output":
             applyMirroredTerminalOutput(frame.terminalId, frame.data);
-            // First content for this terminal is what turns the loading state
-            // off. Keyed on output rather than on reset or size, because those
-            // arrive before there is anything to show.
+            // Content arriving on its own, without a snapshot behind it, still
+            // means there is something to look at.
             markTerminalHydrated(frame.terminalId);
             return;
           case "size":
@@ -93,14 +91,18 @@ export function useReplicationChannels() {
             return;
           case "reset":
             resetMirroredTerminal(frame.terminalId);
+            // Only a snapshot reply resets, and it carries whatever history
+            // there is in the same batch — so this is the point the terminal
+            // stops waiting, including for a fresh terminal whose history is
+            // empty and which would otherwise spin forever.
+            markTerminalHydrated(frame.terminalId);
             return;
         }
       }).then((unlisten) => {
         track(unlisten);
-        // Only ask for the backlog once the consumer is listening, or the
-        // reply would arrive before anything could apply it.
-        requestMirrorSnapshot();
-        debugLog("replication", "replica requested initial snapshot", {
+        // Backlog is not asked for here. Each terminal requests its own as it
+        // mounts, so a replica only pays for what it is showing.
+        debugLog("replication", "replica mirror consumer ready", {
           clientId: getClientId(),
         });
       });
