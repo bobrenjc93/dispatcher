@@ -43,6 +43,7 @@ import {
   mirrorTerminalSize,
   performAction,
   registerActionHandler,
+  setActiveTerminalProvider,
   setTerminalGridProvider,
 } from "../lib/replication";
 import { isCompactViewport } from "./useCompactViewport";
@@ -1114,6 +1115,8 @@ globalThis.__dispatcherTerminalInputRouter = handleTerminalInputData;
 
 // Terminal grids live in the xterm instances here, so replication asks this
 // module rather than the other way round.
+setActiveTerminalProvider(() => useTerminalStore.getState().activeTerminalId ?? null);
+
 setTerminalGridProvider((terminalId) => {
   const xterm = instances.get(terminalId)?.xterm;
   if (!xterm || xterm.cols <= 0 || xterm.rows <= 0) {
