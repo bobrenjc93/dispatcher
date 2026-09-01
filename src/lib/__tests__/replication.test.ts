@@ -15,6 +15,7 @@ const {
   registerActionHandler,
   setReplicaCount,
   trimSnapshotBuffer,
+  orderSnapshotTerminalIds,
 } = await import("../replication");
 const { handleTmuxTerminalFocus, renameTmuxTerminal } = await import("../tmuxControl");
 
@@ -176,5 +177,22 @@ describe("desktop-as-master replication", () => {
     // nothing for a pane that never emits a newline.
     const buffer = "x".repeat(100);
     expect(trimSnapshotBuffer(buffer, 10)).toHaveLength(10);
+  });
+
+  it("sends the tab the replica is about to show before the rest", () => {
+    // A workspace of twenty terminals is tens of megabytes of scrollback. In
+    // map order the one terminal actually on screen can be last, so the reader
+    // watches a spinner while tabs they cannot see arrive ahead of it.
+    expect(orderSnapshotTerminalIds(["a", "b", "c"], "c")).toEqual(["c", "a", "b"]);
+  });
+
+  it("leaves the order alone when the active tab is not among them", () => {
+    expect(orderSnapshotTerminalIds(["a", "b"], "gone")).toEqual(["a", "b"]);
+    expect(orderSnapshotTerminalIds(["a", "b"], null)).toEqual(["a", "b"]);
+  });
+
+  it("keeps every terminal, just reordered", () => {
+    const ids = ["a", "b", "c", "d"];
+    expect(orderSnapshotTerminalIds(ids, "b").sort()).toEqual(ids);
   });
 });

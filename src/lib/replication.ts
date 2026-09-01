@@ -81,6 +81,19 @@ type TerminalGrid = { cols: number; rows: number };
 let terminalGridProvider: ((terminalId: string) => TerminalGrid | null) | null = null;
 
 /**
+ * Which terminal a joining replica will be looking at.
+ *
+ * Injected rather than read from the store directly, so this module keeps its
+ * one-way dependency on the terminal layer — same reason the grid provider is
+ * wired in from outside.
+ */
+let activeTerminalProvider: (() => string | null) | null = null;
+
+export function setActiveTerminalProvider(provider: () => string | null) {
+  activeTerminalProvider = provider;
+}
+
+/**
  * Lets the master look up a terminal's grid on demand. Sizes are otherwise only
  * published when a pane is mounted, so a tab sitting in the background would
  * reach replicas with no size at all and render at xterm's 24-row default.
@@ -256,9 +269,35 @@ export function forgetMirroredTerminal(terminalId: string) {
  * message stays the size of one terminal and the replica can paint the
  * terminals it has already mounted while the rest arrive.
  */
+/**
+ * The tab the replica is about to show, then everything else in its existing
+ * order. Sorting the rest would be churn for no gain — only the first one
+ * matters, because it is the only one the reader is waiting on.
+ */
+export function orderSnapshotTerminalIds(
+  terminalIds: readonly string[],
+  activeTerminalId: string | null
+): string[] {
+  if (!activeTerminalId || !terminalIds.includes(activeTerminalId)) {
+    return [...terminalIds];
+  }
+  return [activeTerminalId, ...terminalIds.filter((id) => id !== activeTerminalId)];
+}
+
 function sendSnapshotTo(targetClientId: string) {
   let bytes = 0;
-  for (const [terminalId, data] of snapshotBuffers) {
+  // The tab the replica is about to show goes first. A workspace of twenty
+  // terminals is tens of megabytes of scrollback, and sending it in map order
+  // means the one terminal actually on screen can be last — so the reader
+  // watches a loading spinner while nineteen tabs they cannot see arrive
+  // ahead of it. The total is unchanged; what changes is what arrives first.
+  const orderedTerminalIds = orderSnapshotTerminalIds(
+    [...snapshotBuffers.keys()],
+    activeTerminalProvider?.() ?? null
+  );
+
+  for (const terminalId of orderedTerminalIds) {
+    const data = snapshotBuffers.get(terminalId) ?? "";
     const frames: MirrorFrame[] = [{ kind: "reset", terminalId }];
     const size = resolveGrid(terminalId);
     if (size) {
