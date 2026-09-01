@@ -1836,4 +1836,53 @@ body.sidebar-dragging * {
     color: var(--text-primary);
     border-color: var(--accent);
   }
+
+  /* Somewhere to paste by hand where script may not read the clipboard.
+     Anchored to the bottom so the soft keyboard, if it opens, pushes against
+     the sheet rather than covering the field. */
+  .paste-target-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: flex-end;
+    background: rgb(0 0 0 / 45%);
+  }
+
+  .paste-target {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    padding: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+  }
+
+  .paste-target-hint {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .paste-target-input {
+    width: 100%;
+    padding: 8px;
+    box-sizing: border-box;
+    resize: none;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* Under 16px iOS zooms the page on focus and does not zoom back out. */
+    font-size: 16px;
+  }
+
+  .paste-target-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
 }
