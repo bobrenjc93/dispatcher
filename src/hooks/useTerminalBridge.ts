@@ -43,7 +43,6 @@ import {
   mirrorTerminalSize,
   performAction,
   registerActionHandler,
-  requestMirrorSnapshot,
   setTerminalGridProvider,
 } from "../lib/replication";
 import { isCompactViewport } from "./useCompactViewport";
@@ -2840,16 +2839,6 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pendingFitRef = useRef<number>(0);
-
-  // A replica holds no history of its own, so a pane coming on screen has to
-  // ask the desktop for one. Only mounted panes run this hook and only the
-  // active tab is mounted, which makes "showing it" the trigger — the twenty
-  // tabs nobody has opened cost nothing until they are opened.
-  useEffect(() => {
-    if (isReplicaClient()) {
-      requestMirrorSnapshot(terminalId);
-    }
-  }, [terminalId]);
 
   useEffect(() => {
     const mountPoint = containerRef.current;
