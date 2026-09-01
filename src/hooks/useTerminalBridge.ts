@@ -43,7 +43,7 @@ import {
   mirrorTerminalSize,
   performAction,
   registerActionHandler,
-  setActiveTerminalProvider,
+  requestMirrorSnapshot,
   setTerminalGridProvider,
 } from "../lib/replication";
 import { isCompactViewport } from "./useCompactViewport";
@@ -1115,8 +1115,6 @@ globalThis.__dispatcherTerminalInputRouter = handleTerminalInputData;
 
 // Terminal grids live in the xterm instances here, so replication asks this
 // module rather than the other way round.
-setActiveTerminalProvider(() => useTerminalStore.getState().activeTerminalId ?? null);
-
 setTerminalGridProvider((terminalId) => {
   const xterm = instances.get(terminalId)?.xterm;
   if (!xterm || xterm.cols <= 0 || xterm.rows <= 0) {
@@ -2842,6 +2840,16 @@ export function useTerminalBridge({ terminalId, cwd }: UseTerminalBridgeOptions)
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pendingFitRef = useRef<number>(0);
+
+  // A replica holds no history of its own, so a pane coming on screen has to
+  // ask the desktop for one. Only mounted panes run this hook and only the
+  // active tab is mounted, which makes "showing it" the trigger — the twenty
+  // tabs nobody has opened cost nothing until they are opened.
+  useEffect(() => {
+    if (isReplicaClient()) {
+      requestMirrorSnapshot(terminalId);
+    }
+  }, [terminalId]);
 
   useEffect(() => {
     const mountPoint = containerRef.current;

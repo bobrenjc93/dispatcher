@@ -81,19 +81,6 @@ type TerminalGrid = { cols: number; rows: number };
 let terminalGridProvider: ((terminalId: string) => TerminalGrid | null) | null = null;
 
 /**
- * Which terminal a joining replica will be looking at.
- *
- * Injected rather than read from the store directly, so this module keeps its
- * one-way dependency on the terminal layer — same reason the grid provider is
- * wired in from outside.
- */
-let activeTerminalProvider: (() => string | null) | null = null;
-
-export function setActiveTerminalProvider(provider: () => string | null) {
-  activeTerminalProvider = provider;
-}
-
-/**
  * Lets the master look up a terminal's grid on demand. Sizes are otherwise only
  * published when a pane is mounted, so a tab sitting in the background would
  * reach replicas with no size at all and render at xterm's 24-row default.
@@ -260,60 +247,32 @@ export function forgetMirroredTerminal(terminalId: string) {
 }
 
 /**
- * Replay every terminal's current screen to one replica that just joined.
+ * Replay one terminal's current screen to a replica that asked for it.
  *
- * One message per terminal, not one for all of them. A workspace can hold
- * dozens of terminals, so a single message carries every snapshot at once and
- * grows with both the number of terminals and how much history each keeps —
- * which is what forced the history budget to stay small. Split up, each
- * message stays the size of one terminal and the replica can paint the
- * terminals it has already mounted while the rest arrive.
+ * Deliberately one terminal at a time rather than the whole workspace. Every
+ * snapshot a replica receives gets an xterm instance built for it and the whole
+ * buffer parsed into it, mounted or not — so replaying twenty terminals at once
+ * meant tens of megabytes over the wire and twenty parsers running flat out on
+ * the phone's main thread, which is why a freshly loaded page painted and then
+ * ignored typing for another ten seconds. Replicas ask per terminal as each one
+ * comes on screen, so the cost tracks what is actually being looked at.
  */
-/**
- * The tab the replica is about to show, then everything else in its existing
- * order. Sorting the rest would be churn for no gain — only the first one
- * matters, because it is the only one the reader is waiting on.
- */
-export function orderSnapshotTerminalIds(
-  terminalIds: readonly string[],
-  activeTerminalId: string | null
-): string[] {
-  if (!activeTerminalId || !terminalIds.includes(activeTerminalId)) {
-    return [...terminalIds];
+function sendSnapshotTo(targetClientId: string, terminalId: string) {
+  const data = snapshotBuffers.get(terminalId) ?? "";
+  const frames: MirrorFrame[] = [{ kind: "reset", terminalId }];
+  const size = resolveGrid(terminalId);
+  if (size) {
+    frames.push({ kind: "size", terminalId, cols: size.cols, rows: size.rows });
   }
-  return [activeTerminalId, ...terminalIds.filter((id) => id !== activeTerminalId)];
-}
-
-function sendSnapshotTo(targetClientId: string) {
-  let bytes = 0;
-  // The tab the replica is about to show goes first. A workspace of twenty
-  // terminals is tens of megabytes of scrollback, and sending it in map order
-  // means the one terminal actually on screen can be last — so the reader
-  // watches a loading spinner while nineteen tabs they cannot see arrive
-  // ahead of it. The total is unchanged; what changes is what arrives first.
-  const orderedTerminalIds = orderSnapshotTerminalIds(
-    [...snapshotBuffers.keys()],
-    activeTerminalProvider?.() ?? null
-  );
-
-  for (const terminalId of orderedTerminalIds) {
-    const data = snapshotBuffers.get(terminalId) ?? "";
-    const frames: MirrorFrame[] = [{ kind: "reset", terminalId }];
-    const size = resolveGrid(terminalId);
-    if (size) {
-      frames.push({ kind: "size", terminalId, cols: size.cols, rows: size.rows });
-    }
-    if (data) {
-      frames.push({ kind: "output", terminalId, data });
-      bytes += data.length;
-    }
-    void publishMirror({ frames, targetClientId });
+  if (data) {
+    frames.push({ kind: "output", terminalId, data });
   }
+  void publishMirror({ frames, targetClientId });
 
   debugLog("replication", "sending snapshot to replica", {
     targetClientId,
-    terminals: snapshotBuffers.size,
-    bytes,
+    terminalId,
+    bytes: data.length,
   });
 }
 
@@ -454,9 +413,9 @@ export async function startActionListener(): Promise<UnlistenFn> {
 
     if (action.name === REQUEST_SNAPSHOT) {
       noteReplicaPresent();
-      const [targetClientId] = (action.args ?? []) as [string];
-      if (targetClientId) {
-        sendSnapshotTo(targetClientId);
+      const [targetClientId, terminalId] = (action.args ?? []) as [string, string];
+      if (targetClientId && terminalId) {
+        sendSnapshotTo(targetClientId, terminalId);
       }
       return;
     }
@@ -478,13 +437,33 @@ export async function startActionListener(): Promise<UnlistenFn> {
 // a UI handler, so it is kept out of the typed action surface.
 const REQUEST_SNAPSHOT = "requestSnapshot" as ActionName;
 
-/** Replica side: ask the master to replay every terminal's current screen. */
-export function requestMirrorSnapshot() {
+/**
+ * Terminals this replica has already asked to have replayed.
+ *
+ * The ask is made from a mount effect, which React can run more than once for
+ * the same terminal — a StrictMode double-invoke, a pane moving in the tree —
+ * and each duplicate would replay the entire buffer again. Keyed on terminal
+ * rather than debounced because the answer never goes stale in a way a second
+ * request would fix: live output keeps arriving on its own.
+ */
+const requestedSnapshotTerminalIds = new Set<string>();
+
+/** Replica side: ask the master to replay one terminal's screen and history. */
+export function requestMirrorSnapshot(terminalId: string) {
+  if (requestedSnapshotTerminalIds.has(terminalId)) {
+    return;
+  }
+  requestedSnapshotTerminalIds.add(terminalId);
+
   void invoke("relay_action", {
-    action: { name: REQUEST_SNAPSHOT, args: [getClientId()] },
+    action: { name: REQUEST_SNAPSHOT, args: [getClientId(), terminalId] },
     clientId: getClientId(),
   }).catch((error) => {
+    // Let the next mount try again; a terminal with no snapshot shows a
+    // spinner forever otherwise.
+    requestedSnapshotTerminalIds.delete(terminalId);
     debugLog("replication", "failed to request snapshot", {
+      terminalId,
       error: error instanceof Error ? error.message : String(error),
     });
   });
