@@ -15,7 +15,7 @@ import {
 import { getTerminalCellSize } from "../../hooks/useTerminalBridge";
 import { getScopedStorageKey } from "../../lib/storageNamespace";
 import { findTerminalIds } from "../../lib/layoutUtils";
-import { isReplicaClient } from "../../lib/replication";
+import { isReplicaClient, requestMirrorSnapshot } from "../../lib/replication";
 import { useMirrorHydrationStore } from "../../stores/useMirrorHydrationStore";
 
 const DETAIL_PANEL_WIDTH_KEY = getScopedStorageKey("dispatcher.detailPanelWidth");
@@ -74,6 +74,23 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   }, [detailWidth]);
+
+  // Ask the desktop for this tab's history as soon as the tab is on screen.
+  //
+  // Deliberately here rather than in the panes: while a replica is waiting it
+  // renders a spinner *instead of* them, so a pane that has not mounted cannot
+  // be what asks for the content that would let it mount. Tabs still producing
+  // output escaped that loop, because live output marks them hydrated on its
+  // own — a finished, quiet tab sat on the spinner forever.
+  const snapshotRequestKey = layout ? findTerminalIds(layout).join(",") : "";
+  useEffect(() => {
+    if (!isReplicaClient() || !snapshotRequestKey) {
+      return;
+    }
+    for (const terminalId of snapshotRequestKey.split(",")) {
+      requestMirrorSnapshot(terminalId);
+    }
+  }, [snapshotRequestKey]);
 
   if (!layout) {
     return (
