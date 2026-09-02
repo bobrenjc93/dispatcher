@@ -19,6 +19,7 @@ import {
   parseTmuxWindowSnapshot,
   quoteTmuxCommandArgument,
   hasLostControlStream,
+  hasLostControlStreamToSilence,
   nextUnscopedLineRun,
   unescapeTmuxOutput,
   type TmuxPaneSnapshot,
@@ -209,6 +210,8 @@ interface TmuxControlSession {
   controlModeActive: boolean;
   /** Non-protocol lines seen in a row; a run means control mode is gone. */
   unscopedLineRun: number;
+  /** When the transport last carried anything; silence with work owed means it is gone. */
+  lastControlLineAt: number;
   lineBuffer: string;
   pendingCommands: PendingCommand[];
   currentCommand: CommandCapture | null;
@@ -804,6 +807,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     transportMetadataAdopted: true,
     controlModeActive: true,
     unscopedLineRun: 0,
+    lastControlLineAt: Date.now(),
     lineBuffer: "",
     pendingCommands: [],
     currentCommand: null,
@@ -3018,6 +3022,31 @@ async function sendCommand(
     throw new Error(`tmux control session is no longer active: ${session.id}`);
   }
 
+  // A connection can stop carrying bytes without ssh noticing: no error, no
+  // shell, no `%exit`, just silence. Queueing into that is how one dropped
+  // route became a hundred commands deep and a tab that swallowed every
+  // keystroke — send-keys went into the same queue as everything else, so the
+  // terminal looked frozen rather than disconnected. Checked here because a
+  // session only matters once something wants to talk to it.
+  const outstandingCommands =
+    session.pendingCommands.length + (session.currentCommand ? 1 : 0);
+  if (
+    hasLostControlStreamToSilence({
+      outstandingCommands,
+      msSinceLastLine: Date.now() - session.lastControlLineAt,
+    })
+  ) {
+    debugLog("tmux.session", "control stream silent", {
+      sessionId: session.id,
+      transportTerminalId: session.transportTerminalId,
+      outstandingCommands,
+      msSinceLastLine: Date.now() - session.lastControlLineAt,
+      command,
+    });
+    teardownControlSession(session, "control-stream-lost");
+    throw new Error(`tmux control session stopped responding: ${session.id}`);
+  }
+
   debugLog("tmux.command", "queue", {
     sessionId: session.id,
     transportTerminalId: session.transportTerminalId,
@@ -4787,6 +4816,9 @@ function handleNotification(session: TmuxControlSession, line: string) {
 }
 
 function processControlLine(session: TmuxControlSession, line: string) {
+  // Any line at all, including a reply's own, proves the transport is carrying.
+  session.lastControlLineAt = Date.now();
+
   if (session.currentCommand) {
     if (line.startsWith("%end ")) {
       const current = session.currentCommand;
@@ -4950,6 +4982,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     transportMetadataAdopted: false,
     controlModeActive: true,
     unscopedLineRun: 0,
+    lastControlLineAt: Date.now(),
     lineBuffer: "",
     pendingCommands: [],
     currentCommand: null,
