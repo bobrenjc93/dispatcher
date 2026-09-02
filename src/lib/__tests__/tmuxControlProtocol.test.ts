@@ -7,6 +7,8 @@ import {
   buildTmuxWindowSnapshotCommand,
   encodeTmuxSendKeysHex,
   hasLostControlStream,
+  hasLostControlStreamToSilence,
+  TMUX_COMMAND_SILENCE_TIMEOUT_MS,
   nextUnscopedLineRun,
   TMUX_LOST_CONTROL_STREAM_LINES,
   normalizeTmuxPasteBufferText,
@@ -248,5 +250,35 @@ describe("control stream loss", () => {
     lines.push("zsh: command not found: capture-pane");
 
     expect(hasLostControlStream(runOver(lines))).toBe(false);
+  });
+});
+
+describe("control stream silence", () => {
+  it("calls a session gone when it owes a reply and has sent nothing", () => {
+    // The real failure: ssh stopped carrying bytes without erroring, the last
+    // reply landed at 02:07:23, and 100 commands piled up behind it.
+    expect(hasLostControlStreamToSilence({
+      outstandingCommands: 100,
+      msSinceLastLine: 9 * 60 * 1000,
+    })).toBe(true);
+  });
+
+  it("leaves an idle session alone however long it is quiet", () => {
+    // Nothing was asked of it, so silence is just silence.
+    expect(hasLostControlStreamToSilence({
+      outstandingCommands: 0,
+      msSinceLastLine: 6 * 60 * 60 * 1000,
+    })).toBe(false);
+  });
+
+  it("gives a slow link room before giving up", () => {
+    expect(hasLostControlStreamToSilence({
+      outstandingCommands: 1,
+      msSinceLastLine: TMUX_COMMAND_SILENCE_TIMEOUT_MS - 1,
+    })).toBe(false);
+    expect(hasLostControlStreamToSilence({
+      outstandingCommands: 1,
+      msSinceLastLine: TMUX_COMMAND_SILENCE_TIMEOUT_MS,
+    })).toBe(true);
   });
 });
