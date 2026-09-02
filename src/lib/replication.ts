@@ -278,6 +278,25 @@ function sendSnapshotTo(targetClientId: string, terminalId: string) {
 
 type MirrorFrameHandler = (frame: MirrorFrame) => void;
 
+/**
+ * Replica load timing.
+ *
+ * The desktop's log says what it sent and when, which is not enough to explain
+ * a slow phone: it cannot see how long the page took to get far enough to ask,
+ * how long the bytes spent on the wire, or how much of the rest went into
+ * parsing them into xterm. Those three have completely different fixes, so they
+ * are measured separately rather than inferred from one end-to-end number.
+ *
+ * Milliseconds are relative to this document's navigation start, so they read
+ * directly as "how far into the page load did this happen".
+ */
+const snapshotRequestedAt = new Map<string, number>();
+let hasLoggedFirstTerminalReady = false;
+
+function sincePageLoadMs(): number {
+  return Math.round(performance.now());
+}
+
 /** Replica side: apply frames the master sends. */
 export async function startMirrorConsumer(
   onFrame: MirrorFrameHandler
@@ -294,9 +313,43 @@ export async function startMirrorConsumer(
 
     const forOtherReplica = Boolean(payload.targetClientId) && payload.targetClientId !== clientId;
     if (!forOtherReplica) {
+      const applyStartedAt = performance.now();
+      // Only a snapshot reply resets, so a reset marks this batch as one and
+      // names the terminal it answers for.
+      let snapshotTerminalId: string | null = null;
+      let snapshotBytes = 0;
+
       for (const frame of frames) {
         appliedFrames += 1;
+        if (frame.kind === "reset") {
+          snapshotTerminalId = frame.terminalId;
+        } else if (frame.kind === "output") {
+          snapshotBytes += frame.data.length;
+        }
         onFrame(frame);
+      }
+
+      if (snapshotTerminalId) {
+        const requestedAt = snapshotRequestedAt.get(snapshotTerminalId);
+        snapshotRequestedAt.delete(snapshotTerminalId);
+        debugLog("replication", "replica snapshot applied", {
+          terminalId: snapshotTerminalId,
+          bytes: snapshotBytes,
+          // Request to arrival: the desktop's own work plus the wire.
+          waitMs: requestedAt === undefined ? null : Math.round(performance.now() - requestedAt),
+          // Time inside xterm's parser, which is what freezes the phone.
+          applyMs: Math.round(performance.now() - applyStartedAt),
+          atMs: sincePageLoadMs(),
+        });
+
+        if (!hasLoggedFirstTerminalReady) {
+          hasLoggedFirstTerminalReady = true;
+          debugLog("replication", "replica first terminal ready", {
+            terminalId: snapshotTerminalId,
+            bytes: snapshotBytes,
+            atMs: sincePageLoadMs(),
+          });
+        }
       }
     }
 
@@ -454,6 +507,15 @@ export function requestMirrorSnapshot(terminalId: string) {
     return;
   }
   requestedSnapshotTerminalIds.add(terminalId);
+  snapshotRequestedAt.set(terminalId, performance.now());
+
+  // How far into the page load the ask happens is its own measurement: it is
+  // everything before the desktop is even involved — bundle, boot, workspace
+  // document — and on a phone that has been the larger half.
+  debugLog("replication", "replica requested snapshot", {
+    terminalId,
+    atMs: sincePageLoadMs(),
+  });
 
   void invoke("relay_action", {
     action: { name: REQUEST_SNAPSHOT, args: [getClientId(), terminalId] },
