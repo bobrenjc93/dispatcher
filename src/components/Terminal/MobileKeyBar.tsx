@@ -25,13 +25,25 @@ interface KeyDefinition {
 
 const ESC = "\u001b";
 
-const KEYS: KeyDefinition[] = [
-  { label: "esc", data: ESC, title: "Escape" },
-  { label: "tab", data: "\t", title: "Tab" },
-  { label: "^C", data: "\u0003", title: "Ctrl+C \u2014 interrupt" },
-  { label: "^R", data: "\u0012", title: "Ctrl+R \u2014 reverse search" },
+/**
+ * The keys worth reaching for without a swipe.
+ *
+ * The bar scrolls horizontally on a phone, so position is not cosmetic: what
+ * sits past the fold costs a gesture before it costs a tap. These five are the
+ * ones used constantly \u2014 history, interrupt, search, and clearing the line.
+ */
+const LEADING_KEYS: KeyDefinition[] = [
   { label: "\u2191", data: `${ESC}[A`, title: "Up" },
   { label: "\u2193", data: `${ESC}[B`, title: "Down" },
+  { label: "^C", data: "\u0003", title: "Ctrl+C \u2014 interrupt" },
+  { label: "^R", data: "\u0012", title: "Ctrl+R \u2014 reverse search" },
+  { label: "^U", data: "\u0015", title: "Ctrl+U \u2014 clear the line" },
+];
+
+/** Everything else, keeping the order it already had. */
+const TRAILING_KEYS: KeyDefinition[] = [
+  { label: "esc", data: ESC, title: "Escape" },
+  { label: "tab", data: "\t", title: "Tab" },
   { label: "\u2190", data: `${ESC}[D`, title: "Left" },
   { label: "\u2192", data: `${ESC}[C`, title: "Right" },
 ];
@@ -169,6 +181,19 @@ export function MobileKeyBar() {
         />
       )}
       <div className="mobile-key-bar" role="toolbar" aria-label="Terminal keys">
+        {LEADING_KEYS.map((key) => (
+          <button
+            key={key.label}
+            type="button"
+            className="mobile-key"
+            title={key.title}
+            onPointerDown={keepFocus}
+            onMouseDown={keepFocus}
+            onClick={() => send(key.data)}
+          >
+            {key.label}
+          </button>
+        ))}
         <button
           type="button"
           className={`mobile-key${isCtrlArmed ? " is-armed" : ""}`}
@@ -200,7 +225,7 @@ export function MobileKeyBar() {
         >
           paste
         </button>
-        {KEYS.map((key) => (
+        {TRAILING_KEYS.map((key) => (
           <button
             key={key.label}
             type="button"
