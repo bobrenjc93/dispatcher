@@ -202,6 +202,48 @@ async function publishMirror(payload: MirrorPayload) {
  * shells — by the time output reaches here the control protocol has already
  * been decoded into plain pane data.
  */
+/**
+ * Master-side mirroring counters.
+ *
+ * The replica can only report what reached it. When it reports nothing, that is
+ * equally consistent with the desktop never sending, the desktop deciding
+ * nobody was listening, or the bytes being dropped before they ever got here —
+ * and those have nothing in common as bugs. Counting sent against suppressed,
+ * with the replica count that decided it, tells them apart.
+ */
+const mirroredBytesByTerminal = new Map<string, number>();
+let publishedMirrorBytes = 0;
+let suppressedMirrorBytes = 0;
+let lastMirrorSummaryAt = 0;
+
+function noteMirrorActivity(terminalId: string, bytes: number, published: boolean) {
+  if (published) {
+    publishedMirrorBytes += bytes;
+    mirroredBytesByTerminal.set(
+      terminalId,
+      (mirroredBytesByTerminal.get(terminalId) ?? 0) + bytes
+    );
+  } else {
+    suppressedMirrorBytes += bytes;
+  }
+
+  const now = Date.now();
+  if (now - lastMirrorSummaryAt < 5_000) {
+    return;
+  }
+  lastMirrorSummaryAt = now;
+  debugLog("replication", "master mirror summary", {
+    replicaCount,
+    publishedBytes: publishedMirrorBytes,
+    // Anything here means the master believed no replica was watching.
+    suppressedBytes: suppressedMirrorBytes,
+    terminals: Array.from(mirroredBytesByTerminal, ([id, sent]) => `${id.slice(0, 8)}:${sent}`),
+  });
+  mirroredBytesByTerminal.clear();
+  publishedMirrorBytes = 0;
+  suppressedMirrorBytes = 0;
+}
+
 export function mirrorTerminalOutput(terminalId: string, data: string) {
   if (!isPrimaryClient() || !data) {
     return;
@@ -220,9 +262,11 @@ export function mirrorTerminalOutput(terminalId: string, data: string) {
     }
   }
 
-  if (shouldMirror()) {
+  const published = shouldMirror();
+  if (published) {
     queueFrame({ kind: "output", terminalId, data });
   }
+  noteMirrorActivity(terminalId, data.length, published);
 }
 
 export function mirrorTerminalSize(terminalId: string, cols: number, rows: number) {
