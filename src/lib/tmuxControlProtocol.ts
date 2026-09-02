@@ -363,28 +363,3 @@ export function nextUnscopedLineRun(currentRun: number, line: string): number {
 export function hasLostControlStream(unscopedLineRun: number): boolean {
   return unscopedLineRun >= TMUX_LOST_CONTROL_STREAM_LINES;
 }
-
-/**
- * How long a control session may owe us a reply before it counts as gone.
- *
- * The other way a `tmux -CC` session dies: ssh does not error and the shell
- * never surfaces, the connection simply stops carrying bytes. Nothing arrives
- * at all — no `%exit`, no shell chatter, so there is no line to inspect and
- * {@link hasLostControlStream} is blind to it. What is observable is the
- * silence itself, but only while something is outstanding: an idle session is
- * legitimately silent for hours, and a session owing a reply is not.
- *
- * tmux answers `%begin` at network latency, so any real reply beats this by
- * three orders of magnitude. The margin is for a slow link, not a slow tmux.
- */
-export const TMUX_COMMAND_SILENCE_TIMEOUT_MS = 30_000;
-
-export function hasLostControlStreamToSilence(args: {
-  outstandingCommands: number;
-  msSinceLastLine: number;
-}): boolean {
-  return (
-    args.outstandingCommands > 0
-    && args.msSinceLastLine >= TMUX_COMMAND_SILENCE_TIMEOUT_MS
-  );
-}
