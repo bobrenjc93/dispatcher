@@ -18,6 +18,8 @@ import {
   parseTmuxPaneSnapshot,
   parseTmuxWindowSnapshot,
   quoteTmuxCommandArgument,
+  hasLostControlStream,
+  nextUnscopedLineRun,
   unescapeTmuxOutput,
   type TmuxPaneSnapshot,
   type TmuxWindowSnapshot,
@@ -205,6 +207,8 @@ interface TmuxControlSession {
   transportNotes: string;
   transportMetadataAdopted: boolean;
   controlModeActive: boolean;
+  /** Non-protocol lines seen in a row; a run means control mode is gone. */
+  unscopedLineRun: number;
   lineBuffer: string;
   pendingCommands: PendingCommand[];
   currentCommand: CommandCapture | null;
@@ -799,6 +803,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     transportNotes: transportSession.notes,
     transportMetadataAdopted: true,
     controlModeActive: true,
+    unscopedLineRun: 0,
     lineBuffer: "",
     pendingCommands: [],
     currentCommand: null,
@@ -4495,8 +4500,15 @@ function detachOurClient(session: TmuxControlSession) {
 }
 
 function teardownControlSession(session: TmuxControlSession, reason: string) {
-  // Do this first, while the transport can still carry the command.
-  if (reason !== "tmux-%exit" && reason !== "transport-pty-exit") {
+  // Do this first, while the transport can still carry the command. Skipped
+  // when there is nothing left to carry it: a detach sent to a session whose
+  // tmux is gone is one more line of tmux syntax typed into the user's shell,
+  // which is the thing being cleaned up here.
+  if (
+    reason !== "tmux-%exit"
+    && reason !== "transport-pty-exit"
+    && reason !== "control-stream-lost"
+  ) {
     detachOurClient(session);
   }
 
@@ -4809,6 +4821,13 @@ function processControlLine(session: TmuxControlSession, line: string) {
     return;
   }
 
+  // Only lines outside a command block are evidence about the protocol: a
+  // reply's own lines are ordinary text and say nothing about who sent them.
+  // Blank lines are not evidence either way, so they neither count nor clear.
+  if (line.length > 0) {
+    session.unscopedLineRun = nextUnscopedLineRun(session.unscopedLineRun, line);
+  }
+
   if (line.startsWith("%begin ")) {
     const pending = session.pendingCommands.shift() ?? null;
     debugLog("tmux.command", "begin", {
@@ -4833,6 +4852,24 @@ function processControlLine(session: TmuxControlSession, line: string) {
       sessionId: session.id,
       line: previewDebugText(line, 200),
     });
+
+    // ssh dying under a `tmux -CC` session leaves the PTY alive on a local
+    // shell, which answers everything still queued for it with a prompt and a
+    // "command not found". No `%exit` arrives, because no tmux is left to send
+    // one, so without this the session stayed "connected" forever: commands
+    // piled up unanswered and Dispatcher kept typing tmux syntax into whatever
+    // shell now owned the terminal.
+    if (session.controlModeActive && hasLostControlStream(session.unscopedLineRun)) {
+      debugLog("tmux.session", "control stream lost", {
+        sessionId: session.id,
+        transportTerminalId: session.transportTerminalId,
+        unscopedLineRun: session.unscopedLineRun,
+        pendingCommands: session.pendingCommands.length,
+        line: previewDebugText(line, 200),
+      });
+      teardownControlSession(session, "control-stream-lost");
+      return;
+    }
   }
 
   handleNotification(session, line);
@@ -4912,6 +4949,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     transportNotes: transportSession?.notes ?? "",
     transportMetadataAdopted: false,
     controlModeActive: true,
+    unscopedLineRun: 0,
     lineBuffer: "",
     pendingCommands: [],
     currentCommand: null,
