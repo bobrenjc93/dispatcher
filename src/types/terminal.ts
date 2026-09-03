@@ -18,13 +18,27 @@ export interface TerminalSession {
   isRecentlyFocused: boolean;
   isPinnedGreen?: boolean;
   isPinnedGray?: boolean;
+  /**
+   * Play a sound when this tab goes quiet. Shown as "Notify on Inactivity";
+   * the stored name is left alone so existing settings survive.
+   */
   notifyOnInaction?: boolean;
   /**
    * Bounce the dock icon when this tab starts needing attention. Shown as
-   * "Bounce on Inaction"; the stored name is left alone so existing settings
+   * "Bounce on Inactivity"; the stored name is left alone so existing settings
    * survive.
    */
   bounceOnAttention?: boolean;
+  /**
+   * How long this tab must sit unchanged before it counts as inactive, in
+   * milliseconds. Unset means the app-wide default.
+   *
+   * Per tab because the right answer is a property of the work, not of the
+   * user: a tab running a build is expected to be silent for minutes, while
+   * one driving an agent going quiet for twenty seconds means it is waiting.
+   * One global number makes one of those two noisy with false alarms.
+   */
+  inactivityThresholdMs?: number;
   backendKind: TerminalBackendKind;
   restoredFromBackendKind?: TerminalBackendKind;
   tmuxControlSessionId?: string;

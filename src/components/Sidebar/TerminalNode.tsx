@@ -7,6 +7,11 @@ import { shouldIgnoreDragStartTarget, startDrag } from "../../lib/dragState";
 import { focusTerminalInstance } from "../../hooks/useTerminalBridge";
 import { renameTmuxTerminal } from "../../lib/tmuxControl";
 import { prepareInactionNotificationSound } from "../../lib/inactionNotification";
+import {
+  formatInactivityThreshold,
+  parseInactivityThresholdSeconds,
+  resolveInactivityThresholdMs,
+} from "../../lib/inactivityThreshold";
 
 interface TerminalNodeProps {
   terminalId: string;
@@ -25,6 +30,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [editingThreshold, setEditingThreshold] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
 
@@ -176,7 +182,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
               },
             },
             {
-              label: "Notify on Inaction",
+              label: "Notify on Inactivity",
               icon: (
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                   <path d="M3.25 9.75H10.75L9.75 8.25V6A2.75 2.75 0 0 0 4.25 6V8.25L3.25 9.75ZM5.75 11.25C5.95 11.65 6.35 11.9 7 11.9C7.65 11.9 8.05 11.65 8.25 11.25" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
@@ -192,7 +198,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
               },
             },
             {
-              label: "Bounce on Inaction",
+              label: "Bounce on Inactivity",
               icon: (
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                   <path d="M7 2.25V6.5M7 6.5L4.75 4.5M7 6.5L9.25 4.5M2.75 9.25C4.25 11 9.75 11 11.25 9.25" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
@@ -204,6 +210,21 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
                   bounceOnAttention: !(session.bounceOnAttention ?? false),
                 });
               },
+            },
+            {
+              label: "Inactivity Threshold\u2026",
+              // The current value goes in the shortcut slot rather than into
+              // the label. Parenthesised after an ellipsis it read as clutter,
+              // and this is the same right-aligned secondary column the other
+              // items already use.
+              shortcut: formatInactivityThreshold(session.inactivityThresholdMs),
+              icon: (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <circle cx="7" cy="7" r="4.75" stroke="currentColor" strokeWidth="1.2" />
+                  <path d="M7 4.5V7L8.75 8.25" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ),
+              onClick: () => setEditingThreshold(true),
             },
             {
               label: "Move to Top",
@@ -248,6 +269,100 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
           ]}
         />
       )}
+      {editingThreshold && (
+        <InactivityThresholdDialog
+          currentMs={session.inactivityThresholdMs}
+          onCancel={() => setEditingThreshold(false)}
+          onSubmit={(value) => {
+            setEditingThreshold(false);
+            patchSession(terminalId, { inactivityThresholdMs: value });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Editor for one tab's inactivity threshold.
+ *
+ * Seconds rather than milliseconds because that is the unit the setting is
+ * thought about in, and an empty field is a real answer — go back to the
+ * app-wide default — rather than a mistake to reject.
+ */
+function InactivityThresholdDialog(props: {
+  currentMs: number | undefined;
+  onSubmit: (value: number | undefined) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(
+    props.currentMs === undefined
+      ? ""
+      : String(Math.round(resolveInactivityThresholdMs(props.currentMs) / 1000))
+  );
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const submit = () => {
+    const parsed = parseInactivityThresholdSeconds(draft);
+    if (!parsed.ok) {
+      // Keep the dialog open rather than storing something the user did not
+      // ask for; a silently corrected number is worse than being told.
+      setError(parsed.reason);
+      return;
+    }
+    props.onSubmit(parsed.value);
+  };
+
+  return (
+    <div className="threshold-dialog-backdrop" role="presentation" onPointerDown={props.onCancel}>
+      <div
+        className="threshold-dialog"
+        role="dialog"
+        aria-label="Inactivity threshold"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p className="threshold-dialog-hint">
+          Seconds of no change before this tab counts as inactive. Leave empty for the default.
+        </p>
+        <input
+          ref={inputRef}
+          className="threshold-dialog-input"
+          type="text"
+          inputMode="numeric"
+          placeholder={String(resolveInactivityThresholdMs(undefined) / 1000)}
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setError(null);
+          }}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submit();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              props.onCancel();
+            }
+          }}
+        />
+        {error && <p className="threshold-dialog-error">{error}</p>}
+        <div className="threshold-dialog-actions">
+          <button type="button" className="threshold-dialog-btn" onClick={props.onCancel}>
+            Cancel
+          </button>
+          <button type="button" className="threshold-dialog-btn is-primary" onClick={submit}>
+            Save
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
