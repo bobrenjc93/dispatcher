@@ -1613,7 +1613,11 @@ body.sidebar-dragging * {
   display: none;
 }
 
-@media (max-width: 820px) {
+/* Must match COMPACT_VIEWPORT_QUERY in src/hooks/useCompactViewport.ts, which
+   explains the second half: a phone in landscape is wider than the breakpoint
+   but far too short for the desktop layout. The two cannot share a value, so
+   they are kept in sync by hand. */
+@media (max-width: 820px), (hover: none) and (pointer: coarse) and (max-height: 500px) {
   .app-compact {
     flex-direction: column;
     /* The soft keyboard shrinks the visual viewport, not the window, so 100dvh
