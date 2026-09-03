@@ -29,12 +29,14 @@ const ESC = "\u001b";
  * The keys worth reaching for without a swipe.
  *
  * The bar scrolls horizontally on a phone, so position is not cosmetic: what
- * sits past the fold costs a gesture before it costs a tap. These five are the
- * ones used constantly \u2014 history, interrupt, search, and clearing the line.
+ * sits past the fold costs a gesture before it costs a tap. These are the ones
+ * used constantly — history, Enter, interrupt, search, and clearing the line.
  */
 const LEADING_KEYS: KeyDefinition[] = [
   { label: "\u2191", data: `${ESC}[A`, title: "Up" },
   { label: "\u2193", data: `${ESC}[B`, title: "Down" },
+  // Carriage return, not newline: that is what a terminal reads as Enter.
+  { label: "enter", data: "\r", title: "Enter" },
   { label: "^C", data: "\u0003", title: "Ctrl+C \u2014 interrupt" },
   { label: "^R", data: "\u0012", title: "Ctrl+R \u2014 reverse search" },
   { label: "^U", data: "\u0015", title: "Ctrl+U \u2014 clear the line" },
