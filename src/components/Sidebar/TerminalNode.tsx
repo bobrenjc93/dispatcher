@@ -212,7 +212,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
               },
             },
             {
-              label: "Inactivity Threshold\u2026",
+              label: "Inactivity Threshold",
               // The current value goes in the shortcut slot rather than into
               // the label. Parenthesised after an ellipsis it read as clutter,
               // and this is the same right-aligned secondary column the other
