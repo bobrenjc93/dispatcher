@@ -1207,6 +1207,87 @@ body.sidebar-dragging * {
 }
 
 /* ===== Context Menu ===== */
+/* Editor for one tab's inactivity threshold, opened from its context menu.
+   Centred rather than anchored to the menu: the menu closes on the click that
+   opens this, so there is no longer anything to anchor to. */
+.threshold-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 45%);
+}
+
+.threshold-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  padding: 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
+}
+
+.threshold-dialog-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.threshold-dialog-input {
+  width: 100%;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+.threshold-dialog-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.threshold-dialog-error {
+  margin: 0;
+  color: var(--status-red, #e5534b);
+  font-size: 12px;
+}
+
+.threshold-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.threshold-dialog-btn {
+  padding: 6px 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.threshold-dialog-btn:hover {
+  color: var(--text-primary);
+}
+
+.threshold-dialog-btn.is-primary {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
 .context-menu {
   position: fixed;
   z-index: 2000;

@@ -25,6 +25,7 @@ import {
   shouldNotifyOnInaction,
 } from "../lib/inactionNotification";
 import { bounceDockForAttention, shouldBounceDock } from "../lib/dockAttention";
+import { resolveInactivityThresholdMs } from "../lib/inactivityThreshold";
 import { pushStatusDebug } from "../lib/statusDebug";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
 import { isPrimaryClient } from "../lib/replication";
@@ -40,15 +41,9 @@ import { useTerminalStore } from "../stores/useTerminalStore";
 import type { TerminalSession } from "../types/terminal";
 
 const SCREENSHOT_INTERVAL_MS = 5_000;
-// A stable tab becomes stale after this window. Background stale tabs require
-// attention until the user looks at them; acknowledged stale tabs turn brown.
-//
-// Long enough that an agent thinking, or running a command that prints nothing
-// for a while, is not mistaken for one that has stopped. Ten seconds caught far
-// too much of that: a pause in the middle of work looks exactly like the end of
-// it, and an indicator that cries wolf is worse than no indicator, because the
-// one that matters stops being read.
-const SCREENSHOT_INACTIVITY_MS = 20_000;
+// A stable tab becomes stale after its inactivity threshold. Background stale
+// tabs require attention until the user looks at them; acknowledged stale tabs
+// turn brown. The threshold itself is per tab — see lib/inactivityThreshold.
 // Long inactivity applies to brown tabs only. Unacknowledged stale tabs keep
 // needing attention because they still need the user's attention.
 const SCREENSHOT_LONG_INACTIVITY_MS = 60 * 60 * 1000;
@@ -675,7 +670,7 @@ export function useTerminalScreenshotMonitor() {
         wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
         wasPossiblyDone: latestSessions.some((session) => session.isPossiblyDone),
         wasLongInactive: latestSessions.some((session) => session.isLongInactive),
-        inactivityMs: SCREENSHOT_INACTIVITY_MS,
+        inactivityMs: resolveInactivityThresholdMs(latestStore.sessions[args.tabRootTerminalId]?.inactivityThresholdMs),
         longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
       });
       const tabRootSession = latestStore.sessions[args.tabRootTerminalId];
@@ -1087,7 +1082,7 @@ export function useTerminalScreenshotMonitor() {
             wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
             wasPossiblyDone: latestSessions.some((session) => session.isPossiblyDone),
             wasLongInactive: latestSessions.some((session) => session.isLongInactive),
-            inactivityMs: SCREENSHOT_INACTIVITY_MS,
+            inactivityMs: resolveInactivityThresholdMs(latestStore.sessions[tabRootTerminalId]?.inactivityThresholdMs),
             longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
           });
           const tabRootSession = latestStore.sessions[tabRootTerminalId];
