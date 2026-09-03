@@ -6,10 +6,8 @@ import {
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
   encodeTmuxSendKeysHex,
-  hasHistoryRefreshWaitedTooLong,
   hasLostControlStream,
   nextUnscopedLineRun,
-  TMUX_HISTORY_REFRESH_DEADLINE_MS,
   TMUX_LOST_CONTROL_STREAM_LINES,
   normalizeTmuxPasteBufferText,
   parseTmuxPaneSnapshot,
@@ -250,61 +248,5 @@ describe("control stream loss", () => {
     lines.push("zsh: command not found: capture-pane");
 
     expect(hasLostControlStream(runOver(lines))).toBe(false);
-  });
-});
-
-describe("history refresh starvation", () => {
-  /**
-   * Reproduces the loop the debounce created: each %output chunk re-arms the
-   * retry timer, so on a pane that never goes quiet the capture is deferred
-   * indefinitely. Stamping when the repair became owed is what bounds it.
-   */
-  function simulateStreamingPane(args: {
-    owedSinceMs: number;
-    chunkIntervalMs: number;
-    streamForMs: number;
-  }): { fired: boolean; owedForMs: number } {
-    let now = args.owedSinceMs;
-    const deadline = args.owedSinceMs + args.streamForMs;
-    // The debounce only elapses if a gap exceeds it; a steady stream never
-    // leaves one, which is the whole point.
-    while (now < deadline) {
-      const owedFor = now - args.owedSinceMs;
-      if (hasHistoryRefreshWaitedTooLong(owedFor)) {
-        return { fired: true, owedForMs: owedFor };
-      }
-      now += args.chunkIntervalMs;
-    }
-    return { fired: false, owedForMs: now - args.owedSinceMs };
-  }
-
-  it("lets the capture through on a pane that never stops streaming", () => {
-    // The real case: output every 50ms for four minutes. Before the deadline
-    // this deferred forever and scrollback stayed frozen.
-    const result = simulateStreamingPane({
-      owedSinceMs: 0,
-      chunkIntervalMs: 50,
-      streamForMs: 4 * 60 * 1000,
-    });
-
-    expect(result.fired).toBe(true);
-    expect(result.owedForMs).toBeLessThanOrEqual(TMUX_HISTORY_REFRESH_DEADLINE_MS + 50);
-  });
-
-  it("still lets a normal burst debounce instead of forcing a capture", () => {
-    // A pane that streams for a second and stops should never hit the
-    // deadline: the ordinary debounce handles it once output pauses.
-    const result = simulateStreamingPane({
-      owedSinceMs: 0,
-      chunkIntervalMs: 50,
-      streamForMs: 1_000,
-    });
-
-    expect(result.fired).toBe(false);
-  });
-
-  it("does not fire before the deadline", () => {
-    expect(hasHistoryRefreshWaitedTooLong(TMUX_HISTORY_REFRESH_DEADLINE_MS - 1)).toBe(false);
-    expect(hasHistoryRefreshWaitedTooLong(TMUX_HISTORY_REFRESH_DEADLINE_MS)).toBe(true);
   });
 });

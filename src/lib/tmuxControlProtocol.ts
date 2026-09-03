@@ -363,26 +363,3 @@ export function nextUnscopedLineRun(currentRun: number, line: string): number {
 export function hasLostControlStream(unscopedLineRun: number): boolean {
   return unscopedLineRun >= TMUX_LOST_CONTROL_STREAM_LINES;
 }
-
-/**
- * How long a pane's scrollback repair may be postponed by fresh output.
- *
- * The history refresh is debounced against `%output` so that an expensive
- * full-history capture does not run while the pane is mid-stream. On a pane
- * that goes quiet that is exactly right, and on one that never does it is
- * starvation: every chunk re-arms the timer, so the capture is deferred for as
- * long as the pane keeps talking. An agent session streaming for minutes never
- * yields the 300ms it needs, and its scrollback stays as it was at the last
- * successful capture while the viewport is repainted over the top.
- *
- * Past this point the debounce stops being extended and the pending capture is
- * allowed to run against a live pane. That can race output — the capture path
- * already detects that and repaints — which is a better failure than scrollback
- * that is permanently wrong.
- */
-export const TMUX_HISTORY_REFRESH_DEADLINE_MS = 10_000;
-
-/** Whether a repair owed this long should stop yielding to new output. */
-export function hasHistoryRefreshWaitedTooLong(msOwed: number): boolean {
-  return msOwed >= TMUX_HISTORY_REFRESH_DEADLINE_MS;
-}
