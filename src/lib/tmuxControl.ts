@@ -18,7 +18,6 @@ import {
   parseTmuxPaneSnapshot,
   parseTmuxWindowSnapshot,
   quoteTmuxCommandArgument,
-  hasHistoryRefreshWaitedTooLong,
   hasLostControlStream,
   nextUnscopedLineRun,
   unescapeTmuxOutput,
@@ -155,10 +154,6 @@ interface TmuxPaneState {
   // wait is measured against this so a pane that never goes quiet still gets
   // repaired instead of deferring forever.
   visibleRedrawRequestedAt: number;
-  /** When the scrollback repair first became owed; 0 when none is. */
-  historyRefreshOwedSince: number;
-  /** Whether the deadline has already been reported for the current repair. */
-  historyRefreshDeadlineLogged: boolean;
   backgroundViewportRefreshTimer: number | null;
   backgroundViewportRefreshInFlight: boolean;
   // Wall-clock time of the last tmux %output chunk for this pane. Visible
@@ -385,8 +380,6 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.visibleRedrawTimer ??= null;
   pane.visibleRedrawRaceCount ??= 0;
   pane.visibleRedrawRequestedAt ??= 0;
-  pane.historyRefreshOwedSince ??= 0;
-  pane.historyRefreshDeadlineLogged ??= false;
   pane.backgroundViewportRefreshTimer ??= null;
   pane.backgroundViewportRefreshInFlight ??= false;
   pane.lastTmuxOutputAt ??= 0;
@@ -927,8 +920,6 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       visibleRedrawTimer: null,
       visibleRedrawRaceCount: 0,
       visibleRedrawRequestedAt: 0,
-      historyRefreshOwedSince: 0,
-      historyRefreshDeadlineLogged: false,
       backgroundViewportRefreshTimer: null,
       backgroundViewportRefreshInFlight: false,
       lastTmuxOutputAt: 0,
@@ -2144,8 +2135,6 @@ function upsertWindowProjection(
         visibleRedrawTimer: null,
         visibleRedrawRaceCount: 0,
         visibleRedrawRequestedAt: 0,
-      historyRefreshOwedSince: 0,
-      historyRefreshDeadlineLogged: false,
         backgroundViewportRefreshTimer: null,
         backgroundViewportRefreshInFlight: false,
         lastTmuxOutputAt: 0,
@@ -2758,8 +2747,6 @@ function markPaneUserInput(pane: TmuxPaneState, reason: string) {
 function resetPaneHistoryRefreshRetry(pane: TmuxPaneState) {
   clearPaneHistoryRefreshRetry(pane);
   pane.historyRefreshRetryAttempts = 0;
-  pane.historyRefreshOwedSince = 0;
-  pane.historyRefreshDeadlineLogged = false;
 }
 
 function schedulePaneHistoryRefreshRetry(
@@ -2782,41 +2769,7 @@ function schedulePaneHistoryRefreshRetry(
     return;
   }
 
-  // Stamped once per owed repair. Reschedules keep the original stamp, so the
-  // deadline measures how long scrollback has been wrong rather than
-  // restarting every time more output arrives.
-  if (pane.historyRefreshOwedSince === 0) {
-    pane.historyRefreshOwedSince = Date.now();
-  }
-
   const wasAlreadyScheduled = pane.historyRefreshRetryTimer !== null;
-
-  // Every `%output` chunk re-arms this timer, which on a pane that keeps
-  // talking means it never fires at all: an agent session streaming for
-  // minutes never yields the few hundred ms the debounce waits for, so its
-  // scrollback stays frozen at the last successful capture while the viewport
-  // is repainted over the top. Past the deadline, leave the armed timer alone
-  // and let it run.
-  if (
-    wasAlreadyScheduled
-    && hasHistoryRefreshWaitedTooLong(Date.now() - pane.historyRefreshOwedSince)
-  ) {
-    if (!pane.historyRefreshDeadlineLogged) {
-      pane.historyRefreshDeadlineLogged = true;
-      debugLog("tmux.capture", "history refresh deadline reached, stop deferring", {
-        sessionId: session.id,
-        paneId: pane.paneId,
-        terminalId: pane.terminalId,
-        reason,
-        staleReason,
-        owedForMs: Date.now() - pane.historyRefreshOwedSince,
-        historySize: pane.historySize,
-        lastHistoryCaptureSize: pane.lastHistoryCaptureSize,
-      });
-    }
-    return;
-  }
-
   if (pane.historyRefreshRetryTimer !== null) {
     window.clearTimeout(pane.historyRefreshRetryTimer);
     pane.historyRefreshRetryTimer = null;
