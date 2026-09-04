@@ -178,15 +178,13 @@ export function MobileKeyBar() {
   // appending "\r" to the text. The paste goes out bracketed, and the whole
   // point of bracketed paste is that a newline inside it does not submit —
   // so a trailing carriage return would arrive as inert text.
-  const submitComposedText = (text: string, run: boolean) => {
+  const submitComposedText = (text: string) => {
     setComposeOpen(false);
     if (!text) {
       return;
     }
     void pasteTextIntoTerminalById(activeTerminalId, text).then(() => {
-      if (run) {
-        sendSyntheticTerminalInput(activeTerminalId, "\r");
-      }
+      sendSyntheticTerminalInput(activeTerminalId, "\r");
     });
   };
 
@@ -310,7 +308,7 @@ export function MobileKeyBar() {
  * byte-for-byte, this one is where the text is composed.
  */
 function ComposeDialog(props: {
-  onSubmit: (text: string, run: boolean) => void;
+  onSubmit: (text: string) => void;
   onCancel: () => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -350,19 +348,11 @@ function ComposeDialog(props: {
           </button>
           <button
             type="button"
-            className="mobile-key"
-            title="Insert the text without running it"
-            onClick={() => props.onSubmit(draft, false)}
+            className="mobile-key is-primary"
+            title="Send the text and press Enter"
+            onClick={() => props.onSubmit(draft)}
           >
             send
-          </button>
-          <button
-            type="button"
-            className="mobile-key is-primary"
-            title="Insert the text and press Enter"
-            onClick={() => props.onSubmit(draft, true)}
-          >
-            send + ⏎
           </button>
         </div>
       </div>
