@@ -92,3 +92,26 @@ export function mergeSubscription(
 ): PushSubscriptionRecord[] {
   return [...existing.filter((entry) => entry.clientId !== next.clientId), next];
 }
+
+/** What a device remembers so it can re-offer the same subscription later. */
+export interface StoredDeviceKey {
+  endpoint: string;
+  privateJwk: JsonWebKey;
+  publicKey: string;
+}
+
+/**
+ * Whether a stored key still describes the subscription the browser holds.
+ *
+ * Re-subscribing mints a new endpoint and a new keypair, so doing it on every
+ * load would churn through push-service registrations for no reason. But a
+ * stored key only helps if it belongs to the subscription that actually
+ * exists: iOS can retire a subscription on its own, and signing for the wrong
+ * endpoint fails at the push service long after the cause.
+ */
+export function canReuseStoredKey(
+  stored: StoredDeviceKey | null,
+  currentEndpoint: string | null
+): boolean {
+  return Boolean(stored && currentEndpoint && stored.endpoint === currentEndpoint);
+}

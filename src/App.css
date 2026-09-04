@@ -1288,6 +1288,85 @@ body.sidebar-dragging * {
   color: var(--text-primary);
 }
 
+/* One-time offer to set up push, shown on a device where it can work. */
+.push-setup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  padding-top: calc(20px + env(safe-area-inset-top));
+  padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  background: rgb(0 0 0 / 70%);
+}
+
+.push-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 360px;
+  padding: 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 55%);
+}
+
+.push-setup-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.push-setup-copy {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.push-setup-note {
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
+.push-setup-error {
+  margin: 0;
+  color: var(--status-red, #e5534b);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.push-setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.push-setup-btn {
+  padding: 9px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.push-setup-btn.is-primary {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.push-setup-btn:disabled {
+  opacity: 0.6;
+}
+
 /* Outcome of enabling push. Transient and non-blocking: the useful cases are
    "on" and a reason it could not be, and neither is worth a dialog. */
 .push-status {

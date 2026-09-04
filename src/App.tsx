@@ -3,6 +3,7 @@ import { Sidebar } from "./components/Sidebar/Sidebar";
 import { ProjectView } from "./components/Layout/ProjectView";
 import { rememberPushSubscription } from "./lib/pushRegistry";
 import { enablePushNotifications } from "./lib/webPushSubscribe";
+import { PushSetupPrompt } from "./components/common/PushSetupPrompt";
 import { KeyDebugOverlay } from "./components/common/KeyDebugOverlay";
 import { NameDialog } from "./components/common/NameDialog";
 import { MobileKeyBar } from "./components/Terminal/MobileKeyBar";
@@ -1249,6 +1250,7 @@ export default function App() {
         )}
       </div>
 
+      <PushSetupPrompt onRegister={handleRegisterPushSubscription} />
       {pushStatus && (
         <div className="push-status" role="status">
           {pushStatus}
