@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  canReuseStoredKey,
   describePushSubscription,
   fromBase64Url,
   isValidApplicationServerKey,
@@ -101,5 +102,21 @@ describe("mergeSubscription", () => {
   it("keeps other devices", () => {
     const merged = mergeSubscription([record("a", "https://a")], record("b", "https://b"));
     expect(merged).toHaveLength(2);
+  });
+});
+
+describe("canReuseStoredKey", () => {
+  const stored = { endpoint: "https://web.push.apple.com/a", privateJwk: {}, publicKey: "P" };
+
+  it("reuses the key when it belongs to the live subscription", () => {
+    expect(canReuseStoredKey(stored, "https://web.push.apple.com/a")).toBe(true);
+  });
+
+  it("re-subscribes when iOS has retired the subscription behind our back", () => {
+    // Signing for an endpoint the key does not belong to fails at the push
+    // service, long after the cause.
+    expect(canReuseStoredKey(stored, "https://web.push.apple.com/b")).toBe(false);
+    expect(canReuseStoredKey(stored, null)).toBe(false);
+    expect(canReuseStoredKey(null, "https://web.push.apple.com/a")).toBe(false);
   });
 });

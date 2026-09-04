@@ -25,6 +25,7 @@ import {
   shouldNotifyOnInaction,
 } from "../lib/inactionNotification";
 import { bounceDockForAttention, shouldBounceDock } from "../lib/dockAttention";
+import { pushAttentionNotification } from "../lib/pushNotify";
 import { resolveInactivityThresholdMs } from "../lib/inactivityThreshold";
 import { pushStatusDebug } from "../lib/statusDebug";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
@@ -560,6 +561,15 @@ export function useTerminalScreenshotMonitor() {
         staleStartedAt: args.staleStartedAt,
       });
       void notifyTerminalInaction();
+      // Rides along with the chime rather than deciding anew: the tab already
+      // opted in and the rules above already said this is worth interrupting
+      // for. Push only adds reach, for a laptop that is shut.
+      void pushAttentionNotification({
+        tabRootTerminalId: args.tabRootTerminalId,
+        title: args.title,
+        reason: "inaction",
+        now: args.now,
+      });
     };
 
     const maybeBounceDockForAttention = (args: {
@@ -579,6 +589,12 @@ export function useTerminalScreenshotMonitor() {
         return;
       }
       bounceDockForAttention(args.tabRootTerminalId, args.title);
+      void pushAttentionNotification({
+        tabRootTerminalId: args.tabRootTerminalId,
+        title: args.title,
+        reason: "attention",
+        now: Date.now(),
+      });
     };
 
     const applyTimestampStatus = (args: {

@@ -26,12 +26,42 @@
 
 import { getClientId } from "./clientId";
 import { debugLog } from "./debugLog";
+import { getScopedStorageKey } from "./storageNamespace";
 import {
+  canReuseStoredKey,
   describePushSubscription,
   isValidApplicationServerKey,
   toBase64Url,
   type PushSubscriptionRecord,
+  type StoredDeviceKey,
 } from "./webPushKeys";
+
+/**
+ * This device's half of its application server key.
+ *
+ * Kept so a later load can re-offer the subscription it already has instead of
+ * minting a new one: the private half lives on the desktop, so without a local
+ * copy the only way to tell the desktop about an existing subscription would
+ * be to throw it away and make another.
+ */
+const DEVICE_KEY_STORAGE = getScopedStorageKey("dispatcher.pushDeviceKey");
+
+function readStoredDeviceKey(): StoredDeviceKey | null {
+  try {
+    const raw = window.localStorage.getItem(DEVICE_KEY_STORAGE);
+    return raw ? (JSON.parse(raw) as StoredDeviceKey) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredDeviceKey(value: StoredDeviceKey) {
+  try {
+    window.localStorage.setItem(DEVICE_KEY_STORAGE, JSON.stringify(value));
+  } catch {
+    // Losing this costs one extra re-subscribe, not correctness.
+  }
+}
 
 /** A subscription plus the key the desktop must sign with to use it. */
 export interface PushRegistration extends PushSubscriptionRecord {
@@ -170,6 +200,11 @@ export async function enablePushNotifications(): Promise<PushEnableResult> {
     applicationServerPrivateKey: privateJwk,
     applicationServerPublicKey: toBase64Url(publicKeyBytes),
   };
+  writeStoredDeviceKey({
+    endpoint: result.endpoint,
+    privateJwk,
+    publicKey: result.applicationServerPublicKey,
+  });
 
   debugLog("push", "replica subscribed", {
     clientId: result.clientId,
@@ -190,4 +225,71 @@ export function safeEndpointHost(endpoint: string): string {
   } catch {
     return "<unparseable>";
   }
+}
+
+/**
+ * Re-offer an existing subscription, without prompting.
+ *
+ * The permission prompt needs a user gesture, but everything after it does
+ * not. Once permission is granted the tap has done its job forever, so this
+ * runs on load and keeps the desktop's record current — which matters because
+ * the desktop drops endpoints the push service reports as gone, and because a
+ * subscription iOS quietly retired would otherwise stay broken until someone
+ * noticed the notifications had stopped.
+ *
+ * Returns null when there is nothing to do, which is the common case: no
+ * permission yet, or not a browser that can do this at all.
+ */
+export async function restorePushRegistration(): Promise<PushRegistration | null> {
+  if (!isPushSupported() || Notification.permission !== "granted") {
+    return null;
+  }
+
+  const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+  await navigator.serviceWorker.ready;
+
+  const existing = await registration.pushManager.getSubscription();
+  const stored = readStoredDeviceKey();
+
+  if (canReuseStoredKey(stored, existing?.endpoint ?? null) && existing && stored) {
+    const record = describePushSubscription(existing, getClientId(), Date.now());
+    if (record) {
+      debugLog("push", "re-offered an existing subscription", {
+        clientId: record.clientId,
+        endpointHost: safeEndpointHost(record.endpoint),
+      });
+      return {
+        ...record,
+        applicationServerPrivateKey: stored.privateJwk,
+        applicationServerPublicKey: stored.publicKey,
+      };
+    }
+  }
+
+  // Permission is already granted, so subscribing afresh prompts for nothing.
+  const result = await enablePushNotifications();
+  return result.ok ? result.registration : null;
+}
+
+/**
+ * Whether to offer setup on load.
+ *
+ * Only when it can actually succeed and has not been answered: asking in a
+ * plain Safari tab is a dead end, and asking again after a refusal is worse
+ * than useless because a denial is permanent — the prompt cannot be shown a
+ * second time, so nagging just wastes the one chance the user has to say yes
+ * from Settings instead.
+ */
+export function shouldOfferPushSetup(args: {
+  supported: boolean;
+  standalone: boolean;
+  permission: NotificationPermission | "unavailable";
+  alreadyDismissed: boolean;
+}): boolean {
+  return (
+    args.supported
+    && args.standalone
+    && args.permission === "default"
+    && !args.alreadyDismissed
+  );
 }
