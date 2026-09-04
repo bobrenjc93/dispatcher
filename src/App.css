@@ -1925,7 +1925,8 @@ body.sidebar-dragging * {
   /* Somewhere to paste by hand where script may not read the clipboard.
      Anchored to the bottom so the soft keyboard, if it opens, pushes against
      the sheet rather than covering the field. */
-  .paste-target-backdrop {
+  .paste-target-backdrop,
+  .compose-backdrop {
     position: fixed;
     inset: 0;
     z-index: 60;
@@ -1934,7 +1935,8 @@ body.sidebar-dragging * {
     background: rgb(0 0 0 / 45%);
   }
 
-  .paste-target {
+  .paste-target,
+  .compose-sheet {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -1965,9 +1967,39 @@ body.sidebar-dragging * {
     font-size: 16px;
   }
 
-  .paste-target-actions {
+  .paste-target-actions,
+  .compose-actions {
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+  }
+
+  /* Corrections and dictation are the reason this exists, so unlike the paste
+     target the field is a plain one with nothing switched off. */
+  .compose-input {
+    width: 100%;
+    padding: 10px;
+    box-sizing: border-box;
+    resize: none;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    /* Not monospace: this is prose being written, and the keyboard's own
+       suggestion strip reads better against a normal face. */
+    font-family: inherit;
+    /* Under 16px iOS zooms the page on focus and does not zoom back out. */
+    font-size: 16px;
+    line-height: 1.4;
+  }
+
+  .compose-input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .mobile-key.is-primary {
+    border-color: var(--accent);
+    color: var(--text-primary);
   }
 }
