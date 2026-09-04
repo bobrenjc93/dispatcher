@@ -1673,10 +1673,43 @@ function attachTouchSelection(terminalId: string, instance: TerminalInstance) {
 
   const scroller = () => findScrollContainer(element);
 
+  // The exact node the class was put on, so it can be taken off that one.
+  //
+  // Both removals used to re-run the lookup, which is only correct while it
+  // keeps returning the same element. A tab switch or a relayout between the
+  // press and the release can change what it finds, or find nothing — and the
+  // class stranded on the original scroller sets `overflow: hidden` and
+  // `touch-action: none`, so that pane stops panning with no gesture that
+  // clears it. That is the freeze.
+  let markedScroller: Element | null = null;
+
+  const markSelecting = () => {
+    markedScroller = scroller() ?? null;
+    markedScroller?.classList.add(TOUCH_SELECTING_CLASS);
+    element.classList.add(TOUCH_SELECTING_CLASS);
+    debugLog("terminal.touch", "selection gesture claimed pane", {
+      terminalId,
+      markedScroller: markedScroller?.className ?? null,
+    });
+  };
+
+  const unmarkSelecting = (reason: string) => {
+    const strandedElsewhere = markedScroller !== null && markedScroller !== scroller();
+    markedScroller?.classList.remove(TOUCH_SELECTING_CLASS);
+    markedScroller = null;
+    element.classList.remove(TOUCH_SELECTING_CLASS);
+    debugLog("terminal.touch", "selection gesture released pane", {
+      terminalId,
+      reason,
+      // True means the lookup would have missed it — the old code would have
+      // left this pane frozen.
+      strandedElsewhere,
+    });
+  };
+
   const endSelection = () => {
     anchor = null;
-    scroller()?.classList.remove(TOUCH_SELECTING_CLASS);
-    element.classList.remove(TOUCH_SELECTING_CLASS);
+    unmarkSelecting("end-selection");
   };
 
   const cellAt = (touch: { clientX: number; clientY: number }): TerminalCell | null => {
@@ -1698,6 +1731,21 @@ function attachTouchSelection(terminalId: string, instance: TerminalInstance) {
   };
 
   element.addEventListener("touchstart", (event) => {
+    // Last resort. Every path that sets the class now clears it, but the cost
+    // of one escaping is a pane that never pans again, and the cost of this
+    // check is a class lookup per touch. Reported rather than swallowed: if it
+    // ever fires there is a path still unaccounted for.
+    if (anchor === null) {
+      const stranded = document.querySelectorAll(`.${TOUCH_SELECTING_CLASS}`);
+      if (stranded.length > 0) {
+        debugLog("terminal.touch", "clearing stranded selection lock", {
+          terminalId,
+          nodes: stranded.length,
+        });
+        stranded.forEach((node) => node.classList.remove(TOUCH_SELECTING_CLASS));
+      }
+    }
+
     // A fresh touch while a selection is up dismisses it, the way tapping
     // away from selected text does everywhere else.
     if (anchor !== null) {
@@ -1717,8 +1765,7 @@ function attachTouchSelection(terminalId: string, instance: TerminalInstance) {
         return;
       }
       anchor = cell;
-      scroller()?.classList.add(TOUCH_SELECTING_CLASS);
-      element.classList.add(TOUCH_SELECTING_CLASS);
+      markSelecting();
 
       // Start on the word under the finger rather than a single cell, which
       // is almost always what was meant and is hard to hit deliberately.
@@ -1756,8 +1803,10 @@ function attachTouchSelection(terminalId: string, instance: TerminalInstance) {
 
   const finish = () => {
     cancelPendingPress();
-    // The selection stays put so it can be copied; only the drag is over.
-    scroller()?.classList.remove(TOUCH_SELECTING_CLASS);
+    // The selection stays put so it can be copied; only the drag is over. The
+    // class comes off both nodes — leaving it on the wrapper kept the
+    // scrollback gesture disabled for the rest of the pane's life.
+    unmarkSelecting("touch-end");
   };
   element.addEventListener("touchend", finish, { passive: true });
   element.addEventListener("touchcancel", () => {

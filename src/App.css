@@ -1925,8 +1925,7 @@ body.sidebar-dragging * {
   /* Somewhere to paste by hand where script may not read the clipboard.
      Anchored to the bottom so the soft keyboard, if it opens, pushes against
      the sheet rather than covering the field. */
-  .paste-target-backdrop,
-  .compose-backdrop {
+  .paste-target-backdrop {
     position: fixed;
     inset: 0;
     z-index: 60;
@@ -1935,8 +1934,7 @@ body.sidebar-dragging * {
     background: rgb(0 0 0 / 45%);
   }
 
-  .paste-target,
-  .compose-sheet {
+  .paste-target {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -1967,17 +1965,58 @@ body.sidebar-dragging * {
     font-size: 16px;
   }
 
-  .paste-target-actions,
+  .paste-target-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  /* Full screen rather than a sheet at the bottom.
+     A soft keyboard does not shrink the layout viewport, so a bottom-anchored
+     box sits behind it and you cannot see what you are typing — which is the
+     one thing this dialog exists for. --app-viewport-height already tracks the
+     visual viewport, so sizing to it puts the whole modal above the keyboard
+     and lets the field take whatever room is left. */
+  .compose-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--app-viewport-height, 100dvh);
+    z-index: 70;
+    display: flex;
+    background: var(--bg-primary);
+  }
+
+  .compose-sheet {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+    min-height: 0;
+    padding: 12px;
+    /* The status bar and notch sit over the top of a full-screen fixed
+       element, so without this the first line of the field is behind the
+       clock. The bottom inset matters when the keyboard is down and the home
+       indicator is what is in the way. */
+    padding-top: calc(12px + env(safe-area-inset-top));
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    background: var(--bg-primary);
+  }
+
   .compose-actions {
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+    flex-shrink: 0;
   }
 
   /* Corrections and dictation are the reason this exists, so unlike the paste
      target the field is a plain one with nothing switched off. */
   .compose-input {
     width: 100%;
+    flex: 1;
+    min-height: 0;
     padding: 10px;
     box-sizing: border-box;
     resize: none;
