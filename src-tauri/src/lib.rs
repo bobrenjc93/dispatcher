@@ -13,6 +13,7 @@ mod renderer_watchdog;
 mod replication;
 mod run_diagnostics;
 mod session_recorder;
+mod web_push;
 mod web_server;
 
 use pty_manager::PtyManager;
@@ -211,6 +212,7 @@ pub fn run() {
             replication::publish_mirror,
             replication::read_shared_app_state,
             replication::get_web_server_info,
+            web_push::send_web_push,
             session_recorder::record_pane_output,
             session_recorder::record_session_event,
             session_recorder::describe_recorded_terminal,

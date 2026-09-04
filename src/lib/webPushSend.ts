@@ -14,6 +14,7 @@
  * without a rebuild.
  */
 
+import { invoke } from "@tauri-apps/api/core";
 import { fromBase64Url, toBase64Url } from "./webPushKeys";
 
 /** How long the push service should hold a message for a phone that is off. */
@@ -259,17 +260,18 @@ export async function sendPushNotification(args: {
     now: args.now,
   });
 
-  let response: Response;
+  // Sent from the native side, not with fetch. A push service has no reason
+  // to support CORS — it exists to be called by servers — and Apple's returns
+  // no `Access-Control-*` headers, so the preflight for these headers fails
+  // before the request is made. The error a browser reports for that is a bare
+  // "Load failed" with no status, which is exactly what this looked like.
+  let response: { status: number; detail: string };
   try {
-    response = await fetch(args.endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: authorization,
-        "Content-Encoding": "aes128gcm",
-        "Content-Type": "application/octet-stream",
-        TTL: String(args.ttlSeconds ?? DEFAULT_TTL_SECONDS),
-      },
-      body: toArrayBuffer(body),
+    response = await invoke<{ status: number; detail: string }>("send_web_push", {
+      endpoint: args.endpoint,
+      authorization,
+      ttlSeconds: args.ttlSeconds ?? DEFAULT_TTL_SECONDS,
+      body: Array.from(body),
     });
   } catch (error) {
     return {
@@ -280,13 +282,13 @@ export async function sendPushNotification(args: {
     };
   }
 
-  if (response.ok) {
+  if (response.status >= 200 && response.status < 300) {
     return { ok: true, status: response.status };
   }
   return {
     ok: false,
     status: response.status,
     expired: response.status === 404 || response.status === 410,
-    detail: await response.text().catch(() => ""),
+    detail: response.detail,
   };
 }
