@@ -336,30 +336,3 @@ export function quoteTmuxCommandArgument(value: string): string {
   }
   return `${quoted}"`;
 }
-
-/**
- * How many protocol-less lines in a row mean the far end has stopped speaking
- * control mode.
- *
- * When ssh dies under a `tmux -CC` session the PTY survives and falls back to a
- * local shell, which answers the commands still being sent to it with things
- * like `zsh: command not found: refresh-client`. tmux sends no `%exit` in that
- * case — there is no tmux left to send one — so the only evidence is the shape
- * of what comes back.
- *
- * Any line beginning with `%` resets the run, which is what makes this safe: a
- * live session emits `%output` constantly, so a healthy stream cannot
- * accumulate a run at all. The threshold is set well above the stray line, and
- * a dead session clears it within a second because every queued command draws
- * a prompt and an error.
- */
-export const TMUX_LOST_CONTROL_STREAM_LINES = 10;
-
-/** The run length after `line`, given the run before it. */
-export function nextUnscopedLineRun(currentRun: number, line: string): number {
-  return line.startsWith("%") ? 0 : currentRun + 1;
-}
-
-export function hasLostControlStream(unscopedLineRun: number): boolean {
-  return unscopedLineRun >= TMUX_LOST_CONTROL_STREAM_LINES;
-}
