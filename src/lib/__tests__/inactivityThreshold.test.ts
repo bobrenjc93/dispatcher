@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_INACTIVITY_THRESHOLD_MS,
-  MAX_INACTIVITY_THRESHOLD_MS,
-  MIN_INACTIVITY_THRESHOLD_MS,
   formatInactivityThreshold,
   parseInactivityThresholdSeconds,
   resolveInactivityThresholdMs,
@@ -13,28 +11,20 @@ describe("resolveInactivityThresholdMs", () => {
     expect(resolveInactivityThresholdMs(undefined)).toBe(DEFAULT_INACTIVITY_THRESHOLD_MS);
   });
 
-  it("uses a tab's own value when it is usable", () => {
+  it("accepts whatever the user asked for, with no ceiling", () => {
     expect(resolveInactivityThresholdMs(45_000)).toBe(45_000);
+    // A day, for a tab watching something that reports once a day.
+    expect(resolveInactivityThresholdMs(86_500_000)).toBe(86_500_000);
+    // And a very short one, if that is genuinely wanted.
+    expect(resolveInactivityThresholdMs(1_000)).toBe(1_000);
   });
 
-  it("falls back rather than propagating an unusable value", () => {
-    // These are reachable from replicated workspace state, not just from the
-    // dialog, so a tab whose status silently never updates again is the risk.
-    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 1]) {
+  it("falls back only for values that are not a duration", () => {
+    // Reachable from replicated workspace state, not just the dialog, so a tab
+    // whose status silently never updates again is the risk being avoided.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0]) {
       expect(resolveInactivityThresholdMs(bad)).toBe(DEFAULT_INACTIVITY_THRESHOLD_MS);
     }
-    expect(resolveInactivityThresholdMs(MAX_INACTIVITY_THRESHOLD_MS + 1)).toBe(
-      DEFAULT_INACTIVITY_THRESHOLD_MS
-    );
-  });
-
-  it("accepts the exact bounds", () => {
-    expect(resolveInactivityThresholdMs(MIN_INACTIVITY_THRESHOLD_MS)).toBe(
-      MIN_INACTIVITY_THRESHOLD_MS
-    );
-    expect(resolveInactivityThresholdMs(MAX_INACTIVITY_THRESHOLD_MS)).toBe(
-      MAX_INACTIVITY_THRESHOLD_MS
-    );
   });
 });
 
@@ -44,6 +34,10 @@ describe("parseInactivityThresholdSeconds", () => {
     expect(parseInactivityThresholdSeconds(" 45 ")).toEqual({ ok: true, value: 45_000 });
   });
 
+  it("accepts a day-long threshold", () => {
+    expect(parseInactivityThresholdSeconds("86500")).toEqual({ ok: true, value: 86_500_000 });
+  });
+
   it("treats an empty field as a request for the default", () => {
     // Distinct from an error: clearing the box is how a tab gives up its
     // override, so it must not be rejected as unparseable.
@@ -51,10 +45,10 @@ describe("parseInactivityThresholdSeconds", () => {
     expect(parseInactivityThresholdSeconds("   ")).toEqual({ ok: true, value: undefined });
   });
 
-  it("rejects rather than silently correcting", () => {
+  it("rejects only what is not a positive duration", () => {
     expect(parseInactivityThresholdSeconds("abc").ok).toBe(false);
-    expect(parseInactivityThresholdSeconds("1").ok).toBe(false);
-    expect(parseInactivityThresholdSeconds("99999").ok).toBe(false);
+    expect(parseInactivityThresholdSeconds("0").ok).toBe(false);
+    expect(parseInactivityThresholdSeconds("-5").ok).toBe(false);
   });
 
   it("accepts a fractional entry by rounding to whole milliseconds", () => {
@@ -67,8 +61,14 @@ describe("formatInactivityThreshold", () => {
     expect(formatInactivityThreshold(undefined)).toBe("20s");
   });
 
-  it("prefers minutes once the value divides evenly", () => {
+  it("drops units that are zero", () => {
     expect(formatInactivityThreshold(120_000)).toBe("2m");
-    expect(formatInactivityThreshold(90_000)).toBe("90s");
+    expect(formatInactivityThreshold(3_600_000)).toBe("1h");
+  });
+
+  it("keeps a menu row short by showing at most two units", () => {
+    // 24h 1m 40s — the seconds are noise at this scale.
+    expect(formatInactivityThreshold(86_500_000)).toBe("24h 1m");
+    expect(formatInactivityThreshold(90_000)).toBe("1m 30s");
   });
 });

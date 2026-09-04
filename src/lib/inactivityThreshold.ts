@@ -5,35 +5,22 @@
  * agent thinking, and an indicator that cries wolf stops being read. But one
  * number cannot fit every tab — a build is expected to be silent for minutes,
  * an agent going quiet for twenty seconds is waiting on you — so a tab may
- * override it.
+ * override it, with no ceiling. A day-long threshold is a reasonable thing to
+ * want for a tab watching something that reports once a day.
  */
 export const DEFAULT_INACTIVITY_THRESHOLD_MS = 20_000;
 
 /**
- * Bounds on what a tab may be set to.
- *
- * Below the floor the indicator would fire between two frames of ordinary
- * output and mean nothing. The ceiling is not a judgement about long builds —
- * it is that a value this large is almost always a mistyped one, and a tab that
- * silently never reports again is a worse outcome than a rejected entry.
- */
-export const MIN_INACTIVITY_THRESHOLD_MS = 5_000;
-export const MAX_INACTIVITY_THRESHOLD_MS = 60 * 60 * 1000;
-
-/**
  * The threshold to actually use for a tab.
  *
- * Anything unusable falls back to the default rather than propagating: this
- * value arrives from a text field and from replicated workspace state, so a
- * `NaN`, a negative, or an out-of-range number is reachable without anyone
- * having done something unreasonable. Silently sane beats a tab whose status
- * never updates again.
+ * The only values rejected are ones that are not a duration at all. This
+ * arrives from replicated workspace state as well as from the dialog, so a
+ * `NaN` or a negative is reachable without anyone having typed anything
+ * strange, and a tab whose status silently never updates again is a worse
+ * outcome than falling back to the default.
  */
 export function resolveInactivityThresholdMs(value: number | undefined): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return DEFAULT_INACTIVITY_THRESHOLD_MS;
-  }
-  if (value < MIN_INACTIVITY_THRESHOLD_MS || value > MAX_INACTIVITY_THRESHOLD_MS) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return DEFAULT_INACTIVITY_THRESHOLD_MS;
   }
   return Math.round(value);
@@ -42,9 +29,9 @@ export function resolveInactivityThresholdMs(value: number | undefined): number 
 /**
  * Turn what someone typed, in seconds, into a stored value.
  *
- * Returns null when the entry cannot be used, so the caller can keep the dialog
- * open rather than quietly storing something else. Clearing the field is a
- * distinct, valid intent — go back to the default — and is reported as
+ * Returns null when the entry cannot be used, so the caller can keep the
+ * dialog open rather than quietly storing something else. Clearing the field
+ * is a distinct, valid intent — go back to the default — and is reported as
  * `undefined`.
  */
 export function parseInactivityThresholdSeconds(
@@ -61,21 +48,33 @@ export function parseInactivityThresholdSeconds(
   }
 
   const ms = Math.round(seconds * 1000);
-  if (ms < MIN_INACTIVITY_THRESHOLD_MS) {
-    return { ok: false, reason: `At least ${MIN_INACTIVITY_THRESHOLD_MS / 1000}s.` };
-  }
-  if (ms > MAX_INACTIVITY_THRESHOLD_MS) {
-    return { ok: false, reason: `At most ${MAX_INACTIVITY_THRESHOLD_MS / 60_000} minutes.` };
+  if (ms <= 0) {
+    return { ok: false, reason: "Enter more than zero seconds." };
   }
   return { ok: true, value: ms };
 }
 
-/** How the current setting reads in a menu. */
+/**
+ * How the current setting reads in a menu.
+ *
+ * Two units at most: the menu row is narrow, and nobody setting a day-long
+ * threshold cares about the trailing seconds.
+ */
 export function formatInactivityThreshold(value: number | undefined): string {
-  const ms = resolveInactivityThresholdMs(value);
-  if (ms % 60_000 === 0 && ms >= 60_000) {
-    const minutes = ms / 60_000;
-    return `${minutes}m`;
+  const totalSeconds = Math.round(resolveInactivityThresholdMs(value) / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const parts: string[] = [];
+  if (hours > 0) {
+    parts.push(`${hours}h`);
   }
-  return `${Math.round(ms / 1000)}s`;
+  if (minutes > 0) {
+    parts.push(`${minutes}m`);
+  }
+  if (seconds > 0) {
+    parts.push(`${seconds}s`);
+  }
+  return parts.slice(0, 2).join(" ") || "0s";
 }
