@@ -31,12 +31,18 @@ const ESC = "\u001b";
  * The bar scrolls horizontally on a phone, so position is not cosmetic: what
  * sits past the fold costs a gesture before it costs a tap. These are the ones
  * used constantly — history, Enter, interrupt, search, and clearing the line.
+ *
+ * Split either side of the compose button, which sits with Enter because the
+ * two are used together: write something, then run it.
  */
-const LEADING_KEYS: KeyDefinition[] = [
+const NAVIGATION_KEYS: KeyDefinition[] = [
   { label: "\u2191", data: `${ESC}[A`, title: "Up" },
   { label: "\u2193", data: `${ESC}[B`, title: "Down" },
   // Carriage return, not newline: that is what a terminal reads as Enter.
   { label: "enter", data: "\r", title: "Enter" },
+];
+
+const CHORD_KEYS: KeyDefinition[] = [
   { label: "^C", data: "\u0003", title: "Ctrl+C \u2014 interrupt" },
   { label: "^R", data: "\u0012", title: "Ctrl+R \u2014 reverse search" },
   { label: "^U", data: "\u0015", title: "Ctrl+U \u2014 clear the line" },
@@ -128,6 +134,7 @@ export function MobileKeyBar() {
   const isCtrlArmed = useUiStore((s) => s.isCtrlArmed);
   const setCtrlArmed = useUiStore((s) => s.setCtrlArmed);
   const [isPasteTargetOpen, setPasteTargetOpen] = useState(false);
+  const [isComposeOpen, setComposeOpen] = useState(false);
 
   if (!activeTerminalId) {
     return null;
@@ -167,6 +174,22 @@ export function MobileKeyBar() {
     });
   };
 
+  // Paste the body, then send Enter as a separate keystroke rather than
+  // appending "\r" to the text. The paste goes out bracketed, and the whole
+  // point of bracketed paste is that a newline inside it does not submit —
+  // so a trailing carriage return would arrive as inert text.
+  const submitComposedText = (text: string, run: boolean) => {
+    setComposeOpen(false);
+    if (!text) {
+      return;
+    }
+    void pasteTextIntoTerminalById(activeTerminalId, text).then(() => {
+      if (run) {
+        sendSyntheticTerminalInput(activeTerminalId, "\r");
+      }
+    });
+  };
+
   const submitPastedText = (text: string) => {
     setPasteTargetOpen(false);
     if (text) {
@@ -176,6 +199,12 @@ export function MobileKeyBar() {
 
   return (
     <>
+      {isComposeOpen && (
+        <ComposeDialog
+          onSubmit={submitComposedText}
+          onCancel={() => setComposeOpen(false)}
+        />
+      )}
       {isPasteTargetOpen && (
         <PasteTarget
           onSubmit={submitPastedText}
@@ -183,7 +212,30 @@ export function MobileKeyBar() {
         />
       )}
       <div className="mobile-key-bar" role="toolbar" aria-label="Terminal keys">
-        {LEADING_KEYS.map((key) => (
+        {NAVIGATION_KEYS.map((key) => (
+          <button
+            key={key.label}
+            type="button"
+            className="mobile-key"
+            title={key.title}
+            onPointerDown={keepFocus}
+            onMouseDown={keepFocus}
+            onClick={() => send(key.data)}
+          >
+            {key.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="mobile-key"
+          title="Write with the keyboard's own autocorrect and dictation, then send"
+          onPointerDown={keepFocus}
+          onMouseDown={keepFocus}
+          onClick={() => setComposeOpen(true)}
+        >
+          text
+        </button>
+        {CHORD_KEYS.map((key) => (
           <button
             key={key.label}
             type="button"
@@ -242,5 +294,79 @@ export function MobileKeyBar() {
         ))}
       </div>
     </>
+  );
+}
+
+/**
+ * A real text field to write in before anything reaches the terminal.
+ *
+ * The terminal is a canvas, so on a phone it gets none of what the keyboard
+ * can actually do: autocorrect, predictive text, and dictation tools all need
+ * a genuine editable element to attach to. Typing a long command straight at
+ * the canvas means doing without all of it.
+ *
+ * So the corrections are deliberately left ON here, the opposite of the paste
+ * target — that one is a conduit for text that already exists and must arrive
+ * byte-for-byte, this one is where the text is composed.
+ */
+function ComposeDialog(props: {
+  onSubmit: (text: string, run: boolean) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="compose-backdrop" role="presentation" onPointerDown={props.onCancel}>
+      <div
+        className="compose-sheet"
+        role="dialog"
+        aria-label="Write text for the terminal"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <textarea
+          ref={inputRef}
+          className="compose-input"
+          rows={4}
+          placeholder="Type or dictate…"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            // Enter inserts a newline; sending is an explicit button. A
+            // multi-line paste is a normal thing to want here, and a field
+            // that submits on Enter cannot express one.
+            if (event.key === "Escape") {
+              event.preventDefault();
+              props.onCancel();
+            }
+          }}
+        />
+        <div className="compose-actions">
+          <button type="button" className="mobile-key" onClick={props.onCancel}>
+            cancel
+          </button>
+          <button
+            type="button"
+            className="mobile-key"
+            title="Insert the text without running it"
+            onClick={() => props.onSubmit(draft, false)}
+          >
+            send
+          </button>
+          <button
+            type="button"
+            className="mobile-key is-primary"
+            title="Insert the text and press Enter"
+            onClick={() => props.onSubmit(draft, true)}
+          >
+            send + ⏎
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
