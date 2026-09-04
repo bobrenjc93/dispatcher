@@ -321,17 +321,16 @@ function ComposeDialog(props: {
   }, []);
 
   return (
-    <div className="compose-backdrop" role="presentation" onPointerDown={props.onCancel}>
+    <div className="compose-backdrop">
       <div
         className="compose-sheet"
         role="dialog"
+        aria-modal="true"
         aria-label="Write text for the terminal"
-        onPointerDown={(event) => event.stopPropagation()}
       >
         <textarea
           ref={inputRef}
           className="compose-input"
-          rows={4}
           placeholder="Type or dictate…"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
