@@ -45,6 +45,31 @@ import {
  * be to throw it away and make another.
  */
 const DEVICE_KEY_STORAGE = getScopedStorageKey("dispatcher.pushDeviceKey");
+const DEVICE_ID_STORAGE = getScopedStorageKey("dispatcher.pushDeviceId");
+
+/**
+ * A stable identity for this device, distinct from the session client id.
+ *
+ * `getClientId` lives in sessionStorage and is reissued every launch, which is
+ * right for a mirror client and wrong here: the desktop dedupes subscriptions
+ * by this id, so a fresh one each time turns one phone into a growing list of
+ * devices, each getting its own copy of every notification.
+ */
+export function getPushDeviceId(): string {
+  try {
+    const stored = window.localStorage.getItem(DEVICE_ID_STORAGE);
+    if (stored) {
+      return stored;
+    }
+    const next = `push-${crypto.randomUUID()}`;
+    window.localStorage.setItem(DEVICE_ID_STORAGE, next);
+    return next;
+  } catch {
+    // Without storage the id cannot be stable; falling back to the session id
+    // keeps this working, at the cost of the duplication described above.
+    return getClientId();
+  }
+}
 
 function readStoredDeviceKey(): StoredDeviceKey | null {
   try {
@@ -198,7 +223,7 @@ export async function enablePushNotifications(): Promise<PushEnableResult> {
     applicationServerKey: publicKey,
   });
 
-  const record = describePushSubscription(subscription, getClientId(), Date.now());
+  const record = describePushSubscription(subscription, getPushDeviceId(), Date.now());
   if (!record) {
     return refuse("The browser returned a subscription with no keys.", {
       endpointHost: safeEndpointHost(subscription.endpoint),
@@ -263,7 +288,7 @@ export async function restorePushRegistration(): Promise<PushRegistration | null
   const stored = readStoredDeviceKey();
 
   if (canReuseStoredKey(stored, existing?.endpoint ?? null) && existing && stored) {
-    const record = describePushSubscription(existing, getClientId(), Date.now());
+    const record = describePushSubscription(existing, getPushDeviceId(), Date.now());
     if (record) {
       debugLog("push", "re-offered an existing subscription", {
         clientId: record.clientId,
