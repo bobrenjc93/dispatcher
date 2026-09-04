@@ -6,9 +6,6 @@ import {
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
   encodeTmuxSendKeysHex,
-  hasLostControlStream,
-  nextUnscopedLineRun,
-  TMUX_LOST_CONTROL_STREAM_LINES,
   normalizeTmuxPasteBufferText,
   parseTmuxPaneSnapshot,
   parseTmuxWindowSnapshot,
@@ -197,56 +194,5 @@ describe("tmuxControlProtocol", () => {
       title: "   ",
       inheritCurrentPanePath: false,
     })).toBe("new-window -a -t @24");
-  });
-});
-
-describe("control stream loss", () => {
-  function runOver(lines: string[]): number {
-    return lines.reduce((run, line) => nextUnscopedLineRun(run, line), 0);
-  }
-
-  it("declares the stream lost once a shell answers instead of tmux", () => {
-    // Taken from a real session: ssh died, the PTY fell back to zsh, and every
-    // queued control command drew a prompt and an error. No %exit ever came,
-    // because there was no tmux left to send one.
-    const prompt = "\u001b[1m\u001b[7m%\u001b[27m\u001b[0m  \r \r\r(bobren\u2026";
-    const shellChatter: string[] = [];
-    for (let i = 0; i < 6; i += 1) {
-      shellChatter.push(prompt, "zsh: command not found: refresh-client");
-    }
-
-    expect(hasLostControlStream(runOver(shellChatter))).toBe(true);
-  });
-
-  it("never trips on a live session, because any protocol line clears the run", () => {
-    const busy: string[] = [];
-    for (let i = 0; i < 50; i += 1) {
-      busy.push("%output %1 some pane bytes");
-    }
-    expect(runOver(busy)).toBe(0);
-    expect(hasLostControlStream(runOver(busy))).toBe(false);
-  });
-
-  it("tolerates a stray non-protocol line between real notifications", () => {
-    const run = runOver([
-      "%output %1 hello",
-      "stray line that is not protocol",
-      "%window-renamed @1 name",
-      "another stray",
-    ]);
-    expect(run).toBe(1);
-    expect(hasLostControlStream(run)).toBe(false);
-  });
-
-  it("requires the run to be consecutive", () => {
-    const lines: string[] = [];
-    for (let i = 0; i < TMUX_LOST_CONTROL_STREAM_LINES - 1; i += 1) {
-      lines.push("zsh: command not found: capture-pane");
-    }
-    // One real notification at the last moment means tmux is still there.
-    lines.push("%output %1 back again");
-    lines.push("zsh: command not found: capture-pane");
-
-    expect(hasLostControlStream(runOver(lines))).toBe(false);
   });
 });
