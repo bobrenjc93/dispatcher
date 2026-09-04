@@ -115,3 +115,40 @@ export async function pushAttentionNotification(args: {
     })
   );
 }
+
+/**
+ * Acknowledge a device that just enabled notifications, by notifying it.
+ *
+ * The only honest test of a push pipeline is a push arriving. Everything up to
+ * this point can look right — permission granted, subscription stored, keys
+ * the correct shape — while the message still fails to decrypt on the phone,
+ * and that failure is silent at every layer.
+ */
+export async function confirmPushRegistration(args: {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  privateJwk: JsonWebKey;
+  publicKey: string;
+  now: number;
+}): Promise<void> {
+  const result = await sendPushNotification({
+    endpoint: args.endpoint,
+    p256dh: args.p256dh,
+    auth: args.auth,
+    privateJwk: args.privateJwk,
+    publicKey: args.publicKey,
+    subject: VAPID_SUBJECT,
+    payload: {
+      title: "Dispatcher",
+      body: "Notifications are on for this device.",
+    },
+    now: args.now,
+  });
+
+  debugLog("push", result.ok ? "confirmation sent" : "confirmation failed", {
+    endpointHost: safeEndpointHost(args.endpoint),
+    status: result.status,
+    ...(result.ok ? {} : { detail: result.detail.slice(0, 300) }),
+  });
+}

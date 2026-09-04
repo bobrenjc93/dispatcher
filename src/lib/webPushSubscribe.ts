@@ -68,6 +68,16 @@ export interface PushRegistration extends PushSubscriptionRecord {
   /** Private half of this device's application server key, as a JWK. */
   applicationServerPrivateKey: JsonWebKey;
   applicationServerPublicKey: string;
+  /**
+   * True when the user just turned this on, rather than the app renewing an
+   * existing subscription on load.
+   *
+   * The desktop answers an explicit enable with a confirmation notification:
+   * it is the only way to find out the whole chain works, and finding out
+   * later — by not being notified about something — is no use at all. Renewals
+   * are silent, or every launch would ping the phone.
+   */
+  confirm?: boolean;
 }
 
 export type PushEnableResult =
@@ -206,6 +216,7 @@ export async function enablePushNotifications(): Promise<PushEnableResult> {
     publicKey: result.applicationServerPublicKey,
   });
 
+  result.confirm = true;
   debugLog("push", "replica subscribed", {
     clientId: result.clientId,
     endpointHost: safeEndpointHost(result.endpoint),
