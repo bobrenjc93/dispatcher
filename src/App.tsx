@@ -2,6 +2,8 @@ import { useEffect, useCallback, useState, useRef } from "react";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { ProjectView } from "./components/Layout/ProjectView";
 import { rememberPushSubscription } from "./lib/pushRegistry";
+import { confirmPushRegistration } from "./lib/pushNotify";
+import type { PushRegistration } from "./lib/webPushSubscribe";
 import { enablePushNotifications } from "./lib/webPushSubscribe";
 import { PushSetupPrompt } from "./components/common/PushSetupPrompt";
 import { KeyDebugOverlay } from "./components/common/KeyDebugOverlay";
@@ -836,7 +838,19 @@ export default function App() {
   // subscription here because it cannot notify itself once its web app closes.
   const handleRegisterPushSubscription = useReplicatedAction(
     "registerPushSubscription",
-    rememberPushSubscription
+    useCallback((registration: PushRegistration) => {
+      rememberPushSubscription(registration);
+      if (registration.confirm) {
+        void confirmPushRegistration({
+          endpoint: registration.endpoint,
+          p256dh: registration.p256dh,
+          auth: registration.auth,
+          privateJwk: registration.applicationServerPrivateKey,
+          publicKey: registration.applicationServerPublicKey,
+          now: Date.now(),
+        });
+      }
+    }, [])
   );
 
   // Find the layout key (tab root terminal ID) for the currently active terminal.
