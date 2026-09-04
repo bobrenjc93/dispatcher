@@ -23,6 +23,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getClientId } from "./clientId";
 import { debugLog } from "./debugLog";
+import type { PushRegistration } from "./webPushSubscribe";
 import type { DocumentPatch } from "./documentPatch";
 import { isWebClient } from "./webBridge";
 
@@ -430,6 +431,14 @@ export interface ReplicatedActions {
   focusTerminal: (terminalId: string) => void;
   /** Edits a replica made to the workspace document, for the desktop to merge. */
   documentPatch: (patch: DocumentPatch) => void;
+  /**
+   * A device offering itself as a push target.
+   *
+   * Relayed like any other action so it arrives on the desktop, which is the
+   * only party that can reach a push service — a replica has no way to notify
+   * itself once its web app is closed, which is exactly when this matters.
+   */
+  registerPushSubscription: (registration: PushRegistration) => void;
 }
 
 export type ActionName = keyof ReplicatedActions;

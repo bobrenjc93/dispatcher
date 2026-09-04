@@ -1288,6 +1288,26 @@ body.sidebar-dragging * {
   color: var(--text-primary);
 }
 
+/* Outcome of enabling push. Transient and non-blocking: the useful cases are
+   "on" and a reason it could not be, and neither is worth a dialog. */
+.push-status {
+  position: fixed;
+  left: 50%;
+  bottom: calc(72px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 2200;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 50%);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+}
+
 .context-menu {
   position: fixed;
   z-index: 2000;

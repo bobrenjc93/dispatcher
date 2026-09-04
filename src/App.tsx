@@ -1,6 +1,8 @@
 import { useEffect, useCallback, useState, useRef } from "react";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { ProjectView } from "./components/Layout/ProjectView";
+import { rememberPushSubscription } from "./lib/pushRegistry";
+import { enablePushNotifications } from "./lib/webPushSubscribe";
 import { KeyDebugOverlay } from "./components/common/KeyDebugOverlay";
 import { NameDialog } from "./components/common/NameDialog";
 import { MobileKeyBar } from "./components/Terminal/MobileKeyBar";
@@ -150,6 +152,14 @@ export default function App() {
   const compactTerminalFit = useUiStore((s) => s.compactTerminalFit);
   const setCompactTerminalFit = useUiStore((s) => s.setCompactTerminalFit);
   const compactTouchGesture = useUiStore((s) => s.compactTouchGesture);
+  const [pushStatus, setPushStatus] = useState<string | null>(null);
+  useEffect(() => {
+    if (!pushStatus) {
+      return;
+    }
+    const timer = window.setTimeout(() => setPushStatus(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [pushStatus]);
   const setCompactTouchGesture = useUiStore((s) => s.setCompactTouchGesture);
 
   // The notes column has no room next to a terminal on a phone; start hidden
@@ -821,6 +831,12 @@ export default function App() {
   const handleDeleteTerminal = useReplicatedAction("deleteTerminal", handleDeleteTerminalLocal);
   const handleSplitPane = useReplicatedAction("splitPane", handleSplitPaneLocal);
   const handleClosePane = useReplicatedAction("closePane", handleClosePaneLocal);
+  // Runs on the desktop wherever it is called from: a phone relays its
+  // subscription here because it cannot notify itself once its web app closes.
+  const handleRegisterPushSubscription = useReplicatedAction(
+    "registerPushSubscription",
+    rememberPushSubscription
+  );
 
   // Find the layout key (tab root terminal ID) for the currently active terminal.
   const layouts = useLayoutStore((s) => s.layouts);
@@ -1163,6 +1179,27 @@ export default function App() {
             {compactTouchGesture === "pan" ? "Scroll" : "Pan"}
           </button>
           <button
+            className="mobile-fit-toggle"
+            aria-label="Enable push notifications on this device"
+            onClick={() => {
+              // Straight out of the tap: Safari only shows the permission
+              // prompt from a user gesture, and refuses it the same way the
+              // user saying no looks.
+              void enablePushNotifications().then((result) => {
+                if (result.ok) {
+                  handleRegisterPushSubscription(result.registration);
+                  setPushStatus("Notifications on");
+                } else {
+                  setPushStatus(result.reason);
+                }
+              }).catch((error) => {
+                setPushStatus(error instanceof Error ? error.message : String(error));
+              });
+            }}
+          >
+            Notify
+          </button>
+          <button
             className="mobile-notes-toggle"
             aria-label={detailPanelCollapsed ? "Show notes" : "Hide notes"}
             onClick={() => setDetailPanelCollapsed(!detailPanelCollapsed)}
@@ -1212,6 +1249,11 @@ export default function App() {
         )}
       </div>
 
+      {pushStatus && (
+        <div className="push-status" role="status">
+          {pushStatus}
+        </div>
+      )}
       {isCompact && <MobileKeyBar />}
 
       {dialog?.type === "new-project" && (
