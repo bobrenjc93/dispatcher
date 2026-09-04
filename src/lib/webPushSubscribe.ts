@@ -45,6 +45,18 @@ export type PushEnableResult =
   | { ok: false; reason: string };
 
 /**
+ * Every refusal is logged, not just returned.
+ *
+ * The reason reaches the user as a toast on the phone and nowhere else, which
+ * makes a failed attempt invisible from the desktop — indistinguishable from
+ * never having tapped the button.
+ */
+function refuse(reason: string, detail: Record<string, unknown> = {}): PushEnableResult {
+  debugLog("push", "could not enable push", { reason, ...detail });
+  return { ok: false, reason };
+}
+
+/**
  * Whether this browser can do push at all.
  *
  * On iOS every one of these is present only inside a web app that has been
@@ -95,18 +107,28 @@ async function generateApplicationServerKey(): Promise<{
  * denial that looks identical to the user having said no.
  */
 export async function enablePushNotifications(): Promise<PushEnableResult> {
+  debugLog("push", "enable push requested", {
+    supported: isPushSupported(),
+    standalone: isStandaloneWebApp(),
+    permission: typeof Notification === "undefined" ? "unavailable" : Notification.permission,
+  });
+
   if (!isPushSupported()) {
-    return {
-      ok: false,
-      reason: isStandaloneWebApp()
+    return refuse(
+      isStandaloneWebApp()
         ? "This browser does not support push notifications."
         : "Add Dispatcher to your Home Screen first — iOS only allows push there.",
-    };
+      {
+        serviceWorker: "serviceWorker" in navigator,
+        pushManager: typeof window !== "undefined" && "PushManager" in window,
+        notification: typeof window !== "undefined" && "Notification" in window,
+      }
+    );
   }
 
   const permission = await Notification.requestPermission();
   if (permission !== "granted") {
-    return { ok: false, reason: `Notification permission was ${permission}.` };
+    return refuse(`Notification permission was ${permission}.`);
   }
 
   const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
@@ -124,7 +146,9 @@ export async function enablePushNotifications(): Promise<PushEnableResult> {
   const { publicKey, privateJwk } = await generateApplicationServerKey();
   const publicKeyBytes = new Uint8Array(publicKey);
   if (!isValidApplicationServerKey(publicKeyBytes)) {
-    return { ok: false, reason: "Generated an application server key of the wrong shape." };
+    return refuse("Generated an application server key of the wrong shape.", {
+      length: publicKeyBytes.length,
+    });
   }
 
   const subscription = await registration.pushManager.subscribe({
@@ -136,7 +160,9 @@ export async function enablePushNotifications(): Promise<PushEnableResult> {
 
   const record = describePushSubscription(subscription, getClientId(), Date.now());
   if (!record) {
-    return { ok: false, reason: "The browser returned a subscription with no keys." };
+    return refuse("The browser returned a subscription with no keys.", {
+      endpointHost: safeEndpointHost(subscription.endpoint),
+    });
   }
 
   const result: PushRegistration = {
