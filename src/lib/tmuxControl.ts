@@ -3557,6 +3557,17 @@ async function capturePaneFullContent(
         currentInputGeneration: currentPane.inputGeneration,
         visible: isPaneVisibleInActiveWindow(session, currentPane),
       });
+      // The reply was good — tmux sent the whole history — it just arrived
+      // after a keystroke made it untrustworthy. Dropping it without asking
+      // again left the pane believing it had captured nothing, and nothing
+      // else marks a pane stale twice, so one badly timed keypress cost the
+      // scrollback permanently. The raced-output branch below already retries
+      // for the same reason; this one simply did not.
+      schedulePaneHistoryRefreshRetryAfterRace(
+        session,
+        currentPane,
+        `${options.reason}-display-changed`
+      );
       return;
     }
     if (currentPane.contentClearGeneration !== captureGeneration) {
