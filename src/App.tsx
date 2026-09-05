@@ -4,7 +4,6 @@ import { ProjectView } from "./components/Layout/ProjectView";
 import { rememberPushSubscription } from "./lib/pushRegistry";
 import { confirmPushRegistration } from "./lib/pushNotify";
 import type { PushRegistration } from "./lib/webPushSubscribe";
-import { enablePushNotifications } from "./lib/webPushSubscribe";
 import { PushSetupPrompt } from "./components/common/PushSetupPrompt";
 import { KeyDebugOverlay } from "./components/common/KeyDebugOverlay";
 import { NameDialog } from "./components/common/NameDialog";
@@ -155,14 +154,6 @@ export default function App() {
   const compactTerminalFit = useUiStore((s) => s.compactTerminalFit);
   const setCompactTerminalFit = useUiStore((s) => s.setCompactTerminalFit);
   const compactTouchGesture = useUiStore((s) => s.compactTouchGesture);
-  const [pushStatus, setPushStatus] = useState<string | null>(null);
-  useEffect(() => {
-    if (!pushStatus) {
-      return;
-    }
-    const timer = window.setTimeout(() => setPushStatus(null), 6000);
-    return () => window.clearTimeout(timer);
-  }, [pushStatus]);
   const setCompactTouchGesture = useUiStore((s) => s.setCompactTouchGesture);
 
   // The notes column has no room next to a terminal on a phone; start hidden
@@ -1194,27 +1185,6 @@ export default function App() {
             {compactTouchGesture === "pan" ? "Scroll" : "Pan"}
           </button>
           <button
-            className="mobile-fit-toggle"
-            aria-label="Enable push notifications on this device"
-            onClick={() => {
-              // Straight out of the tap: Safari only shows the permission
-              // prompt from a user gesture, and refuses it the same way the
-              // user saying no looks.
-              void enablePushNotifications().then((result) => {
-                if (result.ok) {
-                  handleRegisterPushSubscription(result.registration);
-                  setPushStatus("Notifications on");
-                } else {
-                  setPushStatus(result.reason);
-                }
-              }).catch((error) => {
-                setPushStatus(error instanceof Error ? error.message : String(error));
-              });
-            }}
-          >
-            Notify
-          </button>
-          <button
             className="mobile-notes-toggle"
             aria-label={detailPanelCollapsed ? "Show notes" : "Hide notes"}
             onClick={() => setDetailPanelCollapsed(!detailPanelCollapsed)}
@@ -1265,11 +1235,6 @@ export default function App() {
       </div>
 
       <PushSetupPrompt onRegister={handleRegisterPushSubscription} />
-      {pushStatus && (
-        <div className="push-status" role="status">
-          {pushStatus}
-        </div>
-      )}
       {isCompact && <MobileKeyBar />}
 
       {dialog?.type === "new-project" && (
