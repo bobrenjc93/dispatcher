@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canReuseStoredKey,
   describePushSubscription,
+  dropUnclaimableSubscriptions,
   fromBase64Url,
   isValidApplicationServerKey,
   mergeSubscription,
@@ -118,5 +119,31 @@ describe("canReuseStoredKey", () => {
     expect(canReuseStoredKey(stored, "https://web.push.apple.com/b")).toBe(false);
     expect(canReuseStoredKey(stored, null)).toBe(false);
     expect(canReuseStoredKey(null, "https://web.push.apple.com/a")).toBe(false);
+  });
+});
+
+describe("dropUnclaimableSubscriptions", () => {
+  it("keeps devices that can still refresh themselves", () => {
+    const entries = [{ clientId: "push-abc" }, { clientId: "push-def" }];
+    expect(dropUnclaimableSubscriptions(entries)).toEqual(entries);
+  });
+
+  it("drops registrations made before devices had stable ids", () => {
+    // These used the session client id, reissued every launch. The device
+    // re-registers under a new stable id, so the old entry is never replaced
+    // and never expires — every notification goes out an extra time, forever.
+    const entries = [
+      { clientId: "fb06827a-d937-4759-a97b-4c3778fb64b7" },
+      { clientId: "push-d7e73236-9e73-4368-816e-c0ccb82bf682" },
+      { clientId: "6545f432-ecd9-4308-b286-b9d0b3e32291" },
+    ];
+    expect(dropUnclaimableSubscriptions(entries)).toEqual([
+      { clientId: "push-d7e73236-9e73-4368-816e-c0ccb82bf682" },
+    ]);
+  });
+
+  it("returns nothing rather than everything when all are unclaimable", () => {
+    // Losing them costs one re-enable; keeping them costs duplicates forever.
+    expect(dropUnclaimableSubscriptions([{ clientId: "old-1" }])).toEqual([]);
   });
 });
