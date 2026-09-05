@@ -140,3 +140,26 @@ export async function confirmPushRegistration(args: {
     ...(result.ok ? {} : { detail: result.detail.slice(0, 300) }),
   });
 }
+
+/**
+ * Send a notification for a tab right now, because someone asked.
+ *
+ * Deliberately runs the same encryption, transport and payload as a real
+ * attention push — a test that takes a shortcut proves only that the shortcut
+ * works. All it skips is the decision about whether the tab deserved one.
+ */
+export async function sendTestPushNotification(args: {
+  tabRootTerminalId: string;
+  title: string;
+  now: number;
+}): Promise<void> {
+  const devices = listPushSubscriptions();
+  debugLog("push", "test push requested", {
+    tabRootTerminalId: args.tabRootTerminalId,
+    devices: devices.length,
+  });
+  if (devices.length === 0) {
+    return;
+  }
+  await pushAttentionNotification(args);
+}

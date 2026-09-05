@@ -2,7 +2,7 @@ import { useEffect, useCallback, useState, useRef } from "react";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { ProjectView } from "./components/Layout/ProjectView";
 import { rememberPushSubscription } from "./lib/pushRegistry";
-import { confirmPushRegistration } from "./lib/pushNotify";
+import { confirmPushRegistration, sendTestPushNotification } from "./lib/pushNotify";
 import type { PushRegistration } from "./lib/webPushSubscribe";
 import { PushSetupPrompt } from "./components/common/PushSetupPrompt";
 import { startAppFocusTracking } from "./lib/appFocus";
@@ -829,6 +829,13 @@ export default function App() {
   const handleDeleteTerminal = useReplicatedAction("deleteTerminal", handleDeleteTerminalLocal);
   const handleSplitPane = useReplicatedAction("splitPane", handleSplitPaneLocal);
   const handleClosePane = useReplicatedAction("closePane", handleClosePaneLocal);
+  const handleSendTestPush = useReplicatedAction(
+    "sendTestPush",
+    useCallback((tabRootTerminalId: string, title: string) => {
+      void sendTestPushNotification({ tabRootTerminalId, title, now: Date.now() });
+    }, [])
+  );
+
   // Runs on the desktop wherever it is called from: a phone relays its
   // subscription here because it cannot notify itself once its web app closes.
   const handleRegisterPushSubscription = useReplicatedAction(
