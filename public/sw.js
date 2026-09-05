@@ -74,7 +74,12 @@ self.addEventListener("notificationclick", (event) => {
         }
       }
       if (self.clients.openWindow) {
-        await self.clients.openWindow("/");
+        // Nothing is running to receive a message, so the terminal travels in
+        // the URL. The app strips the parameter once it has acted on it.
+        const target = terminalId
+          ? `/?terminal=${encodeURIComponent(terminalId)}`
+          : "/";
+        await self.clients.openWindow(target);
       }
     })()
   );
