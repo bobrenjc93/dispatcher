@@ -19,10 +19,14 @@ import { safeEndpointHost } from "./webPushSubscribe";
 
 /**
  * VAPID requires a contact the push service can use if a sender misbehaves.
- * It never leaves the desktop except in the signed token, and no mail is ever
- * sent to it — but the header is rejected outright without one.
+ *
+ * Apple validates it: `mailto:dispatcher@localhost` is syntactically a mailto
+ * but `localhost` resolves to nothing, and the whole token comes back as
+ * `403 BadJwtToken` — an error that says nothing about which claim was wrong.
+ * An https URL identifying the software is equally valid and cannot go stale
+ * the way a personal address would.
  */
-const VAPID_SUBJECT = "mailto:dispatcher@localhost";
+const VAPID_SUBJECT = "https://github.com/bobrenjc93/dispatcher";
 
 /**
  * Whether a tab has opted into being reached at all.
