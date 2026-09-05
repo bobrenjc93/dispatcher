@@ -25,6 +25,7 @@ import {
   shouldNotifyOnInaction,
 } from "../lib/inactionNotification";
 import { bounceDockForAttention, shouldBounceDock } from "../lib/dockAttention";
+import { isAppFocused } from "../lib/appFocus";
 import { pushAttentionNotification } from "../lib/pushNotify";
 import { resolveInactivityThresholdMs } from "../lib/inactivityThreshold";
 import { pushStatusDebug } from "../lib/statusDebug";
@@ -552,7 +553,7 @@ export function useTerminalScreenshotMonitor() {
         staleStartedAt: args.staleStartedAt,
         effectiveChangedAt: args.effectiveChangedAt,
         lastNotifiedChangedAt: notifiedChangedAt,
-        documentHasFocus: document.hasFocus(),
+        documentHasFocus: isAppFocused(),
         hasAcknowledgedCurrentOutput: args.hasAcknowledgedCurrentOutput,
       })) {
         return;
@@ -589,7 +590,7 @@ export function useTerminalScreenshotMonitor() {
         enabled: args.enabled,
         wasNeedsAttention: args.wasNeedsAttention,
         nextNeedsAttention: args.nextNeedsAttention,
-        documentHasFocus: document.hasFocus(),
+        documentHasFocus: isAppFocused(),
       })) {
         return;
       }
@@ -805,7 +806,7 @@ export function useTerminalScreenshotMonitor() {
       isActiveTab: boolean,
       now: number
     ) => {
-      if (isActiveTab && document.hasFocus()) {
+      if (isActiveTab && isAppFocused()) {
         acknowledgedAt.set(tabRootTerminalId, now);
       }
     };

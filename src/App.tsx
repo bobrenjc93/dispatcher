@@ -5,6 +5,7 @@ import { rememberPushSubscription } from "./lib/pushRegistry";
 import { confirmPushRegistration } from "./lib/pushNotify";
 import type { PushRegistration } from "./lib/webPushSubscribe";
 import { PushSetupPrompt } from "./components/common/PushSetupPrompt";
+import { startAppFocusTracking } from "./lib/appFocus";
 import { KeyDebugOverlay } from "./components/common/KeyDebugOverlay";
 import { NameDialog } from "./components/common/NameDialog";
 import { MobileKeyBar } from "./components/Terminal/MobileKeyBar";
@@ -129,6 +130,9 @@ export default function App() {
     }
   }, []);
   useSoftKeyboardViewport(isCompact, handleSoftKeyboardViewport);
+
+  // Must be running before anything asks whether the app is frontmost.
+  useEffect(() => startAppFocusTracking(), []);
 
   // Land on the newest output rather than wherever the replay happened to
   // leave the viewport. Focus goes with it so the first tap types instead of
