@@ -11,6 +11,8 @@ const base = {
   lastNotifiedChangedAt: 0,
   documentHasFocus: false,
   hasAcknowledgedCurrentOutput: false,
+  // The chime's setting; the push case is covered separately below.
+  suppressWhenAppFocused: true,
 };
 
 describe("shouldNotifyOnInaction", () => {
@@ -56,5 +58,45 @@ describe("shouldNotifyOnInaction", () => {
     expect(shouldNotifyOnInaction({ ...base, now: 14_999 })).toBe(false);
     expect(shouldNotifyOnInaction({ ...base, hasDetectedActivity: false })).toBe(false);
     expect(shouldNotifyOnInaction({ ...base, enabled: false })).toBe(false);
+  });
+});
+
+describe("suppressWhenAppFocused", () => {
+  it("holds the chime back while you are looking at Dispatcher", () => {
+    expect(shouldNotifyOnInaction({ ...base, documentHasFocus: true })).toBe(false);
+  });
+
+  it("still pushes while you are looking at Dispatcher", () => {
+    // A push goes to a phone that may be in another room; where your eyes are
+    // on the desktop says nothing about whether you want it there.
+    expect(
+      shouldNotifyOnInaction({
+        ...base,
+        documentHasFocus: true,
+        suppressWhenAppFocused: false,
+      })
+    ).toBe(true);
+  });
+
+  it("keeps every other rule for the push", () => {
+    // Acknowledgement in particular: a tab you have actually looked at since
+    // its last output stays quiet on the phone too.
+    for (const override of [
+      { hasAcknowledgedCurrentOutput: true },
+      { now: 10_000 },
+      { hasDetectedActivity: false },
+      { wasEnabled: false },
+      { enabled: false },
+      { lastNotifiedChangedAt: 5_000 },
+    ]) {
+      expect(
+        shouldNotifyOnInaction({
+          ...base,
+          documentHasFocus: true,
+          suppressWhenAppFocused: false,
+          ...override,
+        })
+      ).toBe(false);
+    }
   });
 });
