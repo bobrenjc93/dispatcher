@@ -517,16 +517,21 @@ export function useTerminalScreenshotMonitor() {
       tabRootTerminalId: string;
       title: string;
       enabled: boolean;
+      pushEnabled: boolean;
       hasDetectedActivity: boolean;
       now: number;
       staleStartedAt: number;
       effectiveChangedAt: number;
       hasAcknowledgedCurrentOutput: boolean;
     }) => {
+      // The chime and the push are separate switches over one event. Both are
+      // folded into `enabled` so the arming and de-duplication below happen
+      // once; which outputs actually fire is decided at the end.
+      const anyEnabled = args.enabled || args.pushEnabled;
       const wasEnabled = notificationEnabledByTab.get(args.tabRootTerminalId) === true;
-      notificationEnabledByTab.set(args.tabRootTerminalId, args.enabled);
+      notificationEnabledByTab.set(args.tabRootTerminalId, anyEnabled);
 
-      if (!args.enabled) {
+      if (!anyEnabled) {
         lastNotifiedChangedAt.delete(args.tabRootTerminalId);
         return;
       }
@@ -540,7 +545,7 @@ export function useTerminalScreenshotMonitor() {
       }
 
       if (!shouldNotifyOnInaction({
-        enabled: args.enabled,
+        enabled: anyEnabled,
         wasEnabled,
         hasDetectedActivity: args.hasDetectedActivity,
         now: args.now,
@@ -560,16 +565,16 @@ export function useTerminalScreenshotMonitor() {
         effectiveChangedAt: args.effectiveChangedAt,
         staleStartedAt: args.staleStartedAt,
       });
-      void notifyTerminalInaction();
-      // Rides along with the chime rather than deciding anew: the tab already
-      // opted in and the rules above already said this is worth interrupting
-      // for. Push only adds reach, for a laptop that is shut.
-      void pushAttentionNotification({
-        tabRootTerminalId: args.tabRootTerminalId,
-        title: args.title,
-        reason: "inaction",
-        now: args.now,
-      });
+      if (args.enabled) {
+        void notifyTerminalInaction();
+      }
+      if (args.pushEnabled) {
+        void pushAttentionNotification({
+          tabRootTerminalId: args.tabRootTerminalId,
+          title: args.title,
+          now: args.now,
+        });
+      }
     };
 
     const maybeBounceDockForAttention = (args: {
@@ -589,12 +594,6 @@ export function useTerminalScreenshotMonitor() {
         return;
       }
       bounceDockForAttention(args.tabRootTerminalId, args.title);
-      void pushAttentionNotification({
-        tabRootTerminalId: args.tabRootTerminalId,
-        title: args.title,
-        reason: "attention",
-        now: Date.now(),
-      });
     };
 
     const applyTimestampStatus = (args: {
@@ -694,6 +693,7 @@ export function useTerminalScreenshotMonitor() {
         tabRootTerminalId: args.tabRootTerminalId,
         title: tabRootSession?.title ?? "Terminal",
         enabled: tabRootSession?.notifyOnInaction ?? false,
+        pushEnabled: tabRootSession?.pushOnInaction ?? false,
         hasDetectedActivity,
         now: args.now,
         staleStartedAt,
@@ -1106,6 +1106,7 @@ export function useTerminalScreenshotMonitor() {
             tabRootTerminalId,
             title: tabRootSession?.title ?? "Terminal",
             enabled: tabRootSession?.notifyOnInaction ?? false,
+            pushEnabled: tabRootSession?.pushOnInaction ?? false,
             hasDetectedActivity,
             now,
             staleStartedAt,
