@@ -46,6 +46,7 @@ import {
  */
 const DEVICE_KEY_STORAGE = getScopedStorageKey("dispatcher.pushDeviceKey");
 const DEVICE_ID_STORAGE = getScopedStorageKey("dispatcher.pushDeviceId");
+const REGISTERED_BEFORE_STORAGE = getScopedStorageKey("dispatcher.pushRegisteredBefore");
 
 /**
  * A stable identity for this device, distinct from the session client id.
@@ -235,6 +236,11 @@ export async function enablePushNotifications(): Promise<PushEnableResult> {
     applicationServerPrivateKey: privateJwk,
     applicationServerPublicKey: toBase64Url(publicKeyBytes),
   };
+  try {
+    window.localStorage.setItem(REGISTERED_BEFORE_STORAGE, "1");
+  } catch {
+    // Only affects whether the blocked-by-settings notice can be shown.
+  }
   writeStoredDeviceKey({
     endpoint: result.endpoint,
     privateJwk,
@@ -328,4 +334,41 @@ export function shouldOfferPushSetup(args: {
     && args.permission === "default"
     && !args.alreadyDismissed
   );
+}
+
+/**
+ * Whether push is switched on but cannot possibly work.
+ *
+ * iOS revokes notification permission from a web app that receives pushes and
+ * does not display them, and it does so without telling anyone: the push
+ * service keeps returning 201, the subscription keeps looking valid, and every
+ * notification is accepted and then thrown away.
+ *
+ * Worse, the app cannot dig itself out. The permission prompt only appears
+ * once, so `requestPermission` returns "denied" immediately and the setup
+ * dialog — which only offers itself when the question is unanswered — stays
+ * hidden. The only way through is the Settings app, so the only useful thing
+ * to do is say so.
+ */
+export function isPushBlockedBySettings(args: {
+  supported: boolean;
+  standalone: boolean;
+  permission: NotificationPermission | "unavailable";
+  hasRegisteredBefore: boolean;
+}): boolean {
+  return (
+    args.supported
+    && args.standalone
+    && args.permission === "denied"
+    && args.hasRegisteredBefore
+  );
+}
+
+/** Whether this device has ever had a working subscription. */
+export function hasRegisteredPushBefore(): boolean {
+  try {
+    return window.localStorage.getItem(REGISTERED_BEFORE_STORAGE) === "1";
+  } catch {
+    return false;
+  }
 }

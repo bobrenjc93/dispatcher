@@ -8,6 +8,8 @@ import {
 import { isReplicaClient } from "../../lib/replication";
 import {
   enablePushNotifications,
+  hasRegisteredPushBefore,
+  isPushBlockedBySettings,
   isPushSupported,
   isStandaloneWebApp,
   restorePushRegistration,
@@ -47,6 +49,7 @@ function rememberDismissed() {
  */
 export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) => void }) {
   const [visible, setVisible] = useState(false);
+  const [blocked, setBlocked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,6 +71,21 @@ export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) =
         alreadyDismissed: wasDismissed(),
       })
     ) {
+      setVisible(true);
+      return;
+    }
+
+    if (
+      isPushBlockedBySettings({
+        supported: isPushSupported(),
+        standalone: isStandaloneWebApp(),
+        permission,
+        hasRegisteredBefore: hasRegisteredPushBefore(),
+      })
+    ) {
+      // Nothing to retry: the prompt is spent, so the only way back is
+      // Settings. Saying so beats a feature that is quietly switched off.
+      setBlocked(true);
       setVisible(true);
       return;
     }
@@ -155,30 +173,54 @@ export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) =
     <div className="push-setup-backdrop" role="presentation">
       <div className="push-setup" role="dialog" aria-modal="true" aria-labelledby="push-setup-title">
         <h2 className="push-setup-title" id="push-setup-title">
-          Get notified on this phone
+          {blocked ? "Notifications are switched off" : "Get notified on this phone"}
         </h2>
-        <p className="push-setup-copy">
-          Dispatcher can notify you when a tab goes quiet, even with this app closed.
-          Turn it on per tab with <strong>Push on Inactivity</strong> in the tab's
-          right-click menu.
-        </p>
-        <p className="push-setup-copy push-setup-note">
-          iOS will ask for permission next. It only asks once, so if you say no you would
-          have to re-enable it in Settings.
-        </p>
+        {blocked ? (
+          <>
+            <p className="push-setup-copy">
+              iOS is refusing notifications for Dispatcher, so pushes are being delivered
+              and then discarded. This usually happens after a few arrive without being
+              shown.
+            </p>
+            <p className="push-setup-copy push-setup-note">
+              Turn them back on in <strong>Settings → Notifications → Dispatcher</strong>.
+              If it is not listed, remove this app from your Home Screen and add it again.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="push-setup-copy">
+              Dispatcher can notify you when a tab goes quiet, even with this app closed.
+              Turn it on per tab with <strong>Push on Inactivity</strong> in the tab's
+              right-click menu.
+            </p>
+            <p className="push-setup-copy push-setup-note">
+              iOS will ask for permission next. It only asks once, so if you say no you
+              would have to re-enable it in Settings.
+            </p>
+          </>
+        )}
         {error && <p className="push-setup-error">{error}</p>}
         <div className="push-setup-actions">
-          <button type="button" className="push-setup-btn" onClick={dismiss} disabled={busy}>
-            Not now
-          </button>
-          <button
-            type="button"
-            className="push-setup-btn is-primary"
-            onClick={enable}
-            disabled={busy}
-          >
-            {busy ? "Enabling…" : "Enable"}
-          </button>
+          {blocked ? (
+            <button type="button" className="push-setup-btn is-primary" onClick={dismiss}>
+              Got it
+            </button>
+          ) : (
+            <>
+              <button type="button" className="push-setup-btn" onClick={dismiss} disabled={busy}>
+                Not now
+              </button>
+              <button
+                type="button"
+                className="push-setup-btn is-primary"
+                onClick={enable}
+                disabled={busy}
+              >
+                {busy ? "Enabling…" : "Enable"}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

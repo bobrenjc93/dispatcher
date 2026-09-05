@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldOfferPushSetup } from "../webPushSubscribe";
+import { isPushBlockedBySettings, shouldOfferPushSetup } from "../webPushSubscribe";
 
 const base = {
   supported: true,
@@ -26,5 +26,35 @@ describe("shouldOfferPushSetup", () => {
     expect(shouldOfferPushSetup({ ...base, standalone: false })).toBe(false);
     expect(shouldOfferPushSetup({ ...base, supported: false })).toBe(false);
     expect(shouldOfferPushSetup({ ...base, permission: "unavailable" })).toBe(false);
+  });
+});
+
+describe("isPushBlockedBySettings", () => {
+  const blocked = {
+    supported: true,
+    standalone: true,
+    permission: "denied" as NotificationPermission,
+    hasRegisteredBefore: true,
+  };
+
+  it("spots a device iOS has quietly stopped showing notifications on", () => {
+    // The push service still returns 201 and the subscription still looks
+    // valid, so nothing else in the system can tell.
+    expect(isPushBlockedBySettings(blocked)).toBe(true);
+  });
+
+  it("does not nag someone who simply said no at the start", () => {
+    // Never registered means the denial was a choice, not a revocation.
+    expect(isPushBlockedBySettings({ ...blocked, hasRegisteredBefore: false })).toBe(false);
+  });
+
+  it("stays quiet when permission is fine or unanswered", () => {
+    expect(isPushBlockedBySettings({ ...blocked, permission: "granted" })).toBe(false);
+    expect(isPushBlockedBySettings({ ...blocked, permission: "default" })).toBe(false);
+  });
+
+  it("stays quiet where push could not work anyway", () => {
+    expect(isPushBlockedBySettings({ ...blocked, standalone: false })).toBe(false);
+    expect(isPushBlockedBySettings({ ...blocked, supported: false })).toBe(false);
   });
 });
