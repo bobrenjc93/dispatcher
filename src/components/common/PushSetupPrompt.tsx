@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
 import { getScopedStorageKey } from "../../lib/storageNamespace";
+import {
+  FOCUS_TERMINAL_MESSAGE,
+  focusTerminalFromNotification,
+  readFocusTerminalFromUrl,
+} from "../../lib/notificationNavigation";
 import { isReplicaClient } from "../../lib/replication";
 import {
   enablePushNotifications,
@@ -80,6 +85,45 @@ export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Tapping a notification, in both the shapes it can arrive as.
+  useEffect(() => {
+    if (!isReplicaClient() || !("serviceWorker" in navigator)) {
+      return;
+    }
+
+    // Warm: the app was already running and the worker posted to it.
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === FOCUS_TERMINAL_MESSAGE && event.data.terminalId) {
+        focusTerminalFromNotification(event.data.terminalId);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+
+    // Cold: the worker had to launch the app, so the terminal came in the URL.
+    // The workspace arrives from the desktop asynchronously, so this waits for
+    // the tab to exist rather than giving up on the first miss.
+    const { terminalId, cleanedHref } = readFocusTerminalFromUrl(window.location.href);
+    let cancelled = false;
+    if (terminalId) {
+      window.history.replaceState(null, "", cleanedHref);
+      const deadline = Date.now() + 15_000;
+      const attempt = () => {
+        if (cancelled || focusTerminalFromNotification(terminalId)) {
+          return;
+        }
+        if (Date.now() < deadline) {
+          window.setTimeout(attempt, 250);
+        }
+      };
+      attempt();
+    }
+
+    return () => {
+      cancelled = true;
+      navigator.serviceWorker.removeEventListener("message", onMessage);
+    };
+  }, []);
+
   if (!visible) {
     return null;
   }
@@ -114,9 +158,9 @@ export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) =
           Get notified on this phone
         </h2>
         <p className="push-setup-copy">
-          Dispatcher can notify you when a tab needs attention, even with the app closed
-          and your laptop shut. It uses the settings you already have per tab — Notify on
-          Inactivity and Bounce on Inactivity.
+          Dispatcher can notify you when a tab goes quiet, even with this app closed.
+          Turn it on per tab with <strong>Push on Inactivity</strong> in the tab's
+          right-click menu.
         </p>
         <p className="push-setup-copy push-setup-note">
           iOS will ask for permission next. It only asks once, so if you say no you would
