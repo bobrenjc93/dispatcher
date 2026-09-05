@@ -15,6 +15,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { debugLog } from "./debugLog";
 import { fromBase64Url, toBase64Url } from "./webPushKeys";
 
 /** How long the push service should hold a message for a phone that is off. */
@@ -265,6 +266,23 @@ export async function sendPushNotification(args: {
   // no `Access-Control-*` headers, so the preflight for these headers fails
   // before the request is made. The error a browser reports for that is a bare
   // "Load failed" with no status, which is exactly what this looked like.
+  // A push service does not decrypt the payload, so a body mangled on its way
+  // to the native side is accepted with a 201 and silently discarded by the
+  // phone. That failure is indistinguishable from success everywhere except
+  // here, so the structure is checked at the point of handoff.
+  const header = new DataView(body.buffer, body.byteOffset, body.byteLength);
+  debugLog("push", "handing off an encrypted body", {
+    bytes: body.length,
+    recordSize: body.length >= 20 ? header.getUint32(16) : null,
+    keyLength: body.length >= 21 ? body[20] : null,
+    keyPrefix: body.length >= 22 ? body[21] : null,
+    plausible:
+      body.length > 86
+      && body[20] === 65
+      && body[21] === 0x04
+      && header.getUint32(16) === RECORD_SIZE,
+  });
+
   let response: { status: number; detail: string };
   try {
     response = await invoke<{ status: number; detail: string }>("send_web_push", {
