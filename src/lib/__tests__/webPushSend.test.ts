@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildPushPayload } from "../pushNotify";
 import {
   buildVapidAuthorization,
   derivePushContentKeys,
@@ -131,5 +132,27 @@ describe("buildVapidAuthorization", () => {
     expect(decoded.exp).toBe(1_700_000_000 + 12 * 60 * 60);
     // ES256 wants the raw r||s pair; a DER signature would be longer.
     expect(fromBase64Url(signature).length).toBe(64);
+  });
+});
+
+describe("buildPushPayload", () => {
+  it("names the tab that went quiet", () => {
+    expect(buildPushPayload({ title: "[fable/a] precompile stack", terminalId: "t1" })).toEqual({
+      title: "Dispatcher",
+      body: "[fable/a] precompile stack is now inactive",
+      terminalId: "t1",
+    });
+  });
+
+  it("still says something useful for an unnamed tab", () => {
+    // Titles come from tmux and can be empty; "  is now inactive" would be
+    // worse than a generic line.
+    expect(buildPushPayload({ title: "   ", terminalId: "t1" }).body).toBe(
+      "A terminal is now inactive"
+    );
+  });
+
+  it("carries the terminal so tapping it opens the right tab", () => {
+    expect(buildPushPayload({ title: "x", terminalId: "abc" }).terminalId).toBe("abc");
   });
 });
