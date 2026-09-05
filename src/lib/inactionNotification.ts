@@ -115,21 +115,25 @@ export function shouldNotifyOnInaction(args: {
   documentHasFocus: boolean;
   hasAcknowledgedCurrentOutput: boolean;
   /**
-   * Whether having Dispatcher in front of you should call this off.
+   * Whether being at the desktop should call this off.
    *
-   * True for the chime, which plays out of the machine you are already looking
-   * at. False for a push, which goes to a phone: where your eyes are on the
-   * desktop says nothing about whether you want the notification there, and it
-   * may be in another room. Acknowledgement still applies either way, so a tab
-   * you are actually watching stays quiet.
+   * Covers both ways the app can tell you are already here: Dispatcher being
+   * frontmost, and the tab having been watched since its last output. True for
+   * the chime, which comes out of the machine you are sitting at, so both are
+   * good reasons to stay quiet.
+   *
+   * False for a push. It goes to a phone that may be in another room or in a
+   * pocket on the way out, and neither of those facts about the desktop says
+   * anything about whether you want it there. What still applies is
+   * `lastNotifiedChangedAt`, so one quiet period still produces one push.
    */
-  suppressWhenAppFocused: boolean;
+  suppressWhenAtDesktop: boolean;
 }): boolean {
   // The point of the sound is to reach someone who is somewhere else. Playing
   // it at a user with Dispatcher already in front of them tells them nothing
   // they cannot see, and a sound that fires while you are watching is the kind
   // that gets turned off.
-  if (args.suppressWhenAppFocused && args.documentHasFocus) {
+  if (args.suppressWhenAtDesktop && args.documentHasFocus) {
     return false;
   }
 
@@ -138,7 +142,7 @@ export function shouldNotifyOnInaction(args: {
   // already see — but the clock runs regardless of whether you were watching,
   // so switching to another app was enough to be told about output you had
   // just finished reading. Only output you have not seen is worth a sound.
-  if (args.hasAcknowledgedCurrentOutput) {
+  if (args.suppressWhenAtDesktop && args.hasAcknowledgedCurrentOutput) {
     return false;
   }
 

@@ -12,7 +12,7 @@ const base = {
   documentHasFocus: false,
   hasAcknowledgedCurrentOutput: false,
   // The chime's setting; the push case is covered separately below.
-  suppressWhenAppFocused: true,
+  suppressWhenAtDesktop: true,
 };
 
 describe("shouldNotifyOnInaction", () => {
@@ -61,7 +61,7 @@ describe("shouldNotifyOnInaction", () => {
   });
 });
 
-describe("suppressWhenAppFocused", () => {
+describe("suppressWhenAtDesktop", () => {
   it("holds the chime back while you are looking at Dispatcher", () => {
     expect(shouldNotifyOnInaction({ ...base, documentHasFocus: true })).toBe(false);
   });
@@ -73,16 +73,25 @@ describe("suppressWhenAppFocused", () => {
       shouldNotifyOnInaction({
         ...base,
         documentHasFocus: true,
-        suppressWhenAppFocused: false,
+        suppressWhenAtDesktop: false,
       })
     ).toBe(true);
   });
 
-  it("keeps every other rule for the push", () => {
-    // Acknowledgement in particular: a tab you have actually looked at since
-    // its last output stays quiet on the phone too.
+  it("pushes about a tab you are watching, which the chime would not", () => {
+    // Being at the desktop is not evidence about a phone in another room.
+    const watched = {
+      ...base,
+      documentHasFocus: true,
+      hasAcknowledgedCurrentOutput: true,
+    };
+    expect(shouldNotifyOnInaction({ ...watched, suppressWhenAtDesktop: true })).toBe(false);
+    expect(shouldNotifyOnInaction({ ...watched, suppressWhenAtDesktop: false })).toBe(true);
+  });
+
+  it("keeps every rule that is not about being at the desktop", () => {
+    // One push per quiet period, and nothing for a tab that never woke up.
     for (const override of [
-      { hasAcknowledgedCurrentOutput: true },
       { now: 10_000 },
       { hasDetectedActivity: false },
       { wasEnabled: false },
@@ -93,7 +102,7 @@ describe("suppressWhenAppFocused", () => {
         shouldNotifyOnInaction({
           ...base,
           documentHasFocus: true,
-          suppressWhenAppFocused: false,
+          suppressWhenAtDesktop: false,
           ...override,
         })
       ).toBe(false);
