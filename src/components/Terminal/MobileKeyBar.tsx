@@ -40,7 +40,7 @@ const NAVIGATION_KEYS: KeyDefinition[] = [
   { label: "\u2191", data: `${ESC}[A`, title: "Up" },
   { label: "\u2193", data: `${ESC}[B`, title: "Down" },
   // Carriage return, not newline: that is what a terminal reads as Enter.
-  { label: "enter", data: "\r", title: "Enter" },
+  { label: "\u23ce", data: "\r", title: "Enter" },
 ];
 
 const CHORD_KEYS: KeyDefinition[] = [
@@ -294,6 +294,26 @@ export function MobileKeyBar() {
         >
           text
         </button>
+        <button
+          type="button"
+          className="mobile-key"
+          title="Show the terminal text so it can be selected"
+          onPointerDown={keepFocus}
+          onMouseDown={keepFocus}
+          onClick={() => setSelectOpen(true)}
+        >
+          select
+        </button>
+        <button
+          type="button"
+          className="mobile-key"
+          title="Paste from the clipboard"
+          onPointerDown={keepFocus}
+          onMouseDown={keepFocus}
+          onClick={pasteClipboard}
+        >
+          paste
+        </button>
         {CHORD_KEYS.map((key) => (
           <button
             key={key.label}
@@ -316,26 +336,6 @@ export function MobileKeyBar() {
           onClick={copyVisible}
         >
           copy
-        </button>
-        <button
-          type="button"
-          className="mobile-key"
-          title="Show the terminal text so it can be selected"
-          onPointerDown={keepFocus}
-          onMouseDown={keepFocus}
-          onClick={() => setSelectOpen(true)}
-        >
-          select
-        </button>
-        <button
-          type="button"
-          className="mobile-key"
-          title="Paste from the clipboard"
-          onPointerDown={keepFocus}
-          onMouseDown={keepFocus}
-          onClick={pasteClipboard}
-        >
-          paste
         </button>
         {TRAILING_KEYS.map((key) => (
           <button
