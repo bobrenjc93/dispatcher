@@ -32,10 +32,8 @@ interface UiStore {
   compactTerminalFit: CompactTerminalFit;
   compactTouchGesture: CompactTouchGesture;
   /** On-screen Ctrl is armed; the next character becomes a control code. */
-  isCtrlArmed: boolean;
   setCompactTerminalFit: (fit: CompactTerminalFit) => void;
   setCompactTouchGesture: (gesture: CompactTouchGesture) => void;
-  setCtrlArmed: (armed: boolean) => void;
   setTerminalNotesOpen: (isOpen: boolean) => void;
   setDetailPanelCollapsed: (isCollapsed: boolean) => void;
   toggleTerminalNotesOpen: () => void;
@@ -49,12 +47,10 @@ export const useUiStore = create<UiStore>()(
       isDetailPanelCollapsed: false,
       compactTerminalFit: "readable",
       compactTouchGesture: "pan",
-      isCtrlArmed: false,
       setCompactTerminalFit: (fit) => set({ compactTerminalFit: fit }),
       setCompactTouchGesture: (gesture) => set({ compactTouchGesture: gesture }),
       // Deliberately left out of partialize: a modifier armed yesterday should
       // not still be armed today.
-      setCtrlArmed: (armed) => set({ isCtrlArmed: armed }),
       setTerminalNotesOpen: (isOpen) => set({ isTerminalNotesOpen: isOpen }),
       setDetailPanelCollapsed: (isCollapsed) => set({ isDetailPanelCollapsed: isCollapsed }),
       toggleTerminalNotesOpen: () =>

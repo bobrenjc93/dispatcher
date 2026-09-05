@@ -4,6 +4,7 @@ import { useUiStore } from "../../stores/useUiStore";
 import { readClipboardText } from "../../lib/clipboardRead";
 import {
   pasteTextIntoTerminalById,
+  readTerminalScrollbackText,
   readTerminalVisibleText,
   sendSyntheticTerminalInput,
 } from "../../hooks/useTerminalBridge";
@@ -129,12 +130,35 @@ function PasteTarget(props: { onSubmit: (text: string) => void; onCancel: () => 
   );
 }
 
+/**
+ * What a copy or paste is doing, and how it went.
+ *
+ * These actions produce nothing visible in the terminal — a successful copy
+ * looks exactly like a button that did not register, which on a phone is the
+ * difference between trusting the thing and tapping it four times.
+ */
+type ActionStatus =
+  | { kind: "idle" }
+  | { kind: "busy"; label: string }
+  | { kind: "done"; label: string }
+  | { kind: "failed"; label: string };
+
 export function MobileKeyBar() {
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
-  const isCtrlArmed = useUiStore((s) => s.isCtrlArmed);
-  const setCtrlArmed = useUiStore((s) => s.setCtrlArmed);
   const [isPasteTargetOpen, setPasteTargetOpen] = useState(false);
   const [isComposeOpen, setComposeOpen] = useState(false);
+  const [isSelectOpen, setSelectOpen] = useState(false);
+  const [status, setStatus] = useState<ActionStatus>({ kind: "idle" });
+
+  // Clear the outcome after a moment. Only settled states expire: a spinner
+  // that vanishes on a timer while the work is still going is a lie.
+  useEffect(() => {
+    if (status.kind !== "done" && status.kind !== "failed") {
+      return;
+    }
+    const timer = window.setTimeout(() => setStatus({ kind: "idle" }), 2200);
+    return () => window.clearTimeout(timer);
+  }, [status]);
 
   if (!activeTerminalId) {
     return null;
@@ -142,7 +166,6 @@ export function MobileKeyBar() {
 
   const send = (data: string) => {
     sendSyntheticTerminalInput(activeTerminalId, data);
-    setCtrlArmed(false);
   };
 
   // Pressing a key must not move focus, or the soft keyboard would close
@@ -155,9 +178,21 @@ export function MobileKeyBar() {
   // selection if there is one, otherwise what is on screen.
   const copyVisible = () => {
     const text = readTerminalVisibleText(activeTerminalId);
-    if (text) {
-      void navigator.clipboard?.writeText(text).catch(() => {});
+    if (!text) {
+      setStatus({ kind: "failed", label: "Nothing to copy" });
+      return;
     }
+    if (!navigator.clipboard) {
+      // No secure context, so there is no clipboard to write to. Saying so
+      // beats a button that silently does nothing.
+      setStatus({ kind: "failed", label: "Clipboard needs HTTPS" });
+      return;
+    }
+    setStatus({ kind: "busy", label: "Copying" });
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => setStatus({ kind: "done", label: "Copied" }))
+      .catch(() => setStatus({ kind: "failed", label: "Copy failed" }));
   };
 
   // A phone keyboard has no paste key, and the terminal is a canvas, so the
@@ -166,12 +201,20 @@ export function MobileKeyBar() {
   // someone pasting on their phone means. Over plain HTTP there is no clipboard
   // API to ask, so fall back to a field the user can paste into by hand.
   const pasteClipboard = () => {
-    void readClipboardText(navigator.clipboard).then((text) => {
-      if (text) {
-        return pasteTextIntoTerminalById(activeTerminalId, text);
-      }
-      setPasteTargetOpen(true);
-    });
+    setStatus({ kind: "busy", label: "Pasting" });
+    void readClipboardText(navigator.clipboard)
+      .then((text) => {
+        if (!text) {
+          // Not a failure: the fallback field is about to ask for the text.
+          setStatus({ kind: "idle" });
+          setPasteTargetOpen(true);
+          return;
+        }
+        return pasteTextIntoTerminalById(activeTerminalId, text).then(() =>
+          setStatus({ kind: "done", label: "Pasted" })
+        );
+      })
+      .catch(() => setStatus({ kind: "failed", label: "Paste failed" }));
   };
 
   // Paste the body, then send Enter as a separate keystroke rather than
@@ -191,12 +234,30 @@ export function MobileKeyBar() {
   const submitPastedText = (text: string) => {
     setPasteTargetOpen(false);
     if (text) {
+      setStatus({ kind: "done", label: "Pasted" });
       void pasteTextIntoTerminalById(activeTerminalId, text);
     }
   };
 
   return (
     <>
+      {status.kind !== "idle" && (
+        <div
+          className={`mobile-action-status is-${status.kind}`}
+          role="status"
+          aria-live="polite"
+        >
+          {status.kind === "busy" && <span className="mobile-action-spinner" aria-hidden="true" />}
+          {status.label}
+        </div>
+      )}
+      {isSelectOpen && (
+        <SelectTextDialog
+          terminalId={activeTerminalId}
+          onClose={() => setSelectOpen(false)}
+          onStatus={setStatus}
+        />
+      )}
       {isComposeOpen && (
         <ComposeDialog
           onSubmit={submitComposedText}
@@ -248,17 +309,6 @@ export function MobileKeyBar() {
         ))}
         <button
           type="button"
-          className={`mobile-key${isCtrlArmed ? " is-armed" : ""}`}
-          aria-pressed={isCtrlArmed}
-          title="Ctrl — then press a key"
-          onPointerDown={keepFocus}
-          onMouseDown={keepFocus}
-          onClick={() => setCtrlArmed(!isCtrlArmed)}
-        >
-          ctrl
-        </button>
-        <button
-          type="button"
           className="mobile-key"
           title="Copy the selection, or the visible screen"
           onPointerDown={keepFocus}
@@ -266,6 +316,16 @@ export function MobileKeyBar() {
           onClick={copyVisible}
         >
           copy
+        </button>
+        <button
+          type="button"
+          className="mobile-key"
+          title="Show the terminal text so it can be selected"
+          onPointerDown={keepFocus}
+          onMouseDown={keepFocus}
+          onClick={() => setSelectOpen(true)}
+        >
+          select
         </button>
         <button
           type="button"
@@ -353,6 +413,84 @@ function ComposeDialog(props: {
             onClick={() => props.onSubmit(draft)}
           >
             send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The terminal's text in something you can actually select.
+ *
+ * xterm draws to a canvas, so there is nothing for a finger to select — the
+ * `copy` button exists because of that, but it only takes the whole screen or
+ * an existing selection, and picking one line out of the output is impossible.
+ * A textarea gets iOS's own selection handles, magnifier and Copy menu for
+ * free, which is the entire feature.
+ *
+ * Read-only, and scrollback included: this is for reading back through output,
+ * not editing it.
+ */
+function SelectTextDialog(props: {
+  terminalId: string;
+  onClose: () => void;
+  onStatus: (status: { kind: "busy" | "done" | "failed"; label: string }) => void;
+}) {
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  // Read once on open. Live output would move the text under a selection in
+  // progress, which is the one thing that would make this useless.
+  const [text] = useState(() => readTerminalScrollbackText(props.terminalId));
+
+  useEffect(() => {
+    // Land at the bottom: the newest output is what someone came for.
+    const el = inputRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, []);
+
+  const copyAll = () => {
+    if (!navigator.clipboard) {
+      props.onStatus({ kind: "failed", label: "Clipboard needs HTTPS" });
+      return;
+    }
+    props.onStatus({ kind: "busy", label: "Copying" });
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => {
+        props.onStatus({ kind: "done", label: "Copied all" });
+        props.onClose();
+      })
+      .catch(() => props.onStatus({ kind: "failed", label: "Copy failed" }));
+  };
+
+  return (
+    <div className="compose-backdrop">
+      <div
+        className="compose-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Select terminal text"
+      >
+        <textarea
+          ref={inputRef}
+          className="compose-input select-input"
+          readOnly
+          value={text}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              props.onClose();
+            }
+          }}
+        />
+        <div className="compose-actions">
+          <button type="button" className="mobile-key" onClick={props.onClose}>
+            close
+          </button>
+          <button type="button" className="mobile-key is-primary" onClick={copyAll}>
+            copy all
           </button>
         </div>
       </div>
