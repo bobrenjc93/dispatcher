@@ -545,11 +545,12 @@ export function useTerminalScreenshotMonitor() {
         return;
       }
 
-      // One event, two audiences. The chime comes out of the machine in front
-      // of you and should not fire while you are looking at it; the push goes
-      // to a phone that may be in another room, so desktop focus is beside the
-      // point. Everything else — staleness, acknowledgement, the arming above
-      // — is shared, so a tab you are actually watching stays quiet for both.
+      // One event, two audiences. The chime comes out of the machine you are
+      // sitting at, so anything saying you are already here — Dispatcher
+      // frontmost, or this tab watched since its last output — is a reason to
+      // stay quiet. The push goes to a phone somewhere else, where none of
+      // that is evidence of anything. Staleness and one-per-quiet-period are
+      // shared.
       const inactionArgs = {
         enabled: anyEnabled,
         wasEnabled,
@@ -563,10 +564,10 @@ export function useTerminalScreenshotMonitor() {
       };
       const shouldChime =
         args.enabled
-        && shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAppFocused: true });
+        && shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAtDesktop: true });
       const shouldPush =
         args.pushEnabled
-        && shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAppFocused: false });
+        && shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAtDesktop: false });
 
       if (!shouldChime && !shouldPush) {
         return;
