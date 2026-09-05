@@ -27,11 +27,19 @@ import { safeEndpointHost } from "./webPushSubscribe";
  */
 const VAPID_SUBJECT = "https://github.com/bobrenjc93/dispatcher";
 
-/** Text of the notification, kept to what is useful on a lock screen. */
+/**
+ * Text of the notification, kept to what is useful on a lock screen.
+ *
+ * States the fact rather than guessing at its meaning: the app knows the tab
+ * stopped changing and does not know whether that means finished, blocked, or
+ * waiting on you. Hedged wording reads as uncertainty about whether the
+ * notification should have been sent at all.
+ */
 export function buildPushPayload(args: { title: string; terminalId: string }) {
+  const name = args.title.trim();
   return {
-    title: args.title || "Dispatcher",
-    body: "Quiet for a while — it may be waiting on you.",
+    title: "Dispatcher",
+    body: name ? `${name} is now inactive` : "A terminal is now inactive",
     terminalId: args.terminalId,
   };
 }

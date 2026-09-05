@@ -33,7 +33,7 @@ self.addEventListener("push", (event) => {
   }
 
   const title = payload.title || "Dispatcher";
-  const body = payload.body || "A terminal needs your attention.";
+  const body = payload.body || "A terminal is now inactive";
 
   event.waitUntil(
     self.registration.showNotification(title, {
