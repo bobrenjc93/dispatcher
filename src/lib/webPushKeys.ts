@@ -115,3 +115,26 @@ export function canReuseStoredKey(
 ): boolean {
   return Boolean(stored && currentEndpoint && stored.endpoint === currentEndpoint);
 }
+
+/**
+ * Prefix every device id has carried since devices got a stable identity.
+ *
+ * Registrations made before that used the session client id, which is
+ * reissued on every launch. Their devices can never refresh them — a device
+ * re-registers under its new stable id, which does not match, so the old entry
+ * is never replaced and never expires.
+ */
+const STABLE_DEVICE_ID_PREFIX = "push-";
+
+/**
+ * Drop registrations that no device can ever claim again.
+ *
+ * These are not merely stale: nothing will refresh them and the push service
+ * keeps accepting messages for them, so every notification is sent several
+ * times over and the duplicates never stop arriving on their own.
+ */
+export function dropUnclaimableSubscriptions<T extends { clientId: string }>(
+  entries: readonly T[]
+): T[] {
+  return entries.filter((entry) => entry.clientId.startsWith(STABLE_DEVICE_ID_PREFIX));
+}

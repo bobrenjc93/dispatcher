@@ -13,7 +13,7 @@
 
 import { debugLog } from "./debugLog";
 import { getScopedStorageKey } from "./storageNamespace";
-import { mergeSubscription } from "./webPushKeys";
+import { dropUnclaimableSubscriptions, mergeSubscription } from "./webPushKeys";
 import { safeEndpointHost, type PushRegistration } from "./webPushSubscribe";
 
 const STORAGE_KEY = getScopedStorageKey("dispatcher.pushSubscriptions");
@@ -25,7 +25,21 @@ function read(): PushRegistration[] {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    // Applied on read rather than as a one-shot migration: a registration
+    // written before devices had stable ids can also arrive later, from a
+    // client that has not reloaded yet.
+    const claimable = dropUnclaimableSubscriptions(parsed as PushRegistration[]);
+    if (claimable.length !== parsed.length) {
+      debugLog("push", "dropped subscriptions no device can claim", {
+        dropped: parsed.length - claimable.length,
+        remaining: claimable.length,
+      });
+      write(claimable);
+    }
+    return claimable;
   } catch {
     // A corrupt entry must not take the app down at startup; losing the
     // subscriptions costs one re-enable per device.
