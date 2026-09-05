@@ -60,44 +60,61 @@ export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) =
       return;
     }
 
-    const permission =
-      typeof Notification === "undefined" ? "unavailable" : Notification.permission;
+    const evaluate = () => {
+      const permission =
+        typeof Notification === "undefined" ? "unavailable" : Notification.permission;
 
-    if (
-      shouldOfferPushSetup({
-        supported: isPushSupported(),
-        standalone: isStandaloneWebApp(),
-        permission,
-        alreadyDismissed: wasDismissed(),
-      })
-    ) {
-      setVisible(true);
-      return;
-    }
+      if (
+        shouldOfferPushSetup({
+          supported: isPushSupported(),
+          standalone: isStandaloneWebApp(),
+          permission,
+          alreadyDismissed: wasDismissed(),
+        })
+      ) {
+        setVisible(true);
+        return;
+      }
 
-    if (
-      isPushBlockedBySettings({
-        supported: isPushSupported(),
-        standalone: isStandaloneWebApp(),
-        permission,
-        hasRegisteredBefore: hasRegisteredPushBefore(),
-      })
-    ) {
-      // Nothing to retry: the prompt is spent, so the only way back is
-      // Settings. Saying so beats a feature that is quietly switched off.
-      setBlocked(true);
-      setVisible(true);
-      return;
-    }
+      if (
+        isPushBlockedBySettings({
+          supported: isPushSupported(),
+          standalone: isStandaloneWebApp(),
+          permission,
+          hasRegisteredBefore: hasRegisteredPushBefore(),
+        })
+      ) {
+        // Nothing to retry: the prompt is spent, so the only way back is
+        // Settings. Saying so beats a feature that is quietly switched off.
+        setBlocked(true);
+        setVisible(true);
+        return;
+      }
 
-    // Already granted: renew silently, so the tap is needed once ever.
-    void restorePushRegistration()
-      .then((registration) => {
-        if (registration) {
-          props.onRegister(registration);
-        }
-      })
-      .catch(() => {});
+      // Already granted: renew silently, so the tap is needed once ever.
+      setBlocked(false);
+      setVisible(false);
+      void restorePushRegistration()
+        .then((registration) => {
+          if (registration) {
+            props.onRegister(registration);
+          }
+        })
+        .catch(() => {});
+    };
+
+    evaluate();
+
+    // Re-check on the way back from somewhere else, because the somewhere else
+    // is usually Settings. Permission can be granted or revoked while the app
+    // is in the background and nothing tells the page about it.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        evaluate();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
     // Intentionally once per mount: this is a launch-time decision, and
     // re-running it on every render would re-subscribe in a loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -154,9 +171,18 @@ export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) =
         if (result.ok) {
           props.onRegister(result.registration);
           setVisible(false);
+          setBlocked(false);
           return;
         }
-        setError(result.reason);
+        // Still refused. Worth saying plainly: re-allowing in Settings does
+        // not always restore the web app's own permission, and the difference
+        // between "not fixed yet" and "fixed but stale" is invisible
+        // otherwise.
+        setError(
+          result.reason.includes("denied")
+            ? "iOS is still refusing. If Settings shows Dispatcher as allowed, remove the app from your Home Screen and add it again."
+            : result.reason
+        );
       })
       .catch((cause) => {
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -203,9 +229,19 @@ export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) =
         {error && <p className="push-setup-error">{error}</p>}
         <div className="push-setup-actions">
           {blocked ? (
-            <button type="button" className="push-setup-btn is-primary" onClick={dismiss}>
-              Got it
-            </button>
+            <>
+              <button type="button" className="push-setup-btn" onClick={dismiss} disabled={busy}>
+                Dismiss
+              </button>
+              <button
+                type="button"
+                className="push-setup-btn is-primary"
+                onClick={enable}
+                disabled={busy}
+              >
+                {busy ? "Checking…" : "Try again"}
+              </button>
+            </>
           ) : (
             <>
               <button type="button" className="push-setup-btn" onClick={dismiss} disabled={busy}>
