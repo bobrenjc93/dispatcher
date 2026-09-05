@@ -23,7 +23,6 @@ import { getTabStatusTerminalIds, type TerminalVisualTextSnapshot } from "../lib
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import { describeKeyboardEvent, describeTerminalData, pushKeyDebug } from "../lib/keyDebug";
-import { toControlCharacter } from "../lib/keyboardShortcuts";
 import { resolveDictationInput, type DictationState } from "../lib/dictationInput";
 import {
   cellFromPoint,
@@ -52,7 +51,10 @@ import {
   noteTerminalOutput,
 } from "../lib/tmuxAttachWatchdog";
 import { recordPaneOutput, recordSessionEvent } from "../lib/sessionRecorder";
-import { isLinkOpenModifierPressed, isTouchPointer, shouldOpenLink } from "../lib/terminalMouse";
+import {
+  isTouchPointer,
+  shouldOpenLink,
+} from "../lib/terminalMouse";
 import { findTerminalWebLinkMatches } from "../lib/terminalLinks";
 import {
   getActiveStatusResizeSuppression,
@@ -993,16 +995,6 @@ const dictationStates = new Map<string, DictationState>();
 export function handleTerminalInputData(terminalId: string, inputFromKeyboard: string) {
   let data = inputFromKeyboard;
 
-  // A soft keyboard has no Ctrl key. When the on-screen key bar has armed it,
-  // fold the modifier into this keystroke and disarm.
-  if (useUiStore.getState().isCtrlArmed) {
-    useUiStore.getState().setCtrlArmed(false);
-    const chord = toControlCharacter(data);
-    if (chord) {
-      data = chord;
-    }
-  }
-
   // iOS dictation re-sends the whole phrase on every revision, expecting the
   // target to replace its value. A terminal has no value to replace, so the
   // revisions would concatenate; send only what is new.
@@ -1320,7 +1312,12 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
         text,
         range,
         activate: (event: MouseEvent) => {
-          const modifierPressed = isLinkOpenModifierPressed(event);
+          // A modifier guards this on a desktop so an ordinary click still
+          // goes to the terminal. A touchscreen has no modifier to hold, so
+          // the tap itself is the intent — the same rule `linkHandler` already
+          // used for OSC 8 hyperlinks, which is why those opened on a phone
+          // and plain URLs in the text did not.
+          const shouldOpen = shouldOpenLink(event);
           const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
 
           debugLog("terminal.link", "activate", {
@@ -1328,7 +1325,8 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
             backendKind,
             uri: text,
             range,
-            modifierPressed,
+            shouldOpen,
+            touchPointer: isTouchPointer(),
             button: event.button,
             metaKey: event.metaKey,
             ctrlKey: event.ctrlKey,
@@ -1337,7 +1335,7 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
             defaultPrevented: event.defaultPrevented,
           });
 
-          if (!modifierPressed) {
+          if (!shouldOpen) {
             return;
           }
 
@@ -2157,6 +2155,37 @@ function readTerminalVisualTextSnapshot(
  * drags a touchscreen never produces. Returning the visible screen gives the
  * one thing that was actually wanted: getting the text out.
  */
+/**
+ * Everything the terminal is holding, scrollback included.
+ *
+ * Distinct from {@link readTerminalVisibleText}, which answers "what would I
+ * copy right now" and stops at the viewport. This answers "show me the text so
+ * I can pick through it", which is only useful if it goes back further than
+ * the screen.
+ *
+ * Capped, because a terminal keeps 50k lines and rendering all of them into a
+ * textarea on a phone is a way to lock the UI up. The tail is what is kept: on
+ * a terminal, recent is what you are looking for.
+ */
+export function readTerminalScrollbackText(terminalId: string, maxLines = 4000): string {
+  const xterm = instances.get(terminalId)?.xterm;
+  if (!xterm) {
+    return "";
+  }
+
+  const buffer = xterm.buffer.active;
+  const total = buffer.length;
+  const start = Math.max(0, total - maxLines);
+  const lines: string[] = [];
+  for (let row = start; row < total; row += 1) {
+    lines.push(buffer.getLine(row)?.translateToString(true) ?? "");
+  }
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") {
+    lines.pop();
+  }
+  return lines.join("\n");
+}
+
 export function readTerminalVisibleText(terminalId: string): string {
   const xterm = instances.get(terminalId)?.xterm;
   if (!xterm) {

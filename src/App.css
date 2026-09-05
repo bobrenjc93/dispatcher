@@ -1995,11 +1995,6 @@ body.sidebar-dragging * {
     color: var(--text-primary);
   }
 
-  .mobile-key.is-armed {
-    background: var(--bg-active);
-    color: var(--text-primary);
-    border-color: var(--accent);
-  }
 
   /* Somewhere to paste by hand where script may not read the clipboard.
      Anchored to the bottom so the soft keyboard, if it opens, pushes against
@@ -2048,6 +2043,68 @@ body.sidebar-dragging * {
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+  }
+
+  /* Outcome of a copy or paste. These leave no trace in the terminal, so a
+     success is indistinguishable from a button that never registered. */
+  .mobile-action-status {
+    position: fixed;
+    left: 50%;
+    bottom: calc(64px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    z-index: 2400;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    box-shadow: 0 4px 12px rgb(0 0 0 / 45%);
+    color: var(--text-primary);
+    font-size: 13px;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  .mobile-action-status.is-done {
+    border-color: var(--accent);
+  }
+
+  .mobile-action-status.is-failed {
+    border-color: var(--status-red, #e5534b);
+    color: var(--status-red, #e5534b);
+  }
+
+  .mobile-action-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border-color);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: mobile-action-spin 0.7s linear infinite;
+  }
+
+  @keyframes mobile-action-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mobile-action-spinner {
+      animation: none;
+    }
+  }
+
+  /* Monospace here, unlike the compose field: this is terminal output being
+     read back, and column alignment is often the point. */
+  .select-input {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    white-space: pre;
+    overflow-wrap: normal;
+    overflow-x: auto;
   }
 
   /* Full screen rather than a sheet at the bottom.
