@@ -30,6 +30,16 @@ export interface TerminalSession {
    */
   bounceOnAttention?: boolean;
   /**
+   * Send a push notification to subscribed phones when this tab goes quiet.
+   *
+   * Separate from the chime and the dock bounce rather than implied by them.
+   * Those two reach someone sitting at the machine; this one reaches a phone
+   * anywhere, so the set of tabs worth doing it for is genuinely different —
+   * plenty deserve a noise on the desktop and none of your attention when you
+   * are out.
+   */
+  pushOnInaction?: boolean;
+  /**
    * How long this tab must sit unchanged before it counts as inactive, in
    * milliseconds. Unset means the app-wide default.
    *

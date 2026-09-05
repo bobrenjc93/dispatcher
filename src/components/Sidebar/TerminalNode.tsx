@@ -198,6 +198,21 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
               },
             },
             {
+              label: "Push on Inactivity",
+              icon: (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <rect x="4" y="1.75" width="6" height="10.5" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+                  <path d="M6.25 10.25H7.75" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                </svg>
+              ),
+              checked: session.pushOnInaction ?? false,
+              onClick: () => {
+                patchSession(terminalId, {
+                  pushOnInaction: !(session.pushOnInaction ?? false),
+                });
+              },
+            },
+            {
               label: "Bounce on Inactivity",
               icon: (
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none">

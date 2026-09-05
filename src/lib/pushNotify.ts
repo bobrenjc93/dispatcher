@@ -1,15 +1,14 @@
 /**
  * Sending an attention event to every phone that asked for one.
  *
- * Deliberately not a new decision about when to interrupt someone. The rules
- * for that already exist and were tuned at length — inaction thresholds,
- * acknowledgement, whether Dispatcher is in front of you — so this rides along
- * with the chime and the dock bounce rather than second-guessing them. A tab
- * that would chime or bounce also pushes; a tab that would not, does not.
+ * Its own switch, per tab, rather than something implied by the chime or the
+ * dock bounce. Those two reach someone sitting at the machine; this reaches a
+ * phone anywhere, so the set of tabs worth it is genuinely different — plenty
+ * deserve a noise on the desktop and none of your attention when you are out.
  *
- * What push adds is reach. The chime needs speakers you can hear and the
- * bounce needs a dock you can see; both are useless once the laptop is shut,
- * which is the case this exists for.
+ * What it does share is *when*: the same inactivity threshold, acknowledgement
+ * and focus rules that gate the chime, which were tuned at length and should
+ * not be second-guessed here.
  */
 
 import { debugLog } from "./debugLog";
@@ -28,32 +27,11 @@ import { safeEndpointHost } from "./webPushSubscribe";
  */
 const VAPID_SUBJECT = "https://github.com/bobrenjc93/dispatcher";
 
-/**
- * Whether a tab has opted into being reached at all.
- *
- * Either switch counts. They differ in *when* they fire, not in whether the
- * user wants to know about this tab, and asking someone to tick a third box
- * that means "and also on my phone" is a distinction without a difference.
- */
-export function wantsPushForAttention(args: {
-  notifyOnInaction: boolean | undefined;
-  bounceOnAttention: boolean | undefined;
-}): boolean {
-  return Boolean(args.notifyOnInaction) || Boolean(args.bounceOnAttention);
-}
-
 /** Text of the notification, kept to what is useful on a lock screen. */
-export function buildPushPayload(args: {
-  title: string;
-  reason: "inaction" | "attention";
-  terminalId: string;
-}) {
+export function buildPushPayload(args: { title: string; terminalId: string }) {
   return {
     title: args.title || "Dispatcher",
-    body:
-      args.reason === "inaction"
-        ? "Quiet for a while — it may be waiting on you."
-        : "Needs your attention.",
+    body: "Quiet for a while — it may be waiting on you.",
     terminalId: args.terminalId,
   };
 }
@@ -68,7 +46,6 @@ export function buildPushPayload(args: {
 export async function pushAttentionNotification(args: {
   tabRootTerminalId: string;
   title: string;
-  reason: "inaction" | "attention";
   now: number;
 }): Promise<void> {
   const devices = listPushSubscriptions();
@@ -78,7 +55,6 @@ export async function pushAttentionNotification(args: {
 
   const payload = buildPushPayload({
     title: args.title,
-    reason: args.reason,
     terminalId: args.tabRootTerminalId,
   });
 
@@ -98,7 +74,7 @@ export async function pushAttentionNotification(args: {
       if (result.ok) {
         debugLog("push", "sent a notification", {
           endpointHost: safeEndpointHost(device.endpoint),
-          reason: args.reason,
+          tabRootTerminalId: args.tabRootTerminalId,
           status: result.status,
         });
         return;
