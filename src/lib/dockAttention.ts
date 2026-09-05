@@ -10,6 +10,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cancelDockAttention, pulseDockAttention } from "./tauriCommands";
 import { debugLog } from "./debugLog";
+import { isAppFocused } from "./appFocus";
 
 /**
  * Bounce only on the transition into needing attention.
@@ -66,15 +67,16 @@ function pulse() {
 /**
  * Whether the app itself is frontmost.
  *
- * `document.hasFocus()` answers for the webview, which can report focus while
- * the app sits behind another one — believing it stopped the bouncing after a
- * single pulse.
+ * Asked directly rather than through the tracker in `appFocus`: this runs on a
+ * timer while the dock is bouncing, so it can afford to await, and a missed
+ * focus event would leave the dock bouncing at someone already looking at it.
+ * See `appFocus` for why the document's answer is not good enough.
  */
 async function isWindowFocused(): Promise<boolean> {
   try {
     return await getCurrentWindow().isFocused();
   } catch {
-    return typeof document !== "undefined" ? document.hasFocus() : false;
+    return isAppFocused();
   }
 }
 
