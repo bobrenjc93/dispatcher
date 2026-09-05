@@ -545,7 +545,12 @@ export function useTerminalScreenshotMonitor() {
         return;
       }
 
-      if (!shouldNotifyOnInaction({
+      // One event, two audiences. The chime comes out of the machine in front
+      // of you and should not fire while you are looking at it; the push goes
+      // to a phone that may be in another room, so desktop focus is beside the
+      // point. Everything else — staleness, acknowledgement, the arming above
+      // — is shared, so a tab you are actually watching stays quiet for both.
+      const inactionArgs = {
         enabled: anyEnabled,
         wasEnabled,
         hasDetectedActivity: args.hasDetectedActivity,
@@ -555,7 +560,15 @@ export function useTerminalScreenshotMonitor() {
         lastNotifiedChangedAt: notifiedChangedAt,
         documentHasFocus: isAppFocused(),
         hasAcknowledgedCurrentOutput: args.hasAcknowledgedCurrentOutput,
-      })) {
+      };
+      const shouldChime =
+        args.enabled
+        && shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAppFocused: true });
+      const shouldPush =
+        args.pushEnabled
+        && shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAppFocused: false });
+
+      if (!shouldChime && !shouldPush) {
         return;
       }
 
@@ -566,10 +579,10 @@ export function useTerminalScreenshotMonitor() {
         effectiveChangedAt: args.effectiveChangedAt,
         staleStartedAt: args.staleStartedAt,
       });
-      if (args.enabled) {
+      if (shouldChime) {
         void notifyTerminalInaction();
       }
-      if (args.pushEnabled) {
+      if (shouldPush) {
         void pushAttentionNotification({
           tabRootTerminalId: args.tabRootTerminalId,
           title: args.title,

@@ -114,12 +114,22 @@ export function shouldNotifyOnInaction(args: {
   lastNotifiedChangedAt: number;
   documentHasFocus: boolean;
   hasAcknowledgedCurrentOutput: boolean;
+  /**
+   * Whether having Dispatcher in front of you should call this off.
+   *
+   * True for the chime, which plays out of the machine you are already looking
+   * at. False for a push, which goes to a phone: where your eyes are on the
+   * desktop says nothing about whether you want the notification there, and it
+   * may be in another room. Acknowledgement still applies either way, so a tab
+   * you are actually watching stays quiet.
+   */
+  suppressWhenAppFocused: boolean;
 }): boolean {
   // The point of the sound is to reach someone who is somewhere else. Playing
   // it at a user with Dispatcher already in front of them tells them nothing
   // they cannot see, and a sound that fires while you are watching is the kind
   // that gets turned off.
-  if (args.documentHasFocus) {
+  if (args.suppressWhenAppFocused && args.documentHasFocus) {
     return false;
   }
 
