@@ -48,6 +48,23 @@ const ACTION_EVENT = "dispatcher-action";
  * multiplied by the number of terminals in the workspace.
  */
 const SNAPSHOT_LIMIT_BYTES = 4 * 1024 * 1024;
+
+/**
+ * How much of that a joining replica is actually sent.
+ *
+ * The retained buffer is sized so a tmux full-history replay survives intact,
+ * which is about the desktop's needs. What a replica needs is to be usable,
+ * and the two diverge badly once a terminal has been running for days: a pane
+ * at the full 4MB took 21 seconds to arrive on a phone, against 27ms to parse
+ * once it did. Pure transfer, and the whole app waits on it — snapshots for
+ * other terminals queue behind it on the same socket, so a tab with no output
+ * at all was also 21 seconds late.
+ *
+ * Sized from that measurement rather than picked: the link ran at roughly
+ * 200KB/s, so this is a few seconds. It is still thousands of lines of
+ * scrollback, which is what the number is really trading against.
+ */
+const REPLICA_SNAPSHOT_LIMIT_BYTES = 512 * 1024;
 /** Mirror frames are coalesced over this window to keep the IPC chatter down. */
 const MIRROR_FLUSH_MS = 16;
 
@@ -303,7 +320,10 @@ export function forgetMirroredTerminal(terminalId: string) {
  * comes on screen, so the cost tracks what is actually being looked at.
  */
 function sendSnapshotTo(targetClientId: string, terminalId: string) {
-  const data = snapshotBuffers.get(terminalId) ?? "";
+  const retained = snapshotBuffers.get(terminalId) ?? "";
+  // Cut at a line boundary, or the replica renders the tail of a half-sent
+  // escape sequence as literal text at the top of its scrollback.
+  const data = trimSnapshotBuffer(retained, REPLICA_SNAPSHOT_LIMIT_BYTES);
   const frames: MirrorFrame[] = [{ kind: "reset", terminalId }];
   const size = resolveGrid(terminalId);
   if (size) {
@@ -318,6 +338,8 @@ function sendSnapshotTo(targetClientId: string, terminalId: string) {
     targetClientId,
     terminalId,
     bytes: data.length,
+    // Visible when a terminal has outgrown what is worth sending.
+    retainedBytes: retained.length,
   });
 }
 
