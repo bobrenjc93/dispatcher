@@ -216,7 +216,21 @@ const syntheticInputSuppressions = terminalBridgeRuntime.syntheticInputSuppressi
 const focusSequenceSuppressions = terminalBridgeRuntime.focusSequenceSuppressions;
 const SYNTHETIC_INPUT_SUPPRESSION_MS = 50;
 const FOCUS_SEQUENCE_SUPPRESSION_MS = 150;
-const DEFAULT_SCROLLBACK = 50_000;
+/**
+ * Lines of scrollback each terminal keeps.
+ *
+ * Paid per terminal, not once: xterm holds four uint32s per cell, so at 119
+ * columns a full buffer is about 95MB, and a workspace of two dozen tabs that
+ * have been running for days had the webview at 4.8GB with the machine
+ * swapping. Nothing was looping — the app was simply too large to be
+ * responsive.
+ *
+ * 15k lines is still far more than fits on any screen, and tmux panes have
+ * their own history behind them, which Dispatcher re-captures on demand. The
+ * old figure bought scrollback nobody scrolled to at a cost that grew with
+ * every tab.
+ */
+const DEFAULT_SCROLLBACK = 15_000;
 const PARKED_TERMINAL_WIDTH = 1200;
 const PARKED_TERMINAL_HEIGHT = 720;
 const PARKING_ROOT_ID = "dispatcher-terminal-parking-root";
