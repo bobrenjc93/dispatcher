@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  TMUX_CAPTURE_RETRY_MAX_MS,
+  TMUX_VISIBLE_CAPTURE_RETRY_MAX_MS,
   buildTmuxNewWindowCommand,
   buildTmuxPaneCaptureCommand,
   buildTmuxPaneCursorCommand,
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
+  computeCaptureRetryDelayMs,
   encodeTmuxSendKeysHex,
   normalizeTmuxPasteBufferText,
   parseTmuxPaneSnapshot,
@@ -194,5 +197,42 @@ describe("tmuxControlProtocol", () => {
       title: "   ",
       inheritCurrentPanePath: false,
     })).toBe("new-window -a -t @24");
+  });
+});
+
+describe("computeCaptureRetryDelayMs", () => {
+  it("does not bill a waiting user for races that happened in the background", () => {
+    // The attempt count belongs to the pane and outlives any one attempt, so a
+    // tab that raced while nobody watched arrives at focus near the ceiling.
+    // Taking that penalty is what made switching tabs feel like a stall.
+    const deep = { attempts: 4 };
+    expect(computeCaptureRetryDelayMs({ ...deep, paneIsVisible: false })).toBe(
+      TMUX_CAPTURE_RETRY_MAX_MS
+    );
+    expect(computeCaptureRetryDelayMs({ ...deep, paneIsVisible: true })).toBe(
+      TMUX_VISIBLE_CAPTURE_RETRY_MAX_MS
+    );
+  });
+
+  it("still backs off hard for a pane nobody is looking at", () => {
+    // Busy background panes race constantly; hammering tmux for them helps
+    // no one.
+    const delays = [0, 1, 2, 3, 4].map((attempts) =>
+      computeCaptureRetryDelayMs({ attempts, paneIsVisible: false })
+    );
+    expect(delays).toEqual([300, 600, 1200, 2400, TMUX_CAPTURE_RETRY_MAX_MS]);
+  });
+
+  it("keeps a floor so a visible pane cannot spin", () => {
+    // A capture round trip is well under this, so retrying at the floor is a
+    // retry rather than a busy loop.
+    expect(computeCaptureRetryDelayMs({ attempts: 0, paneIsVisible: true })).toBe(300);
+    expect(computeCaptureRetryDelayMs({ attempts: 99, paneIsVisible: true })).toBe(
+      TMUX_VISIBLE_CAPTURE_RETRY_MAX_MS
+    );
+  });
+
+  it("treats a nonsense attempt count as the first try", () => {
+    expect(computeCaptureRetryDelayMs({ attempts: -3, paneIsVisible: false })).toBe(300);
   });
 });
