@@ -55,7 +55,25 @@ let unlistenFocus: (() => void) | null = null;
 function pulse() {
   void pulseDockAttention()
     .then((requestId) => {
-      debugLog("status.notification", "dock bounce pulse", { requestId });
+      if (requestId > 0) {
+        debugLog("status.notification", "dock bounce pulse", { requestId });
+        return;
+      }
+
+      // `requestUserAttention:` hands back a request id, and zero means macOS
+      // declined: it will not bounce an application that is already active.
+      // Nothing above here can see that — the decision to bounce is made from
+      // the *window's* focus, and a window can be unfocused while its app is
+      // still frontmost, so the pulse loop was happily firing every five
+      // seconds into a no-op.
+      //
+      // Stop rather than keep asking. The answer will not change until the
+      // user leaves, and leaving is itself what the next attention event
+      // reacts to.
+      debugLog("status.notification", "dock bounce refused; app is already active", {
+        requestId,
+      });
+      stopDockAttention();
     })
     .catch((error) => {
       debugLog("status.notification", "dock bounce failed", {
