@@ -336,3 +336,36 @@ export function quoteTmuxCommandArgument(value: string): string {
   }
   return `${quoted}"`;
 }
+
+/**
+ * How soon to try a pane capture again after output raced it.
+ *
+ * Backing off exponentially is right for a pane nobody is looking at: it races
+ * because it is busy, and hammering tmux for a background tab helps no one.
+ *
+ * It is wrong the moment someone is waiting. The attempt count belongs to the
+ * pane and outlives any one attempt, so a tab that raced a few times in the
+ * background arrives at your focus already near the ceiling — and the first
+ * retry you actually wait for takes the full penalty. Focusing a tab and
+ * staring at nothing for two and a half seconds is that arithmetic, not a slow
+ * connection. Resizing the window looked like a fix because it forces an
+ * immediate refresh and skips the queue entirely.
+ *
+ * A visible pane keeps a floor high enough not to spin — a capture round trip
+ * is well under this — and no escalation beyond it.
+ */
+export const TMUX_CAPTURE_RETRY_BASE_MS = 300;
+export const TMUX_CAPTURE_RETRY_MAX_MS = 2_500;
+export const TMUX_VISIBLE_CAPTURE_RETRY_MAX_MS = 400;
+
+export function computeCaptureRetryDelayMs(args: {
+  attempts: number;
+  paneIsVisible: boolean;
+}): number {
+  const exponent = Math.min(Math.max(0, args.attempts), 4);
+  const backoff = TMUX_CAPTURE_RETRY_BASE_MS * 2 ** exponent;
+  const ceiling = args.paneIsVisible
+    ? TMUX_VISIBLE_CAPTURE_RETRY_MAX_MS
+    : TMUX_CAPTURE_RETRY_MAX_MS;
+  return Math.min(backoff, ceiling);
+}

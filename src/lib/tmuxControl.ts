@@ -13,14 +13,15 @@ import {
   buildTmuxPaneCursorCommand,
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
+  computeCaptureRetryDelayMs,
   encodeTmuxSendKeysHex,
   normalizeTmuxPasteBufferText,
   parseTmuxPaneSnapshot,
   parseTmuxWindowSnapshot,
   quoteTmuxCommandArgument,
-  unescapeTmuxOutput,
   type TmuxPaneSnapshot,
   type TmuxWindowSnapshot,
+  unescapeTmuxOutput,
 } from "./tmuxControlProtocol";
 import {
   buildPreferredTmuxWindowOrder,
@@ -327,8 +328,6 @@ const TMUX_PANE_OUTPUT_ACTIVITY_SUPPRESSION_MS = 2_000;
 const TMUX_SUPPRESSED_ACTIVITY_SUMMARY_INTERVAL_MS = 5_000;
 const TMUX_HISTORY_REFRESH_COOLDOWN_MS = 30_000;
 const TMUX_HISTORY_REFRESH_DEFER_LOG_INTERVAL_MS = 10_000;
-const TMUX_HISTORY_RACE_RETRY_BASE_MS = 300;
-const TMUX_HISTORY_RACE_RETRY_MAX_MS = 2_500;
 const TMUX_VISIBLE_REDRAW_SETTLE_MS = 180;
 const TMUX_VISIBLE_REDRAW_RETRY_MS = 300;
 const TMUX_VISIBLE_REDRAW_QUIET_MS = 1_200;
@@ -2510,11 +2509,13 @@ function logDeferredPaneHistoryRefresh(
 }
 
 function getPaneHistoryRetryDelayMs(pane: TmuxPaneState): number {
-  const exponent = Math.min(Math.max(0, pane.historyRefreshRetryAttempts), 4);
-  return Math.min(
-    TMUX_HISTORY_RACE_RETRY_BASE_MS * 2 ** exponent,
-    TMUX_HISTORY_RACE_RETRY_MAX_MS
-  );
+  // Always the background schedule. Unlike the initial capture, this one is
+  // repairing scrollback the user is not staring at, so the long backoff is
+  // the right answer even for the visible pane.
+  return computeCaptureRetryDelayMs({
+    attempts: pane.historyRefreshRetryAttempts,
+    paneIsVisible: false,
+  });
 }
 
 function clearPaneHistoryRefreshRetry(pane: TmuxPaneState) {
@@ -3346,9 +3347,13 @@ function scheduleInitialPaneContentCaptureRetryAfterRace(
 ) {
   ensurePaneHistoryCaptureState(pane);
   pane.historyRefreshRetryAttempts += 1;
-  const delayMs = getPaneHistoryRetryDelayMs(pane);
+  const paneIsVisible = isPaneVisibleInActiveWindow(session, pane);
+  const delayMs = computeCaptureRetryDelayMs({
+    attempts: pane.historyRefreshRetryAttempts,
+    paneIsVisible,
+  });
   queueInitialPaneContentCapture(session, pane, {
-    priority: isPaneVisibleInActiveWindow(session, pane),
+    priority: paneIsVisible,
     reason,
     delayMs,
   });
