@@ -193,6 +193,9 @@ function connect(onFirstOpen: () => void) {
     setDisconnectedOverlay(false);
     flushQueue();
     onFirstOpen();
+    // Nothing keeps this socket alive from here. The server pings it, which
+    // the browser answers at the protocol level without involving this page —
+    // and so keeps working when the page's own timers are throttled.
   };
 
   ws.onmessage = (event) => {

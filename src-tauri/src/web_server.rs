@@ -36,6 +36,12 @@ pub const DEFAULT_WEB_PORT: u16 = 3003;
 /// How many ports to walk before giving up when the preferred one is taken.
 const PORT_SCAN_LIMIT: u16 = 32;
 
+/// How often to ping an idle replica socket.
+///
+/// Comfortably under the ~30s idle timeout observed through Tailscale Serve,
+/// with room for one to be missed.
+const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(12);
+
 /// Upper bound on a proxied dev-server request body.
 const MAX_PROXY_BODY_BYTES: usize = 32 * 1024 * 1024;
 
@@ -374,9 +380,36 @@ async fn handle_socket(socket: WebSocket, state: ServerState, client_id: String)
     ));
 
     let send_task = tokio::spawn(async move {
-        while let Some(text) = outbound_rx.recv().await {
-            if sender.send(Message::Text(text.into())).await.is_err() {
-                break;
+        // Nothing flows over this socket while the terminals are quiet, and an
+        // idle websocket gets reaped: through a reverse proxy the connection
+        // was being closed after about thirty seconds every time. The client
+        // answers a close by reloading, so a tab nobody was typing in appeared
+        // to freeze and come back on its own, over and over.
+        //
+        // A ping is the right thing to send: browsers answer it automatically
+        // at the protocol level, so it needs no cooperation from the page and
+        // keeps working while the page is busy or its timers are throttled.
+        let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The first tick completes immediately; skip it so a fresh connection
+        // does not open with a ping.
+        keepalive.tick().await;
+
+        loop {
+            tokio::select! {
+                outbound = outbound_rx.recv() => {
+                    let Some(text) = outbound else { break };
+                    if sender.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                _ = keepalive.tick() => {
+                    // Also how a peer that vanished without closing is noticed:
+                    // the send fails once the socket is really gone.
+                    if sender.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });
