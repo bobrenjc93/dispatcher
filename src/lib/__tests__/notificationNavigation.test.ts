@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { readFocusTerminalFromUrl } from "../notificationNavigation";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  readFocusTerminalFromUrl,
+  resolveNotificationFocusTarget,
+} from "../notificationNavigation";
+import { useLayoutStore } from "../../stores/useLayoutStore";
+import { useTerminalStore } from "../../stores/useTerminalStore";
 
 describe("readFocusTerminalFromUrl", () => {
   it("reads the terminal a cold open was launched for", () => {
@@ -35,5 +40,57 @@ describe("readFocusTerminalFromUrl", () => {
       terminalId: null,
       cleanedHref: "not a url",
     });
+  });
+});
+
+describe("resolveNotificationFocusTarget", () => {
+  beforeEach(() => {
+    useLayoutStore.setState({ layouts: {} });
+    useTerminalStore.setState({ sessions: {}, activeTerminalId: null });
+  });
+
+  it("focuses the pane inside a tmux tab, not the window placeholder", () => {
+    // A notification names the tab root. For a tmux tab that is the window
+    // terminal, which is never rendered — focusing it activates a tab with
+    // nothing in it, which is what made tapping appear to do nothing.
+    useLayoutStore.setState({
+      layouts: { win: { type: "terminal", id: "p", terminalId: "pane" } as never },
+    });
+    useTerminalStore.setState({ sessions: { pane: {} as never } });
+
+    expect(resolveNotificationFocusTarget("win")).toBe("pane");
+  });
+
+  it("returns to the pane that was already active in a split", () => {
+    useLayoutStore.setState({
+      layouts: {
+        win: {
+          type: "split",
+          direction: "horizontal",
+          ratio: 0.5,
+          first: { type: "terminal", id: "l", terminalId: "left" },
+          second: { type: "terminal", id: "r", terminalId: "right" },
+        } as never,
+      },
+    });
+    useTerminalStore.setState({
+      sessions: { left: {} as never, right: {} as never },
+      activeTerminalId: "right",
+    });
+
+    expect(resolveNotificationFocusTarget("win")).toBe("right");
+  });
+
+  it("falls back to the tab root when there is no layout for it", () => {
+    // A notification can outlive its tab, and on a cold start the workspace
+    // may not have arrived yet.
+    expect(resolveNotificationFocusTarget("gone")).toBe("gone");
+  });
+
+  it("ignores layout entries with no session behind them", () => {
+    useLayoutStore.setState({
+      layouts: { win: { type: "terminal", id: "s", terminalId: "stale" } as never },
+    });
+    expect(resolveNotificationFocusTarget("win")).toBe("win");
   });
 });

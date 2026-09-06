@@ -8,8 +8,11 @@
  * and is read once the workspace has loaded.
  */
 
+import { useLayoutStore } from "../stores/useLayoutStore";
 import { useProjectStore } from "../stores/useProjectStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
+import { findTerminalIds } from "./layoutUtils";
+import { handleTmuxTerminalFocus } from "./tmuxControl";
 import { findProjectIdForTerminal } from "./treeUtils";
 import { debugLog } from "./debugLog";
 
@@ -45,6 +48,34 @@ export function readFocusTerminalFromUrl(href: string): {
 }
 
 /**
+ * The terminal inside a tab that should actually take focus.
+ *
+ * A notification names the tab root, and for a tmux tab that is the *window*
+ * terminal — a placeholder that is never rendered. Focusing it activates a tab
+ * with nothing in it, which is why tapping a notification appeared to do
+ * nothing at all.
+ *
+ * Resolved from the layout rather than from the tmux control session, which is
+ * how the rest of the app does it: control sessions live only on the desktop,
+ * and the device tapping the notification is a phone.
+ */
+export function resolveNotificationFocusTarget(tabRootTerminalId: string): string {
+  const layout = useLayoutStore.getState().layouts[tabRootTerminalId];
+  if (!layout) {
+    return tabRootTerminalId;
+  }
+  const sessions = useTerminalStore.getState().sessions;
+  const rendered = findTerminalIds(layout).filter((id) => sessions[id]);
+  // Prefer whichever pane is already active, so returning to a split tab lands
+  // where it was left.
+  const active = useTerminalStore.getState().activeTerminalId;
+  if (active && rendered.includes(active)) {
+    return active;
+  }
+  return rendered[0] ?? tabRootTerminalId;
+}
+
+/**
  * Switch to a terminal's tab.
  *
  * Returns whether it worked: a notification can outlive the tab it was about —
@@ -68,10 +99,19 @@ export function focusTerminalFromNotification(terminalId: string): boolean {
     return false;
   }
 
-  // Project first: activating a terminal in a project that is not showing
-  // leaves the sidebar pointing somewhere else.
+  const focusTarget = resolveNotificationFocusTarget(terminalId);
+
+  // The same three steps as clicking the tab in the sidebar. Doing only the
+  // first two activates the tab without focusing anything in it, and on a tmux
+  // tab that meant activating a window placeholder rather than its pane.
   projectStore.setActiveProject(projectId);
-  terminalStore.setActiveTerminal(terminalId);
-  debugLog("push", "opened the tab a notification was about", { terminalId, projectId });
+  terminalStore.setActiveTerminal(focusTarget);
+  handleTmuxTerminalFocus(focusTarget);
+
+  debugLog("push", "opened the tab a notification was about", {
+    terminalId,
+    focusTarget,
+    projectId,
+  });
   return true;
 }
