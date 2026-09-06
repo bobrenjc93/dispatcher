@@ -26,6 +26,7 @@ import {
 } from "../lib/inactionNotification";
 import { bounceDockForAttention, shouldBounceDock } from "../lib/dockAttention";
 import { isAppFocused } from "../lib/appFocus";
+import { isSnoozeActive } from "../lib/snooze";
 import { pushAttentionNotification } from "../lib/pushNotify";
 import { resolveInactivityThresholdMs } from "../lib/inactivityThreshold";
 import { pushStatusDebug } from "../lib/statusDebug";
@@ -704,25 +705,46 @@ export function useTerminalScreenshotMonitor() {
         longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
       });
       const tabRootSession = latestStore.sessions[args.tabRootTerminalId];
-      maybeNotifyForInaction({
-        tabRootTerminalId: args.tabRootTerminalId,
-        title: tabRootSession?.title ?? "Terminal",
-        enabled: tabRootSession?.notifyOnInaction ?? false,
-        pushEnabled: tabRootSession?.pushOnInaction ?? false,
-        hasDetectedActivity,
-        now: args.now,
-        staleStartedAt,
-        effectiveChangedAt,
-        hasAcknowledgedCurrentOutput,
-      });
-      maybeBounceDockForAttention({
-        tabRootTerminalId: args.tabRootTerminalId,
-        title: tabRootSession?.title ?? "Terminal",
-        enabled: tabRootSession?.bounceOnAttention ?? false,
-        wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
-        nextNeedsAttention,
-        isActiveTab,
-      });
+
+      // A snooze suppresses every way this tab can ask for something: the
+      // chime, the push, the bounce, and the derived flags that colour the dot
+      // and embolden the sidebar row.
+      //
+      // Suppressed rather than skipped. Returning early here would freeze the
+      // flags at whatever they were, so a tab snoozed while it was already
+      // asking for attention would go on looking exactly like one.
+      const snoozed = isSnoozeActive(tabRootSession?.snoozedUntil, args.now);
+      if (!snoozed && tabRootSession?.snoozedUntil !== undefined) {
+        // Lapsed. Clearing it is also what re-renders the dot, which keeps no
+        // clock of its own.
+        latestStore.patchSession(args.tabRootTerminalId, { snoozedUntil: undefined });
+        debugLog("status.monitor", "snooze lapsed", {
+          tabRootTerminalId: args.tabRootTerminalId,
+          title: tabRootSession.title,
+        });
+      }
+
+      if (!snoozed) {
+        maybeNotifyForInaction({
+          tabRootTerminalId: args.tabRootTerminalId,
+          title: tabRootSession?.title ?? "Terminal",
+          enabled: tabRootSession?.notifyOnInaction ?? false,
+          pushEnabled: tabRootSession?.pushOnInaction ?? false,
+          hasDetectedActivity,
+          now: args.now,
+          staleStartedAt,
+          effectiveChangedAt,
+          hasAcknowledgedCurrentOutput,
+        });
+        maybeBounceDockForAttention({
+          tabRootTerminalId: args.tabRootTerminalId,
+          title: tabRootSession?.title ?? "Terminal",
+          enabled: tabRootSession?.bounceOnAttention ?? false,
+          wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
+          nextNeedsAttention,
+          isActiveTab,
+        });
+      }
       const statusDotSemantic = getStatusDotSemantic({
         hasDetectedActivity,
         nextNeedsAttention,
@@ -798,9 +820,9 @@ export function useTerminalScreenshotMonitor() {
       lastChangedAt.set(args.tabRootTerminalId, changedAt);
       for (const terminalId of statusTerminalIds) {
         latestStore.setDetectedActivity(terminalId, hasDetectedActivity);
-        latestStore.setNeedsAttention(terminalId, nextNeedsAttention);
-        latestStore.setPossiblyDone(terminalId, nextPossiblyDone);
-        latestStore.setLongInactive(terminalId, nextLongInactive);
+        latestStore.setNeedsAttention(terminalId, snoozed ? false : nextNeedsAttention);
+        latestStore.setPossiblyDone(terminalId, snoozed ? false : nextPossiblyDone);
+        latestStore.setLongInactive(terminalId, snoozed ? false : nextLongInactive);
       }
     };
 

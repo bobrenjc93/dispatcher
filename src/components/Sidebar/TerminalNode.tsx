@@ -9,6 +9,12 @@ import { focusTerminalInstance } from "../../hooks/useTerminalBridge";
 import { renameTmuxTerminal } from "../../lib/tmuxControl";
 import { prepareInactionNotificationSound } from "../../lib/inactionNotification";
 import {
+  DEFAULT_SNOOZE_MS,
+  formatSnoozeRemaining,
+  isSnoozeActive,
+  parseSnoozeMinutes,
+} from "../../lib/snooze";
+import {
   formatInactivityThreshold,
   parseInactivityThresholdSeconds,
   resolveInactivityThresholdMs,
@@ -32,6 +38,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
   const [draft, setDraft] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [editingThreshold, setEditingThreshold] = useState(false);
+  const [editingSnooze, setEditingSnooze] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
 
@@ -88,6 +95,10 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     if (shouldIgnoreDragStartTarget(e.target)) return;
     startDrag({ type: "terminal", terminalId, projectId, nodeId }, e.clientX, e.clientY, e.currentTarget as HTMLElement, e.pointerType);
   };
+
+  // Read once per render; the monitor clears the deadline when it lapses,
+  // which is the re-render that makes this correct again.
+  const snoozeActive = isSnoozeActive(session?.snoozedUntil, Date.now());
 
   const nodeClassName = [
     "sidebar-terminal-node",
@@ -180,6 +191,24 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
               onClick: () => {
                 const enabled = !(session.isPinnedGray ?? false);
                 patchSession(terminalId, { isPinnedGray: enabled });
+              },
+            },
+            {
+              label: snoozeActive ? "Wake" : "Snooze",
+              shortcut: snoozeActive
+                ? formatSnoozeRemaining(session.snoozedUntil ?? 0, Date.now())
+                : undefined,
+              icon: (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M11.5 8.6A5 5 0 0 1 5.4 2.5 4.75 4.75 0 1 0 11.5 8.6Z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ),
+              onClick: () => {
+                if (snoozeActive) {
+                  patchSession(terminalId, { snoozedUntil: undefined });
+                  return;
+                }
+                setEditingSnooze(true);
               },
             },
             {
@@ -299,6 +328,15 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
           ]}
         />
       )}
+      {editingSnooze && (
+        <SnoozeDialog
+          onCancel={() => setEditingSnooze(false)}
+          onSubmit={(until) => {
+            setEditingSnooze(false);
+            patchSession(terminalId, { snoozedUntil: until });
+          }}
+        />
+      )}
       {editingThreshold && (
         <InactivityThresholdDialog
           currentMs={session.inactivityThresholdMs}
@@ -390,6 +428,80 @@ function InactivityThresholdDialog(props: {
           </button>
           <button type="button" className="threshold-dialog-btn is-primary" onClick={submit}>
             Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * How long to hold a tab quiet.
+ *
+ * Minutes, because that is the unit the decision is made in — "give me half an
+ * hour" rather than a clock time. Pre-filled with the default so the common
+ * case is open, confirm.
+ */
+function SnoozeDialog(props: { onSubmit: (until: number) => void; onCancel: () => void }) {
+  const [draft, setDraft] = useState(String(DEFAULT_SNOOZE_MS / 60_000));
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const submit = () => {
+    const parsed = parseSnoozeMinutes(draft, Date.now());
+    if (!parsed.ok) {
+      setError(parsed.reason);
+      return;
+    }
+    props.onSubmit(parsed.until);
+  };
+
+  return (
+    <div className="threshold-dialog-backdrop" role="presentation" onPointerDown={props.onCancel}>
+      <div
+        className="threshold-dialog"
+        role="dialog"
+        aria-label="Snooze this tab"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p className="threshold-dialog-hint">
+          Minutes to keep this tab quiet. It reads as working and will not chime, push or
+          bounce until the time is up.
+        </p>
+        <input
+          ref={inputRef}
+          className="threshold-dialog-input"
+          type="text"
+          inputMode="decimal"
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setError(null);
+          }}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submit();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              props.onCancel();
+            }
+          }}
+        />
+        {error && <p className="threshold-dialog-error">{error}</p>}
+        <div className="threshold-dialog-actions">
+          <button type="button" className="threshold-dialog-btn" onClick={props.onCancel}>
+            Cancel
+          </button>
+          <button type="button" className="threshold-dialog-btn is-primary" onClick={submit}>
+            Snooze
           </button>
         </div>
       </div>

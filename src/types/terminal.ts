@@ -17,6 +17,14 @@ export interface TerminalSession {
   isLongInactive: boolean;
   isRecentlyFocused: boolean;
   isPinnedGreen?: boolean;
+  /**
+   * Hold this tab quiet until this moment, reading as though it were working.
+   *
+   * A timed Pin Green. A tab that has just finished is the noisiest thing in
+   * the sidebar and the least in need of attention when you already know it is
+   * done — but unlike a pin, this ends on its own and cannot be forgotten.
+   */
+  snoozedUntil?: number;
   isPinnedGray?: boolean;
   /**
    * Play a sound when this tab goes quiet. Shown as "Notify on Inactivity";
