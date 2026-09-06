@@ -55,7 +55,10 @@ import {
   queueTerminalOutput,
   syncTerminalFrontendSize,
 } from "../hooks/useTerminalBridge";
-import { computeTmuxWindowSizeFromPaneViewport } from "./tmuxSizing";
+import {
+  computeTmuxWindowSizeFromPaneViewport,
+  isUsableTmuxWindowSize,
+} from "./tmuxSizing";
 import {
   resolveRecoveredTmuxSessionPlacement,
   resolveTmuxWindowPlacementFromPlaceholder,
@@ -5683,6 +5686,21 @@ export function syncTmuxWindowSize(layoutId: string, widthPx: number, heightPx: 
   const viewportSize = getTerminalViewportSize(activePaneTerminalId);
   const cols = Math.max(2, Math.floor(widthPx / cellSize.width));
   const rows = Math.max(1, Math.floor(heightPx / cellSize.height));
+  if (!isUsableTmuxWindowSize(cols, rows)) {
+    // The container is hidden or not laid out yet. Passing this on would
+    // reflow the pane to a couple of columns and destroy its contents; the
+    // next honest measurement will resize it properly.
+    debugLog("tmux.size", "ignoring an unusable window measurement", {
+      layoutId,
+      sessionId: session.id,
+      widthPx,
+      heightPx,
+      cols,
+      rows,
+      cachedWindowSize: `${totalWindowGrid.cols}x${totalWindowGrid.rows}`,
+    });
+    return false;
+  }
   const windowGridStale = totalWindowGrid.cols !== cols || totalWindowGrid.rows !== rows;
   if (windowGridStale && paneCount === 1) {
     // If the React canvas resized while tmux still reports the old grid, our

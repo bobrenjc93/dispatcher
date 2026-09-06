@@ -44,3 +44,29 @@ export function computeTmuxWindowSizeFromPaneViewport(
 
   return { cols, rows };
 }
+
+/**
+ * Smallest window worth telling tmux about.
+ *
+ * A container measures zero while it is hidden or has not been laid out yet,
+ * and a ResizeObserver reports that as readily as a real size. Fed through the
+ * usual arithmetic it floors to nothing and gets clamped to the minimum, so a
+ * transient 0x0 became a genuine `refresh-client -C 2x1`: tmux reflowed the
+ * pane to two columns and every line of its content was destroyed. Resizing
+ * the window afterwards restores the grid but not the text.
+ *
+ * The clamp is the trap. Nothing this small is ever a real terminal, so the
+ * only safe reading of it is that the measurement is not usable yet.
+ */
+export const MIN_TMUX_WINDOW_COLS = 20;
+export const MIN_TMUX_WINDOW_ROWS = 4;
+
+/** Whether a computed grid is a real window rather than a bad measurement. */
+export function isUsableTmuxWindowSize(cols: number, rows: number): boolean {
+  return (
+    Number.isFinite(cols)
+    && Number.isFinite(rows)
+    && cols >= MIN_TMUX_WINDOW_COLS
+    && rows >= MIN_TMUX_WINDOW_ROWS
+  );
+}
