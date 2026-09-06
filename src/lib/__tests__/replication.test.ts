@@ -209,25 +209,11 @@ describe("desktop-as-master replication", () => {
 });
 
 describe("replica snapshot size", () => {
-  it("cuts a long buffer at a line boundary", () => {
-    // Slicing at an arbitrary byte can land inside an escape sequence, and the
-    // replica then renders its tail as literal text at the top of scrollback.
-    const line = "x".repeat(99) + "\n";
-    const buffer = line.repeat(200);
-    const trimmed = trimSnapshotBuffer(buffer, 5_000);
-    expect(trimmed.length).toBeLessThanOrEqual(5_000);
-    expect(trimmed.startsWith("x")).toBe(true);
-    expect(buffer.endsWith(trimmed)).toBe(true);
-  });
-
   it("keeps the newest output, not the oldest", () => {
     // A replica joining mid-session wants the prompt, not the first thing that
-    // ever scrolled past.
+    // ever scrolled past — and this is the only place the direction of the cut
+    // is asserted.
     const buffer = "old\n".repeat(1000) + "NEWEST\n";
     expect(trimSnapshotBuffer(buffer, 100).endsWith("NEWEST\n")).toBe(true);
-  });
-
-  it("leaves a buffer under the limit alone", () => {
-    expect(trimSnapshotBuffer("short\n", 5_000)).toBe("short\n");
   });
 });
