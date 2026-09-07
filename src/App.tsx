@@ -6,6 +6,7 @@ import { confirmPushRegistration, sendTestPushNotification } from "./lib/pushNot
 import type { PushRegistration } from "./lib/webPushSubscribe";
 import { PushSetupPrompt } from "./components/common/PushSetupPrompt";
 import { startAppFocusTracking } from "./lib/appFocus";
+import { clampSidebarWidth } from "./lib/sidebarWidth";
 import { KeyDebugOverlay } from "./components/common/KeyDebugOverlay";
 import { NameDialog } from "./components/common/NameDialog";
 import { MobileKeyBar } from "./components/Terminal/MobileKeyBar";
@@ -304,14 +305,24 @@ export default function App() {
     window.localStorage.setItem(KEY_DEBUG_VISIBLE_STORAGE_KEY, showKeyDebug ? "1" : "0");
   }, [showKeyDebug]);
 
+  // A sidebar dragged wide on a large display would otherwise keep its width
+  // when the window narrows, leaving the terminal with nothing.
+  useEffect(() => {
+    const onResize = () =>
+      setSidebarWidth((current) => clampSidebarWidth(current, window.innerWidth));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   const handleSidebarDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = sidebarWidth;
 
     const onMouseMove = (e: MouseEvent) => {
-      const newWidth = Math.max(160, Math.min(480, startWidth + (e.clientX - startX)));
-      setSidebarWidth(newWidth);
+      setSidebarWidth(
+        clampSidebarWidth(startWidth + (e.clientX - startX), window.innerWidth)
+      );
     };
 
     const onMouseUp = () => {
