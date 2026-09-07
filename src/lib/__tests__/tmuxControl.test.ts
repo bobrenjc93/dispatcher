@@ -39,6 +39,7 @@ import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { findTerminalIds } from "../layoutUtils";
+import { CLOSED_TAB_TTL_MS } from "../closedTabs";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
 import {
   clearStatusResizeSuppressionsForTests,
@@ -48,6 +49,8 @@ import {
   beginTmuxPaneResizeByTerminal,
   clearTmuxTerminal,
   closeTmuxTerminal,
+  reapExpiredClosedTmuxTabs,
+  reopenLastClosedTmuxTab,
   createTmuxWindowForTerminal,
   handleTmuxTerminalFocus,
   resizeTmuxPaneByTerminal,
@@ -312,6 +315,84 @@ async function hydrateThreeWindows(transportTerminalId: string) {
   }
 }
 
+/**
+ * Two windows on a server that reports a durable identity, which is what a
+ * real `list-windows` does. Tombstones are keyed on that identity, so a
+ * fixture without one cannot exercise them.
+ */
+async function hydrateTwoIdentifiedWindows(transportTerminalId: string) {
+  const identity = "host\t/tmp/tmux-501/default\t$0\t1786482454";
+  routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+  await vi.runOnlyPendingTimersAsync();
+  await vi.runOnlyPendingTimersAsync();
+
+  routeTmuxTransportOutput(
+    transportTerminalId,
+    [
+      "%begin 1 0",
+      `@1\tone\t1\t*\t${identity}`,
+      `@2\ttwo\t0\t-\t${identity}`,
+      "%end 1 0",
+      "%begin 2 0",
+      "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren/one\t4\t7\t0",
+      "@2\t%2\t0\t0\t80\t24\t1\t/Users/bobren/two\t1\t2\t0",
+      "%end 2 0",
+      "",
+    ].join("\n")
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Answer the initial pane captures, so no command is left pending to
+  // swallow a later refresh's reply.
+  for (const commandId of [3, 4, 5]) {
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        `%begin ${commandId} 0`,
+        "",
+        `%end ${commandId} 0`,
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+}
+
+/**
+ * Answer the commands a refresh leaves pending, such as the pane captures it
+ * schedules. Without this the refresh never finishes, and a later reply is
+ * matched to the wrong command.
+ */
+async function answerPendingTmuxCommands(
+  transportTerminalId: string,
+  commandIds: readonly number[]
+) {
+  for (const commandId of commandIds) {
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        `%begin ${commandId} 0`,
+        "",
+        `%end ${commandId} 0`,
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+}
+
+function getProjectedWindowIds(): string[] {
+  return Object.values(useTerminalStore.getState().sessions)
+    .filter((session) => session.backendKind === "tmux-window")
+    .map((session) => session.tmuxWindowId ?? "")
+    .sort();
+}
+
 function getHydratedTmuxIds() {
   const sessions = useTerminalStore.getState().sessions;
   const windowEntry = Object.entries(sessions).find(([, session]) => session.backendKind === "tmux-window");
@@ -451,6 +532,8 @@ describe("tmuxControl", () => {
     ensureTerminalOutputChannelMock.mockReset();
     clearStatusResizeSuppressionsForTests();
     resetTmuxRuntime();
+    // Closed tabs are remembered in localStorage, so they outlive a test.
+    window.localStorage.clear();
   });
 
   afterEach(() => {
@@ -3477,17 +3560,165 @@ describe("tmuxControl", () => {
 
     const closePromise = closeTmuxTerminal(windowTerminalId);
 
+    // The tab goes immediately, without waiting on the server.
     expect(useTerminalStore.getState().sessions[windowTerminalId]).toBeUndefined();
     expect(useTerminalStore.getState().sessions[paneTerminalId]).toBeUndefined();
     expect(useLayoutStore.getState().layouts[windowTerminalId]).toBeUndefined();
     expect(useProjectStore.getState().nodes[windowNodeId]).toBeUndefined();
-    expect(writeTerminalMock).toHaveBeenCalledTimes(1);
-    expect(getWrittenTmuxCommand(0)).toBe("kill-window -t @1\n");
     await expect(closePromise).resolves.toBe(true);
 
+    // But the window itself is left running, because kill-window cannot be
+    // undone and reopening has to have something to reopen.
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(writeTerminalMock).toHaveBeenCalledTimes(2);
-    expect(getWrittenTmuxCommand(1)).toBe("kill-window -t @1\n");
+    expect(writeTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves the window running when the last pane is closed", async () => {
+    // Cmd+W closes the pane, and a single-pane tab is a whole tab. It has to
+    // be as recoverable as closing the tab from the sidebar.
+    const transportTerminalId = "transport-last-pane-close";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+
+    await expect(closeTmuxTerminal(paneTerminalId)).resolves.toBe(true);
+    expect(useTerminalStore.getState().sessions[windowTerminalId]).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(writeTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("kills a closed window once its grace period runs out", async () => {
+    const transportTerminalId = "transport-closed-tab-reap";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId } = getHydratedTmuxIds();
+    await closeTmuxTerminal(windowTerminalId);
+    writeTerminalMock.mockClear();
+
+    // Nothing yet: the deadline is a day away.
+    reapExpiredClosedTmuxTabs();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(writeTerminalMock).not.toHaveBeenCalled();
+
+    vi.setSystemTime(Date.now() + CLOSED_TAB_TTL_MS + 1);
+    reapExpiredClosedTmuxTabs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getWrittenTmuxCommand(0)).toBe("kill-window -t @1\n");
+  });
+
+  it("reopens the most recently closed window", async () => {
+    const transportTerminalId = "transport-closed-tab-reopen";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId } = getHydratedTmuxIds();
+    await closeTmuxTerminal(windowTerminalId);
+    expect(useTerminalStore.getState().sessions[windowTerminalId]).toBeUndefined();
+    writeTerminalMock.mockClear();
+
+    // The window was never killed, so reopening is a matter of asking tmux to
+    // describe it again rather than rebuilding it from anything remembered.
+    const reopened = reopenLastClosedTmuxTab();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getWrittenTmuxCommand(0)).toContain("display-message -p -t @1");
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 40 0",
+        "@1\thappy\t1\t*",
+        "%end 40 0",
+        "%begin 41 0",
+        "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren\t4\t7\t0",
+        "%end 41 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    // The refresh captures the pane before it finishes, so the reopen is not
+    // done until that reply lands too.
+    await answerPendingTmuxCommands(transportTerminalId, [42, 43]);
+    await expect(reopened).resolves.toBe(true);
+    await vi.advanceTimersByTimeAsync(50);
+
+    const restored = getHydratedTmuxIds();
+    expect(useTerminalStore.getState().sessions[restored.windowTerminalId]).toBeDefined();
+    expect(useTerminalStore.getState().sessions[restored.paneTerminalId]).toBeDefined();
+  });
+
+  it("keeps a closed tab hidden when tmux -CC reattaches", async () => {
+    seedTransportTerminal("transport-tombstone");
+    await hydrateTwoIdentifiedWindows("transport-tombstone");
+    expect(getProjectedWindowIds()).toEqual(["@1", "@2"]);
+
+    await closeTmuxTerminal(getWindowTerminalIdByWindowId("@2"));
+    expect(getProjectedWindowIds()).toEqual(["@1"]);
+
+    // A fresh ssh and `tmux -CC a`: the same server, still listing the window
+    // that was closed, because closing deliberately left it running. "I closed
+    // that" has to outlast the connection it was said on.
+    seedTransportTerminal("transport-tombstone-reattach");
+    await hydrateTwoIdentifiedWindows("transport-tombstone-reattach");
+    expect(getProjectedWindowIds()).toEqual(["@1"]);
+  });
+
+  it("keeps a closed tab hidden on a server that reports no identity", async () => {
+    // An older tmux gives no host/socket/session fields, so the tombstone has
+    // nothing durable to key on. Hiding by window id alone is the best answer
+    // available, and better than the tab coming back.
+    const transportTerminalId = "transport-tombstone-anonymous";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    await closeTmuxTerminal(getWindowTerminalIdByWindowId("@1"));
+    expect(getProjectedWindowIds()).toEqual([]);
+
+    seedTransportTerminal("transport-tombstone-anonymous-reattach");
+    await hydrateSingleWindow("transport-tombstone-anonymous-reattach");
+    expect(getProjectedWindowIds()).toEqual([]);
+  });
+
+  it("stops hiding a window once its tab has been reopened", async () => {
+    seedTransportTerminal("transport-tombstone-revived");
+    await hydrateTwoIdentifiedWindows("transport-tombstone-revived");
+    await closeTmuxTerminal(getWindowTerminalIdByWindowId("@2"));
+
+    const reopened = reopenLastClosedTmuxTab();
+    await vi.advanceTimersByTimeAsync(0);
+    routeTmuxTransportOutput(
+      "transport-tombstone-revived",
+      [
+        "%begin 40 0",
+        "@2\ttwo\t0\t-\thost\t/tmp/tmux-501/default\t$0\t1786482454",
+        "%end 40 0",
+        "%begin 41 0",
+        "@2\t%2\t0\t0\t80\t24\t1\t/Users/bobren/two\t1\t2\t0",
+        "%end 41 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    // The refresh captures the pane before it finishes, so the reopen is not
+    // done until that reply lands too.
+    await answerPendingTmuxCommands("transport-tombstone-revived", [42, 43]);
+    await expect(reopened).resolves.toBe(true);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(getProjectedWindowIds()).toEqual(["@1", "@2"]);
+
+    // And the tombstone is gone, so a later reattach does not re-hide it.
+    seedTransportTerminal("transport-tombstone-revived-reattach");
+    await hydrateTwoIdentifiedWindows("transport-tombstone-revived-reattach");
+    expect(getProjectedWindowIds()).toEqual(["@1", "@2"]);
+  });
+
+  it("reports that there is nothing to reopen", async () => {
+    // Pressing the shortcut with an empty list should stay silent rather than
+    // appear to have done something.
+    await expect(reopenLastClosedTmuxTab()).resolves.toBe(false);
   });
 
   it("keeps an optimistically closed tmux pane hidden from a stale refresh", async () => {

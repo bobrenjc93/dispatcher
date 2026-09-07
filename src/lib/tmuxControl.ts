@@ -46,6 +46,14 @@ import {
 import { noteControlModeStarted } from "./tmuxAttachWatchdog";
 import { recordSessionEvent } from "./sessionRecorder";
 import { debugLog, debugLogError, previewDebugText } from "./debugLog";
+import type { ClosedTab } from "./closedTabs";
+import {
+  expiredClosedTabs,
+  forgetClosedTab,
+  hiddenWindowIdsForConnection,
+  rememberClosedTab,
+  takeMostRecentlyClosed,
+} from "./closedTabs";
 import {
   disposeTerminalInstance,
   ensureTerminalFrontend,
@@ -1981,6 +1989,18 @@ function upsertWindowProjection(
   }
 ): WindowProjectionResult | null {
   ensureOptimisticCloseState(session);
+  // A tab closed in an earlier run of the app, or on an earlier connection to
+  // the same tmux server. The window is still alive by design, so without this
+  // it would walk back in as a tab the next time anything attaches — "I closed
+  // that" has to outlast the connection it was said on.
+  //
+  // Keyed on the server's own identity, because window ids mean nothing across
+  // servers. A snapshot with no identity is matched against tombstones that
+  // had none either, which is the best available answer for a tmux too old to
+  // report one.
+  if (hiddenWindowIdsForConnection(snapshot.connectionKey ?? null).includes(snapshot.windowId)) {
+    session.optimisticallyClosedWindowIds.add(snapshot.windowId);
+  }
   if (session.optimisticallyClosedWindowIds.has(snapshot.windowId)) {
     debugLog("tmux.session", "suppress optimistically closed window projection", {
       sessionId: session.id,
@@ -5453,6 +5473,118 @@ export async function splitTmuxTerminal(terminalId: string, direction: "horizont
   return true;
 }
 
+/**
+ * Whether a live session is still talking to the server a closed tab came from.
+ *
+ * The guard that matters: window ids are recycled between tmux server
+ * lifetimes, so a transport that has since reattached to a *new* server may
+ * well have a window called `@3`, and it is not the one that was closed.
+ * Reopening the wrong window is confusing; killing it is destructive.
+ *
+ * A session with no windows left cannot disagree — closing the last tab is how
+ * it got that way — so it counts as a match.
+ */
+function controlSessionMatchesClosedTab(
+  session: TmuxControlSession,
+  connectionKey: string | null
+): boolean {
+  const windows = [...session.windows.values()];
+  if (windows.length === 0) {
+    return true;
+  }
+  return windows.some((window) => (window.connectionKey ?? null) === connectionKey);
+}
+
+/**
+ * The live control session a closed tab belongs to, if any.
+ *
+ * Deliberately not a search for the window id: closing removed the window from
+ * the projection, so by the time anything wants to reopen or reap it, no
+ * session claims it.
+ */
+function findControlSessionForClosedTab(
+  tab: Pick<ClosedTab, "connectionKey" | "sessionId">
+): TmuxControlSession | null {
+  const remembered = controlSessions.get(tab.sessionId);
+  if (remembered && controlSessionMatchesClosedTab(remembered, tab.connectionKey)) {
+    return remembered;
+  }
+  // The transport was rebuilt under a new id, which an app restart does. The
+  // connection key is what survives that, so it is the only thing worth
+  // matching on here.
+  if (tab.connectionKey === null) {
+    return null;
+  }
+  return [...controlSessions.values()].find((candidate) =>
+    [...candidate.windows.values()].some(
+      (window) => (window.connectionKey ?? null) === tab.connectionKey
+    )
+  ) ?? null;
+}
+
+/**
+ * Really destroy a window whose grace period is over.
+ *
+ * Routed through the same optimistic-cleanup machinery as any other close so
+ * it retries and reconciles identically; the only difference is when it runs.
+ */
+function killClosedTmuxWindow(
+  session: TmuxControlSession,
+  windowId: string,
+  reason: string
+) {
+  ensureOptimisticCloseState(session);
+  session.optimisticallyClosedWindowIds.add(windowId);
+  debugLog("tmux.action", "killing a closed window", {
+    sessionId: session.id,
+    windowId,
+    reason,
+  });
+  scheduleOptimisticTmuxCloseCleanup(
+    session,
+    "window",
+    windowId,
+    windowId,
+    `kill-window -t ${windowId}`,
+    []
+  );
+}
+
+/**
+ * Stop projecting a window but leave it running, so the tab can come back.
+ *
+ * `kill-window` is irreversible — the pane and everything in it are gone the
+ * moment it lands — so closing a tab defers the kill instead. That is the only
+ * way reopening can hand back the session rather than an empty shell.
+ *
+ * Anything evicted past the cap is killed now rather than left running with
+ * nothing remembering it.
+ */
+function tombstoneTmuxWindow(options: {
+  session: TmuxControlSession;
+  windowId: string;
+  paneIds: readonly string[];
+  title: string;
+  connectionKey: string | null;
+}) {
+  const evicted = rememberClosedTab({
+    connectionKey: options.connectionKey,
+    sessionId: options.session.id,
+    windowId: options.windowId,
+    paneIds: [...options.paneIds],
+    title: options.title,
+    closedAt: Date.now(),
+  });
+  for (const stale of evicted) {
+    // An evicted entry can belong to another server entirely, so it is not
+    // safe to kill it through the session doing the closing.
+    const owner = findControlSessionForClosedTab(stale);
+    if (owner) {
+      killClosedTmuxWindow(owner, stale.windowId, "closed-tab-evicted");
+    }
+  }
+}
+
 export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
   const terminal = getTerminalSession(terminalId);
   const session = getControlSessionForTerminal(terminalId);
@@ -5477,14 +5609,13 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
     }
     removeWindowProjection(session, windowId);
     syncWindowNodeOrder(session);
-    scheduleOptimisticTmuxCloseCleanup(
+    tombstoneTmuxWindow({
       session,
-      "window",
       windowId,
-      windowId,
-      `kill-window -t ${windowId}`,
-      paneIds
-    );
+      paneIds,
+      title: terminal.title,
+      connectionKey: terminal.tmuxConnectionKey ?? null,
+    });
     return true;
   }
 
@@ -5504,20 +5635,23 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
       const paneIds = [...session.panes.values()]
         .filter((pane) => pane.windowId === windowId)
         .map((pane) => pane.paneId);
+      // Read the window before the projection goes: closing the last pane
+      // closes the tab, and the tab is what gets reopened.
+      const windowState = session.windows.get(windowId);
+      const windowTerminal = windowState ? getTerminalSession(windowState.terminalId) : null;
       session.optimisticallyClosedWindowIds.add(windowId);
       for (const closedPaneId of paneIds) {
         session.optimisticallyClosedPaneIds.add(closedPaneId);
       }
       removeWindowProjection(session, windowId);
       syncWindowNodeOrder(session);
-      scheduleOptimisticTmuxCloseCleanup(
+      tombstoneTmuxWindow({
         session,
-        "window",
         windowId,
-        windowId,
-        `kill-window -t ${windowId}`,
-        paneIds
-      );
+        paneIds,
+        title: windowTerminal?.title ?? terminal.title,
+        connectionKey: windowState?.connectionKey ?? terminal.tmuxConnectionKey ?? null,
+      });
     } else {
       session.optimisticallyClosedPaneIds.add(paneId);
       removePaneProjection(session, paneId);
@@ -6050,5 +6184,74 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
     writeTerminal(terminalId, "list-sessions -F ''\n").catch((error) => {
       debugLogError("tmux.session", "resume nudge failed", error);
     });
+  }
+}
+
+/**
+ * Bring back the most recently closed tab, Chrome-style.
+ *
+ * The window was never killed, so this is only a matter of letting it be
+ * projected again and asking tmux to describe it. Returns false when there is
+ * nothing left to reopen, so the caller can stay silent rather than appear to
+ * have done something.
+ */
+export async function reopenLastClosedTmuxTab(): Promise<boolean> {
+  const closed = takeMostRecentlyClosed(Date.now());
+  if (!closed) {
+    debugLog("tmux.action", "nothing left to reopen", {});
+    return false;
+  }
+
+  const session = findControlSessionForClosedTab(closed);
+  if (!session) {
+    debugLog("tmux.action", "cannot reopen; no live control session", {
+      windowId: closed.windowId,
+      title: closed.title,
+    });
+    return false;
+  }
+
+  // Un-hide the window and its panes. Both halves matter: a window whose panes
+  // are still suppressed projects as empty and is skipped, which looks exactly
+  // like the reopen having done nothing.
+  ensureOptimisticCloseState(session);
+  session.optimisticallyClosedWindowIds.delete(closed.windowId);
+  for (const paneId of closed.paneIds ?? []) {
+    session.optimisticallyClosedPaneIds.delete(paneId);
+  }
+
+  debugLog("tmux.action", "reopening a closed tab", {
+    sessionId: session.id,
+    windowId: closed.windowId,
+    title: closed.title,
+    closedForMs: Date.now() - closed.closedAt,
+  });
+
+  await refreshSingleWindow(session, closed.windowId);
+  return true;
+}
+
+/**
+ * Kill anything whose grace period has run out.
+ *
+ * Driven from a timer rather than checked on close, because the whole point is
+ * that the deadline falls long after anyone was interacting with the tab.
+ */
+export function reapExpiredClosedTmuxTabs(): void {
+  for (const tab of expiredClosedTabs(Date.now())) {
+    const session = findControlSessionForClosedTab(tab);
+    if (!session) {
+      // Nothing can reach it right now: the transport has not attached yet,
+      // the server is gone, or it has restarted and the window id belongs to
+      // somebody else. The entry stays, so the tab stays closed, and a later
+      // tick kills the window if the server comes back.
+      debugLog("tmux.action", "expired closed tab has no reachable session", {
+        windowId: tab.windowId,
+        title: tab.title,
+      });
+      continue;
+    }
+    forgetClosedTab(tab);
+    killClosedTmuxWindow(session, tab.windowId, "grace-period-expired");
   }
 }

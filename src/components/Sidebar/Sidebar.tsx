@@ -155,7 +155,7 @@ export function Sidebar({
         ))}
       </div>
       <div className="sidebar-footer">
-        <button className="sidebar-help-btn" onClick={() => setShowSchemePicker(true)} title="Color Scheme (⇧⌘T)">
+        <button className="sidebar-help-btn" onClick={() => setShowSchemePicker(true)} title="Color Scheme (⇧⌘P)">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
             <circle cx="5" cy="5.5" r="2.5" stroke="currentColor" strokeWidth="1.2"/>
             <circle cx="9" cy="5.5" r="2.5" stroke="currentColor" strokeWidth="1.2"/>

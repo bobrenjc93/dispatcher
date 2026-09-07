@@ -207,3 +207,18 @@ export function toControlCharacter(input: string): string | null {
       return null;
   }
 }
+
+/**
+ * Cmd+Shift+T — reopen the most recently closed tab, as a browser does.
+ *
+ * Shift is what separates it from Cmd+T for a new tab, so both must be
+ * checked: without the shift test, new-tab would also reopen.
+ */
+export function isReopenClosedTabShortcut(
+  event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey" | "key">
+): boolean {
+  if (!event.metaKey || event.ctrlKey || event.altKey || !event.shiftKey) {
+    return false;
+  }
+  return event.key.toLowerCase() === "t";
+}

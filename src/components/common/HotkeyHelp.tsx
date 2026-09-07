@@ -6,6 +6,7 @@ interface HotkeyHelpProps {
 
 const shortcuts = [
   { keys: "⌘T", description: "New terminal" },
+  { keys: "⇧⌘T", description: "Reopen closed tab" },
   { keys: "⌘N", description: "New project" },
   { keys: "⌘W", description: "Close pane" },
   { keys: "⌘D", description: "Split right" },
@@ -22,7 +23,7 @@ const shortcuts = [
   { keys: "⌘+", description: "Increase font size" },
   { keys: "⌘\u2212", description: "Decrease font size" },
   { keys: "⌘0", description: "Reset font size" },
-  { keys: "⇧⌘T", description: "Color scheme" },
+  { keys: "⇧⌘P", description: "Color scheme" },
   { keys: "⇧⌘?", description: "Status debug" },
 ];
 
