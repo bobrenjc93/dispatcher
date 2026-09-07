@@ -13,6 +13,7 @@ mod renderer_watchdog;
 mod replication;
 mod run_diagnostics;
 mod session_recorder;
+mod tailscale;
 mod web_push;
 mod web_server;
 
