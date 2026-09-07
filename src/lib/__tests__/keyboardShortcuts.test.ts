@@ -45,7 +45,7 @@ describe("keyboardShortcuts", () => {
     expect(isCloseTabShortcut({ ...firstMacClose, metaKey: false, ctrlKey: true }, false)).toBe(true);
   });
 
-  it("recognizes Cmd+L as the rename shortcut while keeping Cmd+R as an alias", () => {
+  it("recognizes Cmd+R as the rename shortcut, and no longer Cmd+L", () => {
     const base = {
       altKey: false,
       ctrlKey: false,
@@ -53,12 +53,14 @@ describe("keyboardShortcuts", () => {
       shiftKey: false,
     };
 
-    expect(isRenameTerminalShortcut({ ...base, key: "l" })).toBe(true);
-    expect(isRenameTerminalShortcut({ ...base, key: "L" })).toBe(true);
     expect(isRenameTerminalShortcut({ ...base, key: "r" })).toBe(true);
     expect(isRenameTerminalShortcut({ ...base, key: "R" })).toBe(true);
-    expect(isRenameTerminalShortcut({ ...base, key: "l", shiftKey: true })).toBe(false);
-    expect(isRenameTerminalShortcut({ ...base, key: "l", ctrlKey: true })).toBe(false);
+    // Cmd+L is the terminal's own clear-screen; renaming on it was a surprise
+    // and it was never the binding the menu advertised.
+    expect(isRenameTerminalShortcut({ ...base, key: "l" })).toBe(false);
+    expect(isRenameTerminalShortcut({ ...base, key: "L" })).toBe(false);
+    expect(isRenameTerminalShortcut({ ...base, key: "r", shiftKey: true })).toBe(false);
+    expect(isRenameTerminalShortcut({ ...base, key: "r", altKey: true })).toBe(false);
     expect(isRenameTerminalShortcut({ ...base, key: "r", metaKey: false, ctrlKey: true })).toBe(false);
   });
 
