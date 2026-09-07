@@ -1023,8 +1023,8 @@ export default function App() {
         handleClosePane(activeTermId);
       }
     }
-    // Rename active tab: Cmd+L, matching browser location focus. Cmd+R stays
-    // as a compatibility alias; bare Ctrl+R remains terminal reverse search.
+    // Rename active tab: Cmd+R. Bare Ctrl+R remains terminal reverse search,
+    // which is why this needs the command key.
     if (isRenameTerminalShortcut(e)) {
       e.preventDefault();
       const activeTermId = useTerminalStore.getState().activeTerminalId;

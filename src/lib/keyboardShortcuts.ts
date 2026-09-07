@@ -24,13 +24,19 @@ export function isRepeatedCloseTabShortcut(event: AppShortcutEvent, isMac: boole
   return event.repeat && isCloseTabShortcut(event, isMac);
 }
 
+/**
+ * Cmd+R only.
+ *
+ * Cmd+L used to work too, and having both meant the menu advertised one while
+ * the other silently also fired — including over a terminal, where Cmd+L is
+ * ordinary "clear screen" and being stolen for a rename is a surprise.
+ */
 export function isRenameTerminalShortcut(event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey" | "key">): boolean {
   if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
     return false;
   }
 
-  const key = event.key.toLowerCase();
-  return key === "l" || key === "r";
+  return event.key.toLowerCase() === "r";
 }
 
 export function getCtrlLetterControlCharacter(
