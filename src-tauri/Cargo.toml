@@ -32,7 +32,7 @@ anyhow = "1"
 libc = "0.2"
 # Serves the frontend and the browser IPC bridge on the web port.
 axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "process", "sync", "time"] }
 futures-util = "0.3"
 # Proxies the Vite dev server through the Dispatcher port during `tauri dev`,
 # and delivers Web Push messages. rustls rather than native-tls: it is pure

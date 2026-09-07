@@ -134,6 +134,51 @@ Set `DISPATCHER_WEB_PORT` to change the port it starts looking from.
 > from elsewhere, prefer an SSH tunnel
 > (`ssh -L 3003:localhost:3003 your-machine`) over exposing the port.
 
+### HTTPS over Tailscale
+
+Plain HTTP is not a *secure context*, and browsers withhold a lot from pages
+that are not one: the clipboard API, service workers, and web push. On a phone
+that shows up as copy and paste quietly doing nothing and notifications never
+arriving — which looks like Dispatcher being broken rather than like the page
+not being HTTPS.
+
+[Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) fixes this by
+putting a real certificate in front of the port, on a name only your tailnet
+can reach. Dispatcher does **not** set this up for you — it changes your
+machine's tailnet configuration, which is yours to decide — so it is two
+commands, once:
+
+```sh
+tailscale serve --bg 3003
+tailscale serve status
+```
+
+The second prints the URL to open on your phone, something like
+`https://your-machine.tailXXXXXX.ts.net`. The mapping lives in tailscaled, not
+in Dispatcher, so it survives reboots and app upgrades; `tailscale serve --https=443 off`
+removes it.
+
+Two prerequisites, both on the tailnet rather than this machine:
+[MagicDNS](https://tailscale.com/kb/1081/magicdns) and
+[HTTPS certificates](https://tailscale.com/kb/1153/enabling-https), each a
+toggle in the admin console. Without them Serve has no name and no certificate
+to present.
+
+This is also *stricter* than the default. Serve listens on your tailnet, not on
+every interface, so it replaces "anyone on this LAN gets a shell" with "any
+device signed into your tailnet does" — still unauthenticated within that
+tailnet, so the warning above continues to apply.
+
+Dispatcher checks for all of this at startup and writes what it finds to the
+diagnostic log, so a phone with no clipboard has an explanation:
+
+```
+[backend:tailscale] cli=/usr/local/bin/tailscale state=Running magicDns=true https=true name=your-machine.tailXXXXXX.ts.net port=3003 serve=serving https://your-machine.tailXXXXXX.ts.net
+```
+
+The check only reads. It never runs `tailscale serve`, and Dispatcher works
+without Tailscale installed at all — just over plain HTTP.
+
 ### On a phone
 
 Hover styles are scoped to devices that have a pointer. Revealing a control on
