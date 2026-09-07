@@ -21,6 +21,7 @@ import type { ColorScheme } from "./types/colorScheme";
 import {
   isCloseTabShortcut,
   isRenameTerminalShortcut,
+  isReopenClosedTabShortcut,
   isRepeatedCloseTabShortcut,
   shouldBypassAppShortcutsForTerminal,
 } from "./lib/keyboardShortcuts";
@@ -55,10 +56,12 @@ import {
 import {
   closeTmuxTerminal,
   createTmuxWindowForTerminal,
-  handleTransportTerminalExit,
   handleTmuxTerminalFocus,
+  handleTransportTerminalExit,
   isDisconnectedTmuxPlaceholderTerminal,
   isLiveTmuxTerminal,
+  reapExpiredClosedTmuxTabs,
+  reopenLastClosedTmuxTab,
   resolvePreferredTerminalFocus,
   splitTmuxTerminal,
 } from "./lib/tmuxControl";
@@ -134,6 +137,18 @@ export default function App() {
 
   // Must be running before anything asks whether the app is frontmost.
   useEffect(() => startAppFocusTracking(), []);
+
+  // A closed tab's window is still running, so something has to end the grace
+  // period. Hourly against a 24h deadline, plus once at startup for deadlines
+  // that passed while the app was shut.
+  useEffect(() => {
+    if (!isPrimaryClient()) {
+      return;
+    }
+    reapExpiredClosedTmuxTabs();
+    const timer = window.setInterval(reapExpiredClosedTmuxTabs, 60 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Land on the newest output rather than wherever the replay happened to
   // leave the viewport. Focus goes with it so the first tap types instead of
@@ -972,7 +987,9 @@ export default function App() {
       e.preventDefault();
       handleNewTerminal();
     }
-    if (isMeta && e.shiftKey && e.key === "T") {
+    // Moved off ⇧⌘T, which now reopens the last closed tab as it does in a
+    // browser. Both fired before, so the picker opened on every reopen.
+    if (isMeta && e.shiftKey && (e.key === "P" || e.key === "p")) {
       e.preventDefault();
       window.dispatchEvent(new CustomEvent("toggle-scheme-picker"));
     }
@@ -1022,6 +1039,13 @@ export default function App() {
         });
         handleClosePane(activeTermId);
       }
+    }
+    // Reopen the most recently closed tab, as a browser does. The window was
+    // never killed, so this hands back the session rather than a fresh shell.
+    if (isReopenClosedTabShortcut(e)) {
+      e.preventDefault();
+      void reopenLastClosedTmuxTab();
+      return;
     }
     // Rename active tab: Cmd+R. Bare Ctrl+R remains terminal reverse search,
     // which is why this needs the command key.

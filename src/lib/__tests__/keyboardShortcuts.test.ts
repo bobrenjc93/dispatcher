@@ -8,6 +8,7 @@ import {
   isEventInsideTerminal,
   isPlainCtrlLetterShortcut,
   isRenameTerminalShortcut,
+  isReopenClosedTabShortcut,
   isRepeatedCloseTabShortcut,
   suppressMacCtrlChordTextInput,
   shouldBypassAppShortcutsForTerminal,
@@ -272,5 +273,24 @@ describe("control characters for the on-screen Ctrl", () => {
     expect(toControlCharacter("ab")).toBeNull();
     expect(toControlCharacter("1")).toBeNull();
     expect(toControlCharacter("\u001b[A")).toBeNull();
+  });
+});
+
+describe("isReopenClosedTabShortcut", () => {
+  const base = { altKey: false, ctrlKey: false, metaKey: true, shiftKey: true, key: "t" };
+
+  it("matches Cmd+Shift+T", () => {
+    expect(isReopenClosedTabShortcut(base)).toBe(true);
+    expect(isReopenClosedTabShortcut({ ...base, key: "T" })).toBe(true);
+  });
+
+  it("does not fire for plain Cmd+T", () => {
+    // Without the shift test, opening a new tab would also reopen a closed
+    // one — two tabs from one keystroke.
+    expect(isReopenClosedTabShortcut({ ...base, shiftKey: false })).toBe(false);
+  });
+
+  it("needs the command key, so the terminal keeps Ctrl+T", () => {
+    expect(isReopenClosedTabShortcut({ ...base, metaKey: false, ctrlKey: true })).toBe(false);
   });
 });
