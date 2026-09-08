@@ -15,6 +15,7 @@ const tab = (windowId: string, closedAt: number, connectionKey: string | null = 
   connectionKey,
   sessionId: "control-1",
   paneIds: [],
+  anchorWindowId: null,
   windowId,
   title: `tab ${windowId}`,
   closedAt,
