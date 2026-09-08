@@ -1927,6 +1927,118 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("puts a tab back when a hidden pane's output changed nothing on screen", async () => {
+    // A TUI repainting its frame on an internal timer sends thousands of bytes
+    // and leaves the screen exactly as it was. With nothing rendering a hidden
+    // pane, that is indistinguishable from the agent going back to work — and
+    // it lit tabs up green all afternoon.
+    const transportTerminalId = "transport-hidden-noop-repaint";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+
+    // A first hidden burst, to establish what the screen looks like.
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 real work\n");
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, ["screen text"]);
+    await flushMicrotasks();
+
+    // The bridge is mocked here, so stand in for the activity it records.
+    const wentQuietAt = Date.now();
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: wentQuietAt });
+
+    vi.setSystemTime(Date.now() + 60_000);
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 repaint\n");
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: Date.now() });
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt)
+      .toBeGreaterThan(wentQuietAt);
+
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 6, ["screen text"]);
+    await flushMicrotasks();
+
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
+  });
+
+  it("leaves a woken tab awake when the hidden pane's screen really changed", async () => {
+    const transportTerminalId = "transport-hidden-real-change";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 real work\n");
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, ["screen text"]);
+    await flushMicrotasks();
+
+    const wentQuietAt = Date.now();
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: wentQuietAt });
+
+    vi.setSystemTime(Date.now() + 60_000);
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 more work\n");
+    const wokeAt = Date.now();
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: wokeAt });
+
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 6, ["screen text", "and a new line"]);
+    await flushMicrotasks();
+
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wokeAt);
+  });
+
+  it("keeps a tab awake when there is no earlier capture to compare against", async () => {
+    // The first hidden burst after an attach has nothing to be compared with:
+    // the initial capture includes scrollback, so it is not the same picture.
+    // No baseline means no claim either way, and a tab wrongly cleared costs
+    // the one you were waiting on.
+    const transportTerminalId = "transport-hidden-no-baseline";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: 1_000 });
+    writeTerminalMock.mockClear();
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 first hidden output\n");
+    const wokeAt = Date.now();
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: wokeAt });
+
+    await vi.advanceTimersByTimeAsync(350);
+    // The refresh really ran, so the assertion below is about the verdict
+    // rather than about nothing having happened.
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, ["screen text"]);
+    await flushMicrotasks();
+
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wokeAt);
+  });
+
   it("uses a fresh tmux cursor position when replaying content after pane output", async () => {
     const transportTerminalId = "transport-stale-cursor-replay";
     seedTransportTerminal(transportTerminalId);
