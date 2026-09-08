@@ -502,6 +502,12 @@ function completeTmuxCommandWithRacedOutput(
   );
 }
 
+function getWrittenTmuxCommands(): string[] {
+  return (writeTerminalMock.mock.calls as unknown as [string, string][]).map(
+    ([, command]) => command
+  );
+}
+
 function getWrittenTmuxCommand(index: number): string {
   const call = writeTerminalMock.mock.calls[index] as unknown as [string, string] | undefined;
   expect(call).toBeDefined();
@@ -600,6 +606,100 @@ describe("tmuxControl", () => {
 
     completeTmuxCommand(transportTerminalId, 11);
     await expect(pastePromise).resolves.toBe(true);
+  });
+
+  it("keeps one input's chunks together when another follows immediately", async () => {
+    // A composed message and the Enter that submits it arrive as two separate
+    // inputs. send-keys is chunked, and the old code awaited each chunk's
+    // reply, so the Enter was written between two chunks: the phone's compose
+    // sheet submitted the first 64 bytes and left the rest in the prompt.
+    const transportTerminalId = "transport-input-ordering";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId, { captureInitialContent: false });
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+
+    void sendInputToTmuxTerminal(paneTerminalId, "x".repeat(200));
+    void sendInputToTmuxTerminal(paneTerminalId, "\r");
+    await Promise.resolve();
+
+    const commands = getWrittenTmuxCommands();
+    expect(commands).toHaveLength(5);
+    expect(commands.slice(0, 4).every((command) => command.includes("78 78"))).toBe(true);
+    expect(commands[4]).toBe("send-keys -t %1 -H 0d\n");
+  });
+
+  it("holds an input back while a very long one is still going out", async () => {
+    // Past a kilobyte the chunks cannot all go in one burst, so the write has
+    // to pause for replies — and those pauses are exactly the gaps an Enter
+    // used to be written into.
+    const transportTerminalId = "transport-long-input-ordering";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId, { captureInitialContent: false });
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+
+    void sendInputToTmuxTerminal(paneTerminalId, "x".repeat(2_000));
+    void sendInputToTmuxTerminal(paneTerminalId, "\r");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The first burst only: 16 chunks, and no Enter behind them.
+    expect(getWrittenTmuxCommands()).toHaveLength(16);
+
+    // Answer the first burst; the second is written, and still nothing else.
+    for (let commandId = 10; commandId < 26; commandId += 1) {
+      completeTmuxCommand(transportTerminalId, commandId);
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    // ceil(2000 / 64) = 32 chunks.
+    expect(getWrittenTmuxCommands()).toHaveLength(32);
+
+    for (let commandId = 26; commandId < 42; commandId += 1) {
+      completeTmuxCommand(transportTerminalId, commandId);
+    }
+    await vi.advanceTimersByTimeAsync(0);
+
+    const commands = getWrittenTmuxCommands();
+    expect(commands).toHaveLength(33);
+    expect(commands[32]).toBe("send-keys -t %1 -H 0d\n");
+  });
+
+  it("holds an input back until a paste in flight has finished", async () => {
+    // Same failure through the other route: a bracketed paste is a run of
+    // set-buffer commands and then paste-buffer, and an Enter written in the
+    // middle submits an empty prompt before the text arrives.
+    const transportTerminalId = "transport-paste-ordering";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId, { captureInitialContent: false });
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+
+    const pastePromise = sendPasteToTmuxTerminal(
+      paneTerminalId,
+      `${"a".repeat(8_000)}${"b".repeat(8_000)}`
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    void sendInputToTmuxTerminal(paneTerminalId, "\r");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Only the paste's first buffer so far. The Enter is waiting.
+    expect(getWrittenTmuxCommands()).toHaveLength(1);
+
+    completeTmuxCommand(transportTerminalId, 10);
+    await vi.advanceTimersByTimeAsync(0);
+    completeTmuxCommand(transportTerminalId, 11);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getWrittenTmuxCommands()[2]).toContain("paste-buffer");
+    expect(getWrittenTmuxCommands()).toHaveLength(3);
+
+    completeTmuxCommand(transportTerminalId, 12);
+    await expect(pastePromise).resolves.toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(getWrittenTmuxCommands()[3]).toBe("send-keys -t %1 -H 0d\n");
   });
 
   it("reports progress while loading tmux paste buffers", async () => {

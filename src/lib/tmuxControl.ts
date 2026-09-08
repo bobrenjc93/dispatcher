@@ -5238,7 +5238,57 @@ function chunkTmuxPasteBufferText(data: string): string[] {
   return chunks;
 }
 
-export async function sendPasteToTmuxTerminal(
+/**
+ * A multi-command write still going out to a pane.
+ *
+ * Some input is not one command. A paste is a run of `set-buffer` commands and
+ * then `paste-buffer`; a long `send-keys` is chunked. Both wait for replies in
+ * the middle, and anything else sent meanwhile is written *into* those gaps —
+ * so the Enter that follows a composed message submits whatever had arrived
+ * and leaves the rest sitting in the prompt. That is exactly what a phone's
+ * compose sheet did, and it is why input waits here.
+ *
+ * Empty unless one of those is in flight, which is almost always: ordinary
+ * typing is a single command and pays nothing for this. Input that does wait
+ * resumes in a microtask, so it still goes out ahead of whatever arrives next.
+ */
+const paneWritesInFlight = new Map<string, Promise<unknown>>();
+
+/** Run a multi-command write, holding the pane's other writes back until done. */
+function holdPaneWrites<T>(terminalId: string, run: () => Promise<T>): Promise<T> {
+  const previous = paneWritesInFlight.get(terminalId);
+  const started = previous ? previous.then(run, run) : run();
+  const tracked = started.catch(() => {});
+  paneWritesInFlight.set(terminalId, tracked);
+  void tracked.then(() => {
+    if (paneWritesInFlight.get(terminalId) === tracked) {
+      paneWritesInFlight.delete(terminalId);
+    }
+  });
+  return started;
+}
+
+/**
+ * How many `send-keys` chunks to write before waiting for their replies.
+ *
+ * A chunk is 64 bytes, so this is a kilobyte of input in flight at once —
+ * enough that anything typed or composed by hand goes out in a single
+ * uninterruptible burst, and little enough that pasting a log file does not
+ * hand the transport tens of thousands of commands in one turn.
+ */
+const TMUX_SEND_KEYS_BURST_CHUNKS = 16;
+
+export function sendPasteToTmuxTerminal(
+  terminalId: string,
+  data: string,
+  options?: TmuxPasteOptions
+): Promise<boolean> {
+  // Behind anything already going out to this pane, so two pastes cannot
+  // interleave their buffers either.
+  return holdPaneWrites(terminalId, () => performTmuxPaste(terminalId, data, options));
+}
+
+async function performTmuxPaste(
   terminalId: string,
   data: string,
   options?: TmuxPasteOptions
@@ -5314,6 +5364,11 @@ export async function sendInputToTmuxTerminal(terminalId: string, data: string):
     return sendPasteToTmuxTerminal(terminalId, bracketedPastePayload);
   }
 
+  const inFlight = paneWritesInFlight.get(terminalId);
+  if (inFlight) {
+    await inFlight;
+  }
+
   const pane = getTmuxPaneStateByTerminal(terminalId);
   const session = pane ? getControlSessionForTerminal(terminalId) : null;
   if (!pane || !session) {
@@ -5344,11 +5399,31 @@ export async function sendInputToTmuxTerminal(terminalId: string, data: string):
     preview: previewDebugText(data, 120),
   });
 
-  for (const encodedChunk of encodeTmuxSendKeysHex(data)) {
-    await sendCommand(session, `send-keys -t ${pane.paneId} -H ${encodedChunk}`);
+  const chunks = encodeTmuxSendKeysHex(data);
+  const writeBurst = (burst: readonly string[]) =>
+    Promise.all(
+      burst.map((encodedChunk) =>
+        sendCommand(session, `send-keys -t ${pane.paneId} -H ${encodedChunk}`)
+      )
+    );
+
+  // A whole burst goes out in one turn rather than one chunk per reply.
+  // `sendCommand` writes as it is called, so issuing them together is what
+  // keeps them contiguous: waiting for each reply left a gap that the next
+  // input — an Enter, usually — was written into.
+  if (chunks.length <= TMUX_SEND_KEYS_BURST_CHUNKS) {
+    await writeBurst(chunks);
+    return true;
   }
 
-  return true;
+  // Too big for one burst, so it has to pause for replies. Hold the pane while
+  // it does, because those pauses are the gaps this is all about.
+  return holdPaneWrites(terminalId, async () => {
+    for (let offset = 0; offset < chunks.length; offset += TMUX_SEND_KEYS_BURST_CHUNKS) {
+      await writeBurst(chunks.slice(offset, offset + TMUX_SEND_KEYS_BURST_CHUNKS));
+    }
+    return true;
+  });
 }
 
 export function handleTmuxTerminalFocus(terminalId: string) {
