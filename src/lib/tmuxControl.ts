@@ -47,6 +47,7 @@ import { noteControlModeStarted } from "./tmuxAttachWatchdog";
 import {
   describeViewportChange,
   hashViewportLines,
+  isDecorationOnlyChange,
   resolveViewportChange,
 } from "./viewportSignature";
 import { recordSessionEvent } from "./sessionRecorder";
@@ -3821,53 +3822,69 @@ function settleBackgroundOutputActivity(
   previousSignature: string | null,
   previousLines: readonly string[] | null,
   lines: readonly string[]
-) {
+): "adopt" | "keep" {
   const revertPoint = pane.outputActivityRevertPoint;
   pane.outputActivityRevertPoint = null;
-  if (revertPoint === null) {
-    return;
-  }
 
   const verdict = resolveViewportChange({ signature, previousSignature });
-  if (verdict !== "unchanged") {
-    // A tab that has been quiet for a while and then wakes is the case worth
-    // explaining: either something real happened or the screen barely moved,
-    // and only the diff can say which. Logged once per wake, not per output.
-    if (
-      verdict === "changed"
-      && previousLines
-      && Date.now() - revertPoint >= TMUX_WOKE_AFTER_QUIET_MS
-    ) {
-      const change = describeViewportChange(previousLines, lines);
+  if (verdict === "unknown") {
+    return "adopt";
+  }
+
+  const change = verdict === "changed" && previousLines
+    ? describeViewportChange(previousLines, lines)
+    : null;
+  const decorationOnly = change !== null && isDecorationOnlyChange(change);
+  const quietForMs = revertPoint === null ? 0 : Date.now() - revertPoint;
+
+  if (verdict === "changed" && !decorationOnly) {
+    // Real work. Logged when it follows a quiet spell, because that is the
+    // case somebody asks about later.
+    if (change && revertPoint !== null && quietForMs >= TMUX_WOKE_AFTER_QUIET_MS) {
       debugLog("tmux.activity", "background output woke a quiet tab", {
         paneId: pane.paneId,
         terminalId: pane.terminalId,
-        quietForMs: Date.now() - revertPoint,
+        quietForMs,
         changedRows: change.changedRows,
         changedChars: change.changedChars,
+        changedTextRows: change.changedTextRows,
+        changedTextChars: change.changedTextChars,
         totalRows: lines.length,
         firstChangedRow: change.firstChangedRow,
         before: previewDebugText(change.before, 160),
         after: previewDebugText(change.after, 160),
       });
     }
-    return;
+    return "adopt";
   }
 
-  const terminal = getTerminalSession(pane.terminalId);
-  if (!terminal || terminal.lastOutputAt <= revertPoint) {
-    return;
+  if (revertPoint !== null) {
+    const terminal = getTerminalSession(pane.terminalId);
+    if (terminal && terminal.lastOutputAt > revertPoint) {
+      debugLog("tmux.activity", "background output was not worth waking for", {
+        paneId: pane.paneId,
+        terminalId: pane.terminalId,
+        kind: decorationOnly ? "decoration" : "identical",
+        changedRows: change?.changedRows ?? 0,
+        changedChars: change?.changedChars ?? 0,
+        changedTextRows: change?.changedTextRows ?? 0,
+        changedTextChars: change?.changedTextChars ?? 0,
+        firstChangedRow: change?.firstChangedRow ?? null,
+        before: change ? previewDebugText(change.before, 160) : "",
+        after: change ? previewDebugText(change.after, 160) : "",
+        wokeAt: terminal.lastOutputAt,
+        restoredTo: revertPoint,
+        quietForMs,
+      });
+      useTerminalStore.getState().patchSession(pane.terminalId, { lastOutputAt: revertPoint });
+    }
   }
 
-  debugLog("tmux.activity", "background output changed nothing on screen", {
-    paneId: pane.paneId,
-    terminalId: pane.terminalId,
-    signature,
-    wokeAt: terminal.lastOutputAt,
-    restoredTo: revertPoint,
-    quietForMs: terminal.lastOutputAt - revertPoint,
-  });
-  useTerminalStore.getState().patchSession(pane.terminalId, { lastOutputAt: revertPoint });
+  // Keep the old baseline. A spinner ticking would otherwise reset the
+  // comparison every time, and a screen creeping a few characters at a time
+  // would never add up to anything — measuring from where the tab last had
+  // something to say is what lets drift eventually count.
+  return "keep";
 }
 
 async function redrawVisiblePaneContent(
@@ -4009,13 +4026,22 @@ async function redrawVisiblePaneContent(
   const signature = hashViewportLines(lines);
   const previousSignature = currentPane.viewportSignature;
   const previousLines = currentPane.viewportLines;
-  currentPane.viewportSignature = signature;
-  currentPane.viewportLines = lines;
+  let adoptBaseline = true;
   if (options?.backgroundRefresh) {
-    settleBackgroundOutputActivity(currentPane, signature, previousSignature, previousLines, lines);
+    adoptBaseline = settleBackgroundOutputActivity(
+      currentPane,
+      signature,
+      previousSignature,
+      previousLines,
+      lines
+    ) === "adopt";
   } else {
     // Whatever is on screen has been seen; there is nothing to second-guess.
     currentPane.outputActivityRevertPoint = null;
+  }
+  if (adoptBaseline) {
+    currentPane.viewportSignature = signature;
+    currentPane.viewportLines = lines;
   }
 
   const cursor = await resolvePaneCursorForCapture(
