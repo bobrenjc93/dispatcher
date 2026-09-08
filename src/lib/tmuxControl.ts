@@ -3745,6 +3745,16 @@ async function capturePaneFullContent(
       clearPaneVisibleRedraw(currentPane);
       clearPaneLayoutRedrawBarrier(session, currentPane, options.reason);
     }
+    // Seed the screen this pane will be compared against. Without it the first
+    // output after every launch has no baseline, so a spinner tick on each of
+    // twenty-odd panes wakes its tab once for free. The viewport is the tail
+    // of a history capture: the command asked for exactly this many scrollback
+    // lines ahead of it.
+    if (requestedHistorySize !== undefined && lines.length > requestedHistorySize) {
+      const viewportLines = lines.slice(requestedHistorySize);
+      currentPane.viewportLines = viewportLines;
+      currentPane.viewportSignature = hashViewportLines(viewportLines);
+    }
     currentPane.initialContentCaptured = true;
     currentPane.lastHistoryCaptureSize = currentPane.historySize;
     currentPane.lastHistoryRefreshDeferredLogAt = 0;

@@ -2108,6 +2108,61 @@ describe("tmuxControl", () => {
     expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wokeAt);
   });
 
+  it("can judge the first output after a launch", async () => {
+    // Every pane starts with no screen to be compared against, and there are
+    // twenty-odd of them, so without a baseline from the initial capture each
+    // one gets a free spurious wake every time the app starts.
+    const transportTerminalId = "transport-hidden-seeded-baseline";
+    seedTransportTerminal(transportTerminalId);
+
+    routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 1 0",
+        "@1\thappy\t1\t*",
+        "%end 1 0",
+        "%begin 2 0",
+        // Two lines of scrollback, so the capture below has a history offset.
+        "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren\t4\t7\t0\t2",
+        "%end 2 0",
+        "",
+      ].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+    // History, then the screen: the tail is what a viewport capture returns.
+    completeTmuxCommandWithLines(transportTerminalId, 3, [
+      "scrollback one",
+      "scrollback two",
+      "\u001b[0;38;5;246m \u001b[0mBash(sleep 240)",
+    ]);
+    await flushMicrotasks();
+
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.setState((state) => ({
+      sessions: { ...state.sessions, other: makeTerminalSession("other") },
+      activeTerminalId: "other",
+    }));
+    const wentQuietAt = Date.now();
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: wentQuietAt });
+
+    // First output since launch, and it is only the spinner turning.
+    vi.setSystemTime(Date.now() + 90_000);
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 spinner tick\n");
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: Date.now() });
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, [
+      "\u001b[0;38;5;114m\u25cf\u001b[0mBash(sleep 240)",
+    ]);
+    await flushMicrotasks();
+
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
+  });
+
   it("keeps a tab awake when there is no earlier capture to compare against", async () => {
     // The first hidden burst after an attach has nothing to be compared with:
     // the initial capture includes scrollback, so it is not the same picture.
