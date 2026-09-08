@@ -3950,6 +3950,9 @@ describe("tmuxControl", () => {
     const restored = getHydratedTmuxIds();
     expect(useTerminalStore.getState().sessions[restored.windowTerminalId]).toBeDefined();
     expect(useTerminalStore.getState().sessions[restored.paneTerminalId]).toBeDefined();
+    // And you are in it. A tab that comes back to its own place among twenty
+    // others, with nothing else moving, reads as the shortcut having failed.
+    expect(useTerminalStore.getState().activeTerminalId).toBe(restored.paneTerminalId);
   });
 
   it("keeps a closed tab hidden when tmux -CC reattaches", async () => {

@@ -6451,6 +6451,35 @@ export async function reopenLastClosedTmuxTab(): Promise<boolean> {
   });
 
   await refreshSingleWindow(session, closed.windowId);
+
+  const restored = session.windows.get(closed.windowId);
+  if (!restored) {
+    debugLog("tmux.action", "reopened window did not come back", {
+      sessionId: session.id,
+      windowId: closed.windowId,
+      title: closed.title,
+    });
+    return false;
+  }
+
+  // Land in the tab, the way a browser does. Without this the reopen is
+  // invisible: the window returns to its own place among twenty others and
+  // nothing else moves, which reads as the shortcut having done nothing — and
+  // the next press brings back something closed hours ago.
+  const focusTarget = resolvePreferredTerminalFocus(restored.terminalId);
+  const placement = adoptSessionPlacementFromWindow(session, restored);
+  if (placement.projectId) {
+    useProjectStore.getState().setActiveProject(placement.projectId);
+  }
+  useTerminalStore.getState().setActiveTerminal(focusTarget);
+  handleTmuxTerminalFocus(focusTarget);
+  debugLog("tmux.action", "focused a reopened tab", {
+    sessionId: session.id,
+    windowId: closed.windowId,
+    terminalId: restored.terminalId,
+    focusTarget,
+    projectId: placement.projectId,
+  });
   return true;
 }
 
