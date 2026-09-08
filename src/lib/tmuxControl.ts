@@ -44,6 +44,11 @@ import {
   registerActionHandler,
 } from "./replication";
 import { noteControlModeStarted } from "./tmuxAttachWatchdog";
+import {
+  describeViewportChange,
+  hashViewportLines,
+  resolveViewportChange,
+} from "./viewportSignature";
 import { recordSessionEvent } from "./sessionRecorder";
 import { debugLog, debugLogError, previewDebugText } from "./debugLog";
 import type { ClosedTab } from "./closedTabs";
@@ -170,6 +175,18 @@ interface TmuxPaneState {
   // replay repairs wait for a quiet period so they do not fight fast TUI
   // redraw loops that are still moving the cursor.
   lastTmuxOutputAt: number;
+  /** Hash of the last trustworthy capture, for spotting a repaint that changed nothing. */
+  viewportSignature: string | null;
+  /** That capture's lines, so a wake can say what changed rather than that something did. */
+  viewportLines: readonly string[] | null;
+  /**
+   * Where this tab's activity clock stood before output nobody has seen yet.
+   *
+   * Set when a hidden pane produces output and cleared once a capture says
+   * whether the screen actually changed. Restoring it is how a tab that was
+   * woken by a no-op repaint goes back to being done.
+   */
+  outputActivityRevertPoint: number | null;
   // While tmux and xterm are being resized/replayed, cursor-relative live
   // output can be interpreted against the old local grid. A short barrier lets
   // the authoritative capture win instead of layering those transient frames
@@ -322,6 +339,12 @@ const windowTerminalToSessionId = tmuxRuntime.windowTerminalToSessionId;
 const transportTerminalToSessionId = tmuxRuntime.transportTerminalToSessionId;
 const transportRawCarry = tmuxRuntime.transportRawCarry;
 const TMUX_OUTPUT_LOG_LIMIT = 25;
+
+/**
+ * How long a pane must have been silent for its next output to count as a
+ * tab waking up, rather than as part of ongoing work.
+ */
+const TMUX_WOKE_AFTER_QUIET_MS = 60_000;
 const TMUX_TRANSPORT_LOG_LIMIT = 25;
 const TMUX_TRANSPORT_SUMMARY_INTERVAL_MS = 5_000;
 const TMUX_BOOTSTRAP_FALLBACK_DELAY_MS = 100;
@@ -389,6 +412,9 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.backgroundViewportRefreshTimer ??= null;
   pane.backgroundViewportRefreshInFlight ??= false;
   pane.lastTmuxOutputAt ??= 0;
+  pane.viewportSignature ??= null;
+  pane.viewportLines ??= null;
+  pane.outputActivityRevertPoint ??= null;
   pane.layoutRedrawBarrierUntil ??= 0;
   pane.layoutRedrawBarrierReason ??= null;
   pane.layoutRedrawSuppressedChunks ??= 0;
@@ -938,6 +964,9 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       outputGeneration: 0,
       inputGeneration: 0,
       alternateGeneration: 0,
+      viewportSignature: null,
+      viewportLines: null,
+      outputActivityRevertPoint: null,
     });
     paneTerminalToSessionId.set(session.id, sessionId);
 
@@ -2165,6 +2194,9 @@ function upsertWindowProjection(
         outputGeneration: 0,
         inputGeneration: 0,
         alternateGeneration: 0,
+        viewportSignature: null,
+        viewportLines: null,
+        outputActivityRevertPoint: null,
       };
       session.panes.set(paneSnapshot.paneId, paneState);
       paneTerminalToSessionId.set(terminalId, session.id);
@@ -3769,6 +3801,75 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
   });
 }
 
+/**
+ * Decide whether output nobody saw was worth waking the tab for.
+ *
+ * A hidden pane's status runs on timestamps, because nothing is rendering it
+ * and there is no screen to compare. This is the one place that does have a
+ * screen: the capture taken right after the output. If it matches the last
+ * one, those bytes repainted the frame and changed nothing, and the tab goes
+ * back to where it was.
+ *
+ * Only ever puts a tab back — it never withholds a wake. Every uncertain case,
+ * from a missing baseline to a capture that never arrives, leaves the tab
+ * green: a tab left green costs a glance, and a tab wrongly cleared costs the
+ * one you were waiting on.
+ */
+function settleBackgroundOutputActivity(
+  pane: TmuxPaneState,
+  signature: string,
+  previousSignature: string | null,
+  previousLines: readonly string[] | null,
+  lines: readonly string[]
+) {
+  const revertPoint = pane.outputActivityRevertPoint;
+  pane.outputActivityRevertPoint = null;
+  if (revertPoint === null) {
+    return;
+  }
+
+  const verdict = resolveViewportChange({ signature, previousSignature });
+  if (verdict !== "unchanged") {
+    // A tab that has been quiet for a while and then wakes is the case worth
+    // explaining: either something real happened or the screen barely moved,
+    // and only the diff can say which. Logged once per wake, not per output.
+    if (
+      verdict === "changed"
+      && previousLines
+      && Date.now() - revertPoint >= TMUX_WOKE_AFTER_QUIET_MS
+    ) {
+      const change = describeViewportChange(previousLines, lines);
+      debugLog("tmux.activity", "background output woke a quiet tab", {
+        paneId: pane.paneId,
+        terminalId: pane.terminalId,
+        quietForMs: Date.now() - revertPoint,
+        changedRows: change.changedRows,
+        changedChars: change.changedChars,
+        totalRows: lines.length,
+        firstChangedRow: change.firstChangedRow,
+        before: previewDebugText(change.before, 160),
+        after: previewDebugText(change.after, 160),
+      });
+    }
+    return;
+  }
+
+  const terminal = getTerminalSession(pane.terminalId);
+  if (!terminal || terminal.lastOutputAt <= revertPoint) {
+    return;
+  }
+
+  debugLog("tmux.activity", "background output changed nothing on screen", {
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    signature,
+    wokeAt: terminal.lastOutputAt,
+    restoredTo: revertPoint,
+    quietForMs: terminal.lastOutputAt - revertPoint,
+  });
+  useTerminalStore.getState().patchSession(pane.terminalId, { lastOutputAt: revertPoint });
+}
+
 async function redrawVisiblePaneContent(
   session: TmuxControlSession,
   pane: TmuxPaneState,
@@ -3901,6 +4002,20 @@ async function redrawVisiblePaneContent(
       );
     }
     return;
+  }
+
+  // Nothing raced this capture, so it is a true picture of the pane. Comparing
+  // it with the last one is what separates a repaint from real work.
+  const signature = hashViewportLines(lines);
+  const previousSignature = currentPane.viewportSignature;
+  const previousLines = currentPane.viewportLines;
+  currentPane.viewportSignature = signature;
+  currentPane.viewportLines = lines;
+  if (options?.backgroundRefresh) {
+    settleBackgroundOutputActivity(currentPane, signature, previousSignature, previousLines, lines);
+  } else {
+    // Whatever is on screen has been seen; there is nothing to second-guess.
+    currentPane.outputActivityRevertPoint = null;
   }
 
   const cursor = await resolvePaneCursorForCapture(
@@ -4683,6 +4798,13 @@ function handleNotification(session: TmuxControlSession, line: string) {
     updatePaneAlternateScreenFromOutput(session, pane, output);
     markPaneOutputMissedByHistoryCapture(session, pane, parsed.value.length);
     if (!paneWasVisible && pane.initialContentCaptured) {
+      // Nothing is rendering this pane, so "bytes arrived" is all the status
+      // has to go on — and a TUI repainting its frame on a timer looks exactly
+      // like the agent going back to work. Note where the clock stood; the
+      // capture this schedules is what decides whether to put it back.
+      if (pane.outputActivityRevertPoint === null) {
+        pane.outputActivityRevertPoint = getTerminalSession(pane.terminalId)?.lastOutputAt ?? null;
+      }
       scheduleBackgroundPaneViewportRefresh(session, pane, "hidden-output");
     }
     let queued: boolean;
