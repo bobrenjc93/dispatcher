@@ -25,6 +25,11 @@ const shortcuts = [
   { keys: "⌘0", description: "Reset font size" },
   { keys: "⇧⌘P", description: "Color scheme" },
   { keys: "⇧⌘?", description: "Status debug" },
+  // Mouse, but listed here for the same reason the rest is: nothing on screen
+  // says these exist.
+  { keys: "⇧ Click", description: "Select a range of tabs" },
+  { keys: "⌘ Click", description: "Add a tab to the selection" },
+  { keys: "⇧⌘ Click", description: "Add a range to the selection" },
 ];
 
 export function HotkeyHelp({ onClose }: HotkeyHelpProps) {

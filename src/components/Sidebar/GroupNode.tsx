@@ -9,7 +9,7 @@ interface GroupNodeProps {
   projectId: string;
   activeTerminalId: string | null;
   onTerminalClick: (terminalId: string) => void;
-  onDeleteTerminal: (terminalId: string) => void;
+  onDeleteTerminals: (terminalIds: string[]) => void;
   depth: number;
 }
 
@@ -19,7 +19,7 @@ export function GroupNode({
   projectId,
   activeTerminalId,
   onTerminalClick,
-  onDeleteTerminal,
+  onDeleteTerminals,
   depth,
 }: GroupNodeProps) {
   const [expanded, setExpanded] = useState(true);
@@ -66,7 +66,7 @@ export function GroupNode({
                 projectId={projectId}
                 activeTerminalId={activeTerminalId}
                 onTerminalClick={onTerminalClick}
-                onDeleteTerminal={onDeleteTerminal}
+                onDeleteTerminals={onDeleteTerminals}
                 depth={depth + 1}
               />
             );
