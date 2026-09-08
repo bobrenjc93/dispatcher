@@ -386,6 +386,22 @@ async function answerPendingTmuxCommands(
   }
 }
 
+/** Terminal ids the sidebar would actually render, in order. */
+function getSidebarTerminalIds(): string[] {
+  const { projects, projectOrder, nodes } = useProjectStore.getState();
+  const ids: string[] = [];
+  for (const projectId of projectOrder.length > 0 ? projectOrder : Object.keys(projects)) {
+    const root = nodes[projects[projectId]?.rootGroupId ?? ""];
+    for (const childId of root?.children ?? []) {
+      const child = nodes[childId];
+      if (child?.type === "terminal" && child.terminalId && !child.hidden) {
+        ids.push(child.terminalId);
+      }
+    }
+  }
+  return ids;
+}
+
 function getProjectedWindowIds(): string[] {
   return Object.values(useTerminalStore.getState().sessions)
     .filter((session) => session.backendKind === "tmux-window")
@@ -3950,7 +3966,11 @@ describe("tmuxControl", () => {
     const restored = getHydratedTmuxIds();
     expect(useTerminalStore.getState().sessions[restored.windowTerminalId]).toBeDefined();
     expect(useTerminalStore.getState().sessions[restored.paneTerminalId]).toBeDefined();
-    // And you are in it. A tab that comes back to its own place among twenty
+    // The row is back in the sidebar, not merely in the stores. A window that
+    // is not in the session's order never gets attached to its parent, so the
+    // tab comes back with nowhere to appear.
+    expect(getSidebarTerminalIds()).toContain(restored.windowTerminalId);
+    // And you are in it. A tab that returns to its own place among twenty
     // others, with nothing else moving, reads as the shortcut having failed.
     expect(useTerminalStore.getState().activeTerminalId).toBe(restored.paneTerminalId);
   });
@@ -4013,6 +4033,11 @@ describe("tmuxControl", () => {
     await expect(reopened).resolves.toBe(true);
     await vi.advanceTimersByTimeAsync(50);
     expect(getProjectedWindowIds()).toEqual(["@1", "@2"]);
+    // Back in its own place, below the tab it used to sit under.
+    expect(getSidebarTerminalIds()).toEqual([
+      getWindowTerminalIdByWindowId("@1"),
+      getWindowTerminalIdByWindowId("@2"),
+    ]);
 
     // And the tombstone is gone, so a later reattach does not re-hide it.
     seedTransportTerminal("transport-tombstone-revived-reattach");

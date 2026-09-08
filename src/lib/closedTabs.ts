@@ -58,6 +58,14 @@ export interface ClosedTab {
    * nothing in it.
    */
   paneIds: string[];
+  /**
+   * The tab that sat above this one.
+   *
+   * Reopening has to put the window back into the session's order, or its
+   * sidebar row is never inserted and the tab comes back invisibly. Null means
+   * it was first.
+   */
+  anchorWindowId: string | null;
   title: string;
   closedAt: number;
 }

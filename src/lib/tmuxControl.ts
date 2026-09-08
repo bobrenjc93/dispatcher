@@ -5773,6 +5773,12 @@ function killClosedTmuxWindow(
   );
 }
 
+/** The window listed above this one, which is where it belongs on the way back. */
+function windowIdAbove(session: TmuxControlSession, windowId: string): string | null {
+  const index = session.windowOrder.indexOf(windowId);
+  return index > 0 ? session.windowOrder[index - 1] : null;
+}
+
 /**
  * Stop projecting a window but leave it running, so the tab can come back.
  *
@@ -5789,12 +5795,14 @@ function tombstoneTmuxWindow(options: {
   paneIds: readonly string[];
   title: string;
   connectionKey: string | null;
+  anchorWindowId: string | null;
 }) {
   const evicted = rememberClosedTab({
     connectionKey: options.connectionKey,
     sessionId: options.session.id,
     windowId: options.windowId,
     paneIds: [...options.paneIds],
+    anchorWindowId: options.anchorWindowId,
     title: options.title,
     closedAt: Date.now(),
   });
@@ -5830,6 +5838,7 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
     for (const paneId of paneIds) {
       session.optimisticallyClosedPaneIds.add(paneId);
     }
+    const anchorWindowId = windowIdAbove(session, windowId);
     removeWindowProjection(session, windowId);
     syncWindowNodeOrder(session);
     tombstoneTmuxWindow({
@@ -5838,6 +5847,7 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
       paneIds,
       title: terminal.title,
       connectionKey: terminal.tmuxConnectionKey ?? null,
+      anchorWindowId,
     });
     return true;
   }
@@ -5866,6 +5876,7 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
       for (const closedPaneId of paneIds) {
         session.optimisticallyClosedPaneIds.add(closedPaneId);
       }
+      const anchorWindowId = windowIdAbove(session, windowId);
       removeWindowProjection(session, windowId);
       syncWindowNodeOrder(session);
       tombstoneTmuxWindow({
@@ -5874,6 +5885,7 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
         paneIds,
         title: windowTerminal?.title ?? terminal.title,
         connectionKey: windowState?.connectionKey ?? terminal.tmuxConnectionKey ?? null,
+        anchorWindowId,
       });
     } else {
       session.optimisticallyClosedPaneIds.add(paneId);
@@ -6442,6 +6454,16 @@ export async function reopenLastClosedTmuxTab(): Promise<boolean> {
   for (const paneId of closed.paneIds ?? []) {
     session.optimisticallyClosedPaneIds.delete(paneId);
   }
+
+  // Back into the session's window order before the refresh, because the
+  // sidebar row is inserted from that order. Without it the window projects
+  // and its terminals come back, but the row is never attached to its parent —
+  // the tab returns with nowhere to appear.
+  session.windowOrder = insertWindowIdAfterAnchor(
+    session.windowOrder,
+    closed.windowId,
+    closed.anchorWindowId ?? null
+  );
 
   debugLog("tmux.action", "reopening a closed tab", {
     sessionId: session.id,
