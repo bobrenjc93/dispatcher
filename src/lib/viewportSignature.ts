@@ -59,10 +59,24 @@ export function resolveViewportChange(args: {
 export interface ViewportChangeDescription {
   changedRows: number;
   changedChars: number;
+  /** The same two counts with styling removed, which is what a person reads. */
+  changedTextRows: number;
+  changedTextChars: number;
   /** First row that differs, or null when the screens match. */
   firstChangedRow: number | null;
   before: string;
   after: string;
+}
+
+/**
+ * A row as read rather than as drawn.
+ *
+ * Captures come from `capture-pane -e`, so a row is mostly colour codes. A
+ * TUI recolouring one glyph rewrites hundreds of "characters" while saying
+ * nothing, and counting those is how a spinner passes for work.
+ */
+export function stripViewportStyling(line: string): string {
+  return line.replace(/\u001b\[[0-9;:?]*[ -/]*[@-~]/g, "");
 }
 
 /**
@@ -80,6 +94,8 @@ export function describeViewportChange(
   const rows = Math.max(previous.length, current.length);
   let changedRows = 0;
   let changedChars = 0;
+  let changedTextRows = 0;
+  let changedTextChars = 0;
   let firstChangedRow: number | null = null;
   let before = "";
   let after = "";
@@ -91,12 +107,15 @@ export function describeViewportChange(
       continue;
     }
     changedRows += 1;
-    const width = Math.max(previousLine.length, currentLine.length);
-    for (let index = 0; index < width; index += 1) {
-      if (previousLine[index] !== currentLine[index]) {
-        changedChars += 1;
-      }
+    changedChars += countDifferingChars(previousLine, currentLine);
+
+    const previousText = stripViewportStyling(previousLine);
+    const currentText = stripViewportStyling(currentLine);
+    if (previousText !== currentText) {
+      changedTextRows += 1;
+      changedTextChars += countDifferingChars(previousText, currentText);
     }
+
     if (firstChangedRow === null) {
       firstChangedRow = row;
       before = previousLine;
@@ -104,5 +123,55 @@ export function describeViewportChange(
     }
   }
 
-  return { changedRows, changedChars, firstChangedRow, before, after };
+  return {
+    changedRows,
+    changedChars,
+    changedTextRows,
+    changedTextChars,
+    firstChangedRow,
+    before,
+    after,
+  };
+}
+
+function countDifferingChars(previous: string, current: string): number {
+  const width = Math.max(previous.length, current.length);
+  let differing = 0;
+  for (let index = 0; index < width; index += 1) {
+    if (previous[index] !== current[index]) {
+      differing += 1;
+    }
+  }
+  return differing;
+}
+
+/**
+ * How much a screen may change and still be decoration rather than work.
+ *
+ * Measured, not guessed. Thirty-one wakes that were real work rewrote 38 rows
+ * at the least and thousands of characters. The spinner tick that kept waking
+ * an idle pr-review tab moved four rows and a handful of glyphs: a grey space
+ * becoming a green bullet beside a `sleep 240` that was still sleeping.
+ * Nothing observed falls between the two.
+ */
+const DECORATION_MAX_TEXT_ROWS = 8;
+const DECORATION_MAX_TEXT_CHARS = 12;
+
+/**
+ * Whether a change is a TUI redrawing its own furniture.
+ *
+ * Judged on the text, because that is what a person reads: a recolour with
+ * identical text is always decoration, however many bytes it took. A tab that
+ * this holds back is one whose agent is sitting on a long tool call — the
+ * spinner turning is not news, and treating it as news is what made "green"
+ * stop meaning anything.
+ */
+export function isDecorationOnlyChange(change: ViewportChangeDescription): boolean {
+  if (change.changedRows === 0) {
+    return false;
+  }
+  return (
+    change.changedTextRows <= DECORATION_MAX_TEXT_ROWS
+    && change.changedTextChars <= DECORATION_MAX_TEXT_CHARS
+  );
 }

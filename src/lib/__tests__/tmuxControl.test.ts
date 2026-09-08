@@ -1968,6 +1968,96 @@ describe("tmuxControl", () => {
     expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
   });
 
+  it("does not wake a tab for a spinner turning beside a long tool call", async () => {
+    // Measured from a real one: an idle pr-review tab lit up green every time
+    // Claude Code recoloured the bullet next to a `sleep 240` that was still
+    // sleeping. Four rows and a couple of glyphs, and nothing to look at.
+    const transportTerminalId = "transport-hidden-spinner";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 tool call starts\n");
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, [
+      "\u001b[0;38;5;246m \u001b[0mBash(sleep 240)",
+      "output so far",
+    ]);
+    await flushMicrotasks();
+
+    const wentQuietAt = Date.now();
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: wentQuietAt });
+
+    vi.setSystemTime(Date.now() + 90_000);
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 spinner tick\n");
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: Date.now() });
+
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 6, [
+      "\u001b[0;38;5;114m\u25cf\u001b[0mBash(sleep 240)",
+      "output so far",
+    ]);
+    await flushMicrotasks();
+
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
+  });
+
+  it("wakes a tab once a creeping screen adds up to something", async () => {
+    // Each tick is held back against the last screen that had something to
+    // say, not against the previous tick, so a screen changing a character at
+    // a time cannot stay quiet forever.
+    const transportTerminalId = "transport-hidden-creep";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 first\n");
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, ["progress: "]);
+    await flushMicrotasks();
+
+    const wentQuietAt = Date.now();
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: wentQuietAt });
+
+    const tick = async (commandId: number, screen: string) => {
+      vi.setSystemTime(Date.now() + 90_000);
+      routeTmuxTransportOutput(transportTerminalId, "%output %1 tick\n");
+      const wokeAt = Date.now();
+      useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: wokeAt });
+      await vi.advanceTimersByTimeAsync(350);
+      completeTmuxCaptureWithCursor(transportTerminalId, commandId, [screen]);
+      await flushMicrotasks();
+      return wokeAt;
+    };
+
+    await tick(6, "progress: ##");
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
+
+    await tick(8, "progress: ######");
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
+
+    // Fourteen characters on from the screen that last said anything, which is
+    // past the point where it is still furniture.
+    const wokeAt = await tick(10, "progress: ##############");
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wokeAt);
+  });
+
   it("leaves a woken tab awake when the hidden pane's screen really changed", async () => {
     const transportTerminalId = "transport-hidden-real-change";
     seedTransportTerminal(transportTerminalId);
