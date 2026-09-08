@@ -561,6 +561,24 @@ body.sidebar-dragging * {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--active-tab-border) 86%, transparent);
 }
 
+/* Picked out for a bulk action. Distinct from `active`, which is the one tab
+   being looked at — several tabs can be selected while a different one is on
+   screen, so the two have to be told apart at a glance. */
+.sidebar-terminal-node.selected {
+  background: color-mix(in srgb, var(--active-tab-border) 18%, var(--bg-hover));
+}
+
+.sidebar-terminal-node.selected::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--active-tab-border);
+}
+
 .sidebar-terminal-node.needs-attention {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 82%, transparent);
 }

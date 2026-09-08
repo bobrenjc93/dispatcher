@@ -10,6 +10,9 @@ import { FontSettings } from "../common/FontSettings";
 import { SchemePicker } from "../common/SchemePicker";
 import { registerDragCallbacks } from "../../lib/dragState";
 import { handleTmuxTerminalFocus, resolvePreferredTerminalFocus } from "../../lib/tmuxControl";
+import { useTabSelectionStore } from "../../stores/useTabSelectionStore";
+import { visibleTabOrder } from "../../lib/tabSelection";
+import { findProjectIdForTerminal } from "../../lib/treeUtils";
 
 interface SidebarProps {
   onNewTerminal: () => void;
@@ -59,6 +62,75 @@ export function Sidebar({
     onMoveTerminal: (...args) => callbacksRef.current.onMoveTerminal(...args),
     onReorderChild: (...args) => callbacksRef.current.reorderChild(...args),
   });
+
+  // A tab that has been closed must not stay selected: a bulk action would
+  // then be counted against something that no longer exists.
+  //
+  // Subscribed to imperatively rather than through the hook. Sessions change
+  // on every burst of terminal output, and re-rendering the whole sidebar for
+  // that would undo the point of each tab subscribing to its own session.
+  useEffect(() => {
+    let lastActiveTerminalId = useTerminalStore.getState().activeTerminalId;
+    const followActiveTab = () => {
+      const activeTerminalId = useTerminalStore.getState().activeTerminalId;
+      if (activeTerminalId === lastActiveTerminalId) {
+        return;
+      }
+      lastActiveTerminalId = activeTerminalId;
+      // Moving to another tab moves where the next range starts. Without this
+      // a shift-click after ⇧⌘[ measures from the tab last clicked, which is
+      // no longer the tab you are on.
+      useTabSelectionStore.getState().releaseAnchor();
+    };
+    const prune = () => {
+      const selection = useTabSelectionStore.getState();
+      if (selection.terminalIds.length === 0 && selection.anchorTerminalId === null) {
+        return;
+      }
+      const projectState = useProjectStore.getState();
+      selection.prune(
+        visibleTabOrder({
+          projects: projectState.projects,
+          projectOrder: projectState.projectOrder,
+          nodes: projectState.nodes,
+          sessions: useTerminalStore.getState().sessions,
+        })
+      );
+    };
+    prune();
+    const unsubscribeTerminals = useTerminalStore.subscribe(() => {
+      followActiveTab();
+      prune();
+    });
+    const unsubscribeProjects = useProjectStore.subscribe(prune);
+    return () => {
+      unsubscribeTerminals();
+      unsubscribeProjects();
+    };
+  }, []);
+
+  /**
+   * Delete tabs, resolving each one's project.
+   *
+   * A selection can span projects, so the project cannot come from wherever
+   * the menu happened to be opened.
+   */
+  const deleteTerminals = (terminalIds: string[]) => {
+    const projectState = useProjectStore.getState();
+    const sessions = useTerminalStore.getState().sessions;
+    for (const terminalId of terminalIds) {
+      const projectId = findProjectIdForTerminal(
+        projectState.projects,
+        projectState.projectOrder,
+        projectState.nodes,
+        sessions,
+        terminalId
+      );
+      if (projectId) {
+        onDeleteTerminal(terminalId, projectId);
+      }
+    }
+  };
 
   const [bgMenu, setBgMenu] = useState<{ x: number; y: number } | null>(null);
   const [showHelp, setShowHelp] = useState(false);
@@ -125,6 +197,14 @@ export function Sidebar({
       </div>
       <div
         className="sidebar-content"
+        onClick={(e) => {
+          // Only empty space clears. A click on a tab has already said what it
+          // means to the selection, including where the next range starts.
+          if ((e.target as HTMLElement).closest?.(".sidebar-terminal-node")) {
+            return;
+          }
+          useTabSelectionStore.getState().clear();
+        }}
         onContextMenu={(e) => {
           e.preventDefault();
           setBgMenu({ x: e.clientX, y: e.clientY });
@@ -149,7 +229,7 @@ export function Sidebar({
               handleTmuxTerminalFocus(preferredTerminalId);
             }}
             onDeleteProject={() => onDeleteProject(project.id)}
-            onDeleteTerminal={(terminalId) => onDeleteTerminal(terminalId, project.id)}
+            onDeleteTerminals={deleteTerminals}
             onNewTerminal={() => onNewTerminalInProject(project.id)}
           />
         ))}

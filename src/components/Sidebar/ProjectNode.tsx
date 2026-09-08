@@ -12,7 +12,7 @@ interface ProjectNodeProps {
   onSelect: () => void;
   onTerminalClick: (terminalId: string) => void;
   onDeleteProject: () => void;
-  onDeleteTerminal: (terminalId: string) => void;
+  onDeleteTerminals: (terminalIds: string[]) => void;
   onNewTerminal: () => void;
 }
 
@@ -23,7 +23,7 @@ export function ProjectNode({
   onSelect,
   onTerminalClick,
   onDeleteProject,
-  onDeleteTerminal,
+  onDeleteTerminals,
   onNewTerminal,
 }: ProjectNodeProps) {
   const nodes = useProjectStore((s) => s.nodes);
@@ -192,7 +192,7 @@ export function ProjectNode({
                 projectId={project.id}
                 activeTerminalId={activeTerminalId}
                 onTerminalClick={onTerminalClick}
-                onDeleteTerminal={onDeleteTerminal}
+                onDeleteTerminals={onDeleteTerminals}
                 depth={1}
               />
             );

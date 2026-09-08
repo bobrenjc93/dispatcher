@@ -66,6 +66,7 @@ import {
   splitTmuxTerminal,
 } from "./lib/tmuxControl";
 import { onTerminalExit } from "./lib/terminalEvents";
+import { visibleTabs } from "./lib/tabSelection";
 import { collectVisibleTerminalRefs, findProjectIdForTerminal, resolveSiblingInsertIndex } from "./lib/treeUtils";
 import {
   APP_STATE_LAYOUTS_KEY,
@@ -274,20 +275,15 @@ export default function App() {
   const activeProject = resolvedActiveProjectId ? projects[resolvedActiveProjectId] : null;
 
   const buildSidebarTerminalList = useCallback((): SidebarTerminalRef[] => {
-    const { projects: allProjects, projectOrder, nodes: currentNodes } = useProjectStore.getState();
-    const sessions = useTerminalStore.getState().sessions;
-    const allTerminals: SidebarTerminalRef[] = [];
-
-    for (const projId of projectOrder) {
-      const proj = allProjects[projId];
-      if (!proj || !proj.expanded) continue;
-      const refs = collectVisibleTerminalRefs(currentNodes, proj.rootGroupId, sessions);
-      for (const ref of refs) {
-        allTerminals.push({ terminalId: ref.terminalId, projectId: projId });
-      }
-    }
-
-    return allTerminals;
+    const { projects, projectOrder, nodes } = useProjectStore.getState();
+    // Shared with tab selection, so a shift-click range covers exactly the
+    // tabs ⇧⌘[ and ⇧⌘] step through.
+    return visibleTabs({
+      projects,
+      projectOrder,
+      nodes,
+      sessions: useTerminalStore.getState().sessions,
+    });
   }, []);
 
   const resolveCloseFocusTarget = useCallback(

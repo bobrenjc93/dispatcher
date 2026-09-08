@@ -9,7 +9,7 @@ interface SidebarTreeNodeProps {
   projectId: string;
   activeTerminalId: string | null;
   onTerminalClick: (terminalId: string) => void;
-  onDeleteTerminal: (terminalId: string) => void;
+  onDeleteTerminals: (terminalIds: string[]) => void;
   depth: number;
 }
 
@@ -20,7 +20,7 @@ export function SidebarTreeNode({
   projectId,
   activeTerminalId,
   onTerminalClick,
-  onDeleteTerminal,
+  onDeleteTerminals,
   depth,
 }: SidebarTreeNodeProps) {
   if (node.hidden) {
@@ -37,7 +37,7 @@ export function SidebarTreeNode({
           parentNodeId={parentNodeId}
           isActive={activeTerminalId === node.terminalId}
           onClick={() => onTerminalClick(node.terminalId!)}
-          onDelete={() => onDeleteTerminal(node.terminalId!)}
+          onDeleteTerminals={onDeleteTerminals}
         />
       </div>
     );
@@ -51,7 +51,7 @@ export function SidebarTreeNode({
         projectId={projectId}
         activeTerminalId={activeTerminalId}
         onTerminalClick={onTerminalClick}
-        onDeleteTerminal={onDeleteTerminal}
+        onDeleteTerminals={onDeleteTerminals}
         depth={depth}
       />
     );
