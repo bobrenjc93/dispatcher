@@ -4234,9 +4234,22 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
     if (windowLines.length > 0) {
       return;
     }
-    reconcileOptimisticTmuxClosesFromSnapshot(session, [], [], windowId);
-    removeWindowProjection(session, windowId);
-    syncWindowNodeOrder(session);
+    // An empty reply is not proof the window is gone, and deleting a tab is
+    // not undoable: the node, the layout and the session go with it. A live
+    // window has been seen answering `display-message` with nothing while its
+    // pane was printing three milliseconds later, and that cost real tabs,
+    // one per click.
+    //
+    // A window that has genuinely closed says so — tmux sends
+    // `%window-close`, and a full refresh finds it missing from
+    // `list-windows`. Both of those still remove it. Nor is it retried here:
+    // a window that keeps answering with nothing would have this asking again
+    // forever, over ssh. The next output, focus or full refresh picks it up.
+    debugLog("tmux.refresh", "empty window snapshot; keeping the tab", {
+      sessionId: session.id,
+      windowId,
+      paneLineCount: paneLines.length,
+    });
     return;
   }
 
@@ -6407,7 +6420,12 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
           priority: isPaneVisibleInActiveWindow(existing, pane),
         });
       }
-      debugLog("tmux.session", "requested pane content after reload", {
+      // And ask what windows there are. The store's idea of them can be out
+      // of date — a window created elsewhere, renamed, or one this app
+      // wrongly dropped — and until something asks, a tab that exists on the
+      // server has no way back onto the screen.
+      scheduleRefresh(existing);
+      debugLog("tmux.session", "requested pane content and window list after reload", {
         transportTerminalId: terminalId,
         panes: existing.panes.size,
       });
