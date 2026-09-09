@@ -3691,6 +3691,36 @@ describe("tmuxControl", () => {
     });
   });
 
+  it("keeps the tab when a targeted window query answers with nothing", async () => {
+    // Seen in the wild: `display-message -p -t @42` returned zero lines while
+    // that window's pane was printing three milliseconds later. Reading the
+    // silence as "the window is gone" deleted the tab, its node, its layout
+    // and its session — none of it undoable — every time the user clicked
+    // another tab.
+    const transportTerminalId = "transport-empty-window-snapshot";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+
+    writeTerminalMock.mockClear();
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.advanceTimersByTimeAsync(50);
+    // The refresh really was issued, so the assertions below are about what
+    // was made of the reply rather than about nothing having happened.
+    expect(getWrittenTmuxCommands().some((command) => command.includes("display-message -p -t @1")))
+      .toBe(true);
+
+    // Both halves of it come back empty.
+    completeTmuxCommandWithLines(transportTerminalId, 40, []);
+    completeTmuxCommandWithLines(transportTerminalId, 41, []);
+    await flushMicrotasks();
+
+    expect(useTerminalStore.getState().sessions[windowTerminalId]).toBeDefined();
+    expect(useTerminalStore.getState().sessions[paneTerminalId]).toBeDefined();
+    expect(getSidebarTerminalIds()).toContain(windowTerminalId);
+  });
+
   it("keeps existing tmux windows when a full refresh response is not a snapshot", async () => {
     const transportTerminalId = "transport-bad-refresh";
     seedTransportTerminal(transportTerminalId);
