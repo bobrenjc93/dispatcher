@@ -141,6 +141,54 @@ function isTmuxPaneSession(session: TerminalSession | undefined): boolean {
   return getEffectiveBackendKind(session) === "tmux-pane";
 }
 
+/**
+ * Re-attach tabs that nothing lists as a child.
+ *
+ * A node can end up in the store with no parent claiming it — not closed, not
+ * hidden, simply unreachable, because the sidebar renders parents' children
+ * and never the node table. The tab then holds a live session, receives
+ * output, and appears on no screen; the only way to find it is to go reading
+ * the saved state by hand.
+ *
+ * Whatever detached it, leaving it invisible is the one outcome with no way
+ * back. A row in the wrong place can be moved or deleted.
+ */
+function reattachOrphanedTerminalNodes(
+  nodes: Record<string, TreeNode>,
+  projects: Record<string, Project>,
+  orderedProjectIds: readonly string[]
+): string[] {
+  const claimed = new Set<string>();
+  for (const node of Object.values(nodes)) {
+    for (const childId of node.children ?? []) {
+      claimed.add(childId);
+    }
+  }
+
+  const fallbackRootId = orderedProjectIds
+    .map((projectId) => projects[projectId]?.rootGroupId)
+    .find((rootGroupId) => Boolean(rootGroupId && nodes[rootGroupId]));
+
+  const reattached: string[] = [];
+  for (const [nodeId, node] of Object.entries(nodes)) {
+    if (node.type !== "terminal" || claimed.has(nodeId)) {
+      continue;
+    }
+    const parentId = node.parentId && nodes[node.parentId] ? node.parentId : fallbackRootId;
+    const parent = parentId ? nodes[parentId] : undefined;
+    if (!parent || !parentId) {
+      // Nowhere to put it. Removing it here would delete a tab on the strength
+      // of a guess, and the session it points at may still be alive.
+      continue;
+    }
+    nodes[parentId] = { ...parent, children: [...(parent.children ?? []), nodeId] };
+    nodes[nodeId] = { ...node, parentId };
+    claimed.add(nodeId);
+    reattached.push(nodeId);
+  }
+  return reattached;
+}
+
 export function normalizeRestoredTmuxState(
   snapshot: RestoredTmuxStateSnapshot
 ): RestoredTmuxStateNormalizationResult {
@@ -368,6 +416,13 @@ export function normalizeRestoredTmuxState(
 
   const visibleRefsByProject = new Map<string, string[]>();
   const orderedProjectIds = snapshot.projectOrder.filter((projectId) => Boolean(projects[projectId]));
+
+  // Before deciding what is visible, make sure nothing is unreachable.
+  const reattached = reattachOrphanedTerminalNodes(nodes, projects, orderedProjectIds);
+  if (reattached.length > 0) {
+    changed = true;
+  }
+
   for (const projectId of orderedProjectIds) {
     const project = projects[projectId];
     if (!project) {
