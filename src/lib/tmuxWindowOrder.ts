@@ -21,31 +21,6 @@ export function buildPreferredTmuxWindowOrder(options: {
   return [...preservedOrder, ...appended];
 }
 
-/**
- * Every window the session has, in order, with strays put back on the end.
- *
- * The sidebar's rows are inserted from this order, so a window that is
- * projected but missing from it has a tree node that nothing lists as a child:
- * a tab that exists in every store and appears nowhere on screen. Whatever
- * drops a window from the order — a close that was not followed by a
- * reopen, a hydration that raced a window list — the answer is the same, and
- * putting it back at the end beats leaving it invisible.
- */
-export function withWindowsMissingFromOrder(
-  windowOrder: readonly string[],
-  windowIds: Iterable<string>
-): string[] {
-  const known = new Set(windowOrder);
-  const missing: string[] = [];
-  for (const windowId of windowIds) {
-    if (!known.has(windowId)) {
-      known.add(windowId);
-      missing.push(windowId);
-    }
-  }
-  return missing.length === 0 ? [...windowOrder] : [...windowOrder, ...missing];
-}
-
 export function resolveAdjacentTmuxWindowAfterClose(options: {
   windowOrder: readonly string[];
   closingWindowId: string;

@@ -25,7 +25,6 @@ import {
 } from "./tmuxControlProtocol";
 import {
   buildPreferredTmuxWindowOrder,
-  withWindowsMissingFromOrder,
   reconcileTmuxWindowNodePlacements,
   resolveAdjacentTmuxWindowAfterClose,
 } from "./tmuxWindowOrder";
@@ -1560,18 +1559,6 @@ function syncWindowNodeOrder(
   }
 ) {
   const projectState = useProjectStore.getState();
-
-  // Repair the order before reading it. A window that has fallen out of it
-  // still has a projected node, and that node is never attached to a parent —
-  // the tab is in the stores, receiving output, and absent from the sidebar.
-  const repairedOrder = withWindowsMissingFromOrder(session.windowOrder, session.windows.keys());
-  if (repairedOrder.length !== session.windowOrder.length) {
-    debugLog("tmux.session", "restored windows missing from the sidebar order", {
-      sessionId: session.id,
-      restored: repairedOrder.slice(session.windowOrder.length),
-    });
-    session.windowOrder = repairedOrder;
-  }
 
   const windowNodeIds = session.windowOrder
     .map((windowId) => session.windows.get(windowId)?.nodeId)
