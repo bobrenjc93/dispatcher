@@ -4,6 +4,7 @@ import {
   mergeTmuxWindowNodesIntoChildren,
   reconcileTmuxWindowNodePlacements,
   resolveAdjacentTmuxWindowAfterClose,
+  withWindowsMissingFromOrder,
 } from "../tmuxWindowOrder";
 
 describe("tmuxWindowOrder", () => {
@@ -110,5 +111,27 @@ describe("tmuxWindowOrder", () => {
       "group-a": ["transport", "node-a"],
       "group-b": ["node-b"],
     });
+  });
+});
+
+describe("withWindowsMissingFromOrder", () => {
+  it("puts a window the order has lost back on the end", () => {
+    // A window missing from the order has a tree node that nothing lists as a
+    // child: the tab receives output, holds a live session, and renders
+    // nowhere. It was found that way, hours after it disappeared.
+    expect(withWindowsMissingFromOrder(["@1", "@2"], ["@1", "@0", "@2"])).toEqual([
+      "@1",
+      "@2",
+      "@0",
+    ]);
+  });
+
+  it("leaves an intact order alone", () => {
+    expect(withWindowsMissingFromOrder(["@1", "@2"], ["@2", "@1"])).toEqual(["@1", "@2"]);
+    expect(withWindowsMissingFromOrder([], [])).toEqual([]);
+  });
+
+  it("does not add a window twice", () => {
+    expect(withWindowsMissingFromOrder(["@1"], ["@0", "@0"])).toEqual(["@1", "@0"]);
   });
 });
