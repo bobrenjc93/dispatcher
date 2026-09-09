@@ -4,6 +4,94 @@ import { findTerminalIds } from "../layoutUtils";
 import { normalizeRestoredTmuxState } from "../restoredTmuxState";
 
 describe("restoredTmuxState", () => {
+  it("puts back a tab that nothing lists as a child", () => {
+    // Found in the wild: a tab whose node was in the store, not hidden, with
+    // its parent set — and no parent listing it. The sidebar renders parents'
+    // children, so it appeared nowhere at all, for hours, while its session
+    // was alive and taking output.
+    const result = normalizeRestoredTmuxState({
+      liveTerminalIds: undefined,
+      sessions: {
+        orphan: {
+          id: "orphan",
+          title: "[006/a] burner",
+          notes: "",
+          hasDetectedActivity: false,
+          lastUserInputAt: 0,
+          lastOutputAt: 0,
+          isNeedsAttention: false,
+          isPossiblyDone: false,
+          isLongInactive: false,
+          isRecentlyFocused: false,
+          backendKind: "tmux-window",
+          tmuxWindowId: "@0",
+        },
+      },
+      activeTerminalId: null,
+      projects: {
+        p1: { id: "p1", name: "devgpus", cwd: "/", rootGroupId: "root", expanded: true },
+      },
+      nodes: {
+        root: { id: "root", type: "group", name: "devgpus", parentId: null, children: [] },
+        orphanNode: {
+          id: "orphanNode",
+          type: "terminal",
+          name: "[006/a] burner",
+          parentId: "root",
+          terminalId: "orphan",
+        },
+      },
+      activeProjectId: "p1",
+      projectOrder: ["p1"],
+      layouts: { orphan: leaf("orphan") },
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.nodes.root.children).toEqual(["orphanNode"]);
+  });
+
+  it("places a tab whose parent is gone rather than losing it", () => {
+    const result = normalizeRestoredTmuxState({
+      liveTerminalIds: undefined,
+      sessions: {
+        orphan: {
+          id: "orphan",
+          title: "stray",
+          notes: "",
+          hasDetectedActivity: false,
+          lastUserInputAt: 0,
+          lastOutputAt: 0,
+          isNeedsAttention: false,
+          isPossiblyDone: false,
+          isLongInactive: false,
+          isRecentlyFocused: false,
+          backendKind: "tmux-window",
+          tmuxWindowId: "@0",
+        },
+      },
+      activeTerminalId: null,
+      projects: {
+        p1: { id: "p1", name: "devgpus", cwd: "/", rootGroupId: "root", expanded: true },
+      },
+      nodes: {
+        root: { id: "root", type: "group", name: "devgpus", parentId: null, children: [] },
+        orphanNode: {
+          id: "orphanNode",
+          type: "terminal",
+          name: "stray",
+          parentId: "a-group-that-no-longer-exists",
+          terminalId: "orphan",
+        },
+      },
+      activeProjectId: "p1",
+      projectOrder: ["p1"],
+      layouts: { orphan: leaf("orphan") },
+    });
+
+    expect(result.nodes.root.children).toEqual(["orphanNode"]);
+    expect(result.nodes.orphanNode.parentId).toBe("root");
+  });
+
   it("preserves restored tmux windows as disconnected placeholders and removes transport cruft", () => {
     const result = normalizeRestoredTmuxState({
       // An explicit empty set: we asked what was running and the answer was
