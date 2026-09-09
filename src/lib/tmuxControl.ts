@@ -235,6 +235,8 @@ interface TmuxControlSession {
   transportNotes: string;
   transportMetadataAdopted: boolean;
   controlModeActive: boolean;
+  /** Reply blocks to swallow before matching pending commands. See transportUnmatchedBlocksOwed. */
+  unmatchedBlocksOwed: number;
   lineBuffer: string;
   pendingCommands: PendingCommand[];
   currentCommand: CommandCapture | null;
@@ -338,6 +340,27 @@ const controlSessions = tmuxRuntime.controlSessions;
 const paneTerminalToSessionId = tmuxRuntime.paneTerminalToSessionId;
 const windowTerminalToSessionId = tmuxRuntime.windowTerminalToSessionId;
 const transportTerminalToSessionId = tmuxRuntime.transportTerminalToSessionId;
+/**
+ * Reply blocks a transport owes that no command is waiting for.
+ *
+ * The resume nudge is written straight to the PTY rather than through
+ * `sendCommand`, because at that moment there is no session to queue it on.
+ * tmux still answers it with a `%begin`/`%end` block, and if a session appears
+ * in the meantime that block is handed to the first real command in the
+ * queue — every reply after it is then off by one. That is not a subtle
+ * failure: a `display-message` for a live window came back with the previous
+ * command's empty output, was read as "the window is gone", and the tab was
+ * deleted.
+ */
+const transportUnmatchedBlocksOwed = new Map<string, number>();
+
+/** Claim the blocks a transport owes, so exactly one session swallows them. */
+function takeUnmatchedBlocksOwed(transportTerminalId: string): number {
+  const owed = transportUnmatchedBlocksOwed.get(transportTerminalId) ?? 0;
+  transportUnmatchedBlocksOwed.delete(transportTerminalId);
+  return owed;
+}
+
 const transportRawCarry = tmuxRuntime.transportRawCarry;
 const TMUX_OUTPUT_LOG_LIMIT = 25;
 
@@ -826,6 +849,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
 
   const recovered: TmuxControlSession = {
     id: sessionId,
+    unmatchedBlocksOwed: takeUnmatchedBlocksOwed(sessionId),
     transportTerminalId: sessionId,
     projectId,
     transportProjectId: projectId,
@@ -1020,6 +1044,12 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     panes: recovered.panes.size,
     windowOrder: recovered.windowOrder,
   });
+
+  // The store is a memory of what tmux had, not a statement of what it has.
+  // Windows created elsewhere, renamed, or wrongly dropped by this app are all
+  // invisible until somebody asks the server — and a tab that exists on the
+  // server with no row on the screen has no way back on its own. Ask.
+  scheduleRefresh(recovered);
 
   return recovered;
 }
@@ -5020,6 +5050,18 @@ function processControlLine(session: TmuxControlSession, line: string) {
   }
 
   if (line.startsWith("%begin ")) {
+    if ((session.unmatchedBlocksOwed ?? 0) > 0) {
+      // The resume nudge's own reply. Taking a pending command for it would
+      // shift every reply after it by one.
+      session.unmatchedBlocksOwed -= 1;
+      debugLog("tmux.command", "swallowing an unmatched reply block", {
+        sessionId: session.id,
+        remainingOwed: session.unmatchedBlocksOwed,
+        pendingCommands: session.pendingCommands.length,
+      });
+      session.currentCommand = { pending: null, lines: [] };
+      return;
+    }
     const pending = session.pendingCommands.shift() ?? null;
     debugLog("tmux.command", "begin", {
       sessionId: session.id,
@@ -5112,6 +5154,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
 
   const session: TmuxControlSession = {
     id: transportTerminalId,
+    unmatchedBlocksOwed: takeUnmatchedBlocksOwed(transportTerminalId),
     transportTerminalId,
     projectId,
     transportProjectId: projectId,
@@ -6444,7 +6487,15 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
     ensureTerminalFrontend(terminalId);
     // A no-op query: it changes nothing but forces tmux to emit a control-mode
     // block, which is what the router needs in order to latch on.
+    transportUnmatchedBlocksOwed.set(
+      terminalId,
+      (transportUnmatchedBlocksOwed.get(terminalId) ?? 0) + 1
+    );
     writeTerminal(terminalId, "list-sessions -F ''\n").catch((error) => {
+      transportUnmatchedBlocksOwed.set(
+        terminalId,
+        Math.max(0, (transportUnmatchedBlocksOwed.get(terminalId) ?? 1) - 1)
+      );
       debugLogError("tmux.session", "resume nudge failed", error);
     });
   }
