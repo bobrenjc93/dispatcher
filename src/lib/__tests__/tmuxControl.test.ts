@@ -39,7 +39,7 @@ import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { findTerminalIds } from "../layoutUtils";
-import { CLOSED_TAB_TTL_MS } from "../closedTabs";
+import { CLOSED_TAB_TTL_MS, listClosedTabs } from "../closedTabs";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
 import {
   clearStatusResizeSuppressionsForTests,
@@ -4182,6 +4182,49 @@ describe("tmuxControl", () => {
     seedTransportTerminal("transport-tombstone-revived-reattach");
     await hydrateTwoIdentifiedWindows("transport-tombstone-revived-reattach");
     expect(getProjectedWindowIds()).toEqual(["@1", "@2"]);
+  });
+
+  it("keeps the tab when the server cannot be reached to reopen it", async () => {
+    // What lost a tab for good: ssh had dropped, so the reopen asked a shell
+    // for the window and waited forever — after the tombstone had already
+    // been consumed. Pressing the shortcut again reached for older tabs, and
+    // that one was never coming back.
+    const transportTerminalId = "transport-reopen-unreachable";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId } = getHydratedTmuxIds();
+    await closeTmuxTerminal(windowTerminalId);
+    expect(listClosedTabs()).toHaveLength(1);
+
+    // The far end stops speaking control mode.
+    routeTmuxTransportOutput(transportTerminalId, "zsh: command not found: capture-pane\n");
+    await flushMicrotasks();
+
+    await expect(reopenLastClosedTmuxTab()).resolves.toBe(false);
+    // Still remembered, so re-attaching and pressing again can still work.
+    expect(listClosedTabs().map((tab) => tab.windowId)).toEqual(["@1"]);
+  });
+
+  it("stops offering a tab whose window the server says is gone", async () => {
+    // The opposite case: the server answers and the window is not there.
+    // Holding on to it would block every older tab behind something that can
+    // never come back.
+    const transportTerminalId = "transport-reopen-vanished";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId } = getHydratedTmuxIds();
+    await closeTmuxTerminal(windowTerminalId);
+
+    const reopened = reopenLastClosedTmuxTab();
+    await vi.advanceTimersByTimeAsync(0);
+    // An answer with no window in it.
+    completeTmuxCommandWithLines(transportTerminalId, 40, []);
+    completeTmuxCommandWithLines(transportTerminalId, 41, []);
+    await expect(reopened).resolves.toBe(false);
+
+    expect(listClosedTabs()).toHaveLength(0);
   });
 
   it("reports that there is nothing to reopen", async () => {

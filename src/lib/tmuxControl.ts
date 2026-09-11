@@ -63,7 +63,7 @@ import {
   forgetClosedTab,
   hiddenWindowIdsForConnection,
   rememberClosedTab,
-  takeMostRecentlyClosed,
+  peekMostRecentlyClosed,
 } from "./closedTabs";
 import {
   disposeTerminalInstance,
@@ -246,6 +246,8 @@ interface TmuxControlSession {
   controlModeActive: boolean;
   /** When the far end stopped speaking control mode, or null while it is. */
   controlStreamStalledSince: number | null;
+  /** Windows being reopened right now, whose tombstone is still on disk. */
+  reopeningWindowIds: Set<string>;
   /** Reply blocks to swallow before matching pending commands. See transportUnmatchedBlocksOwed. */
   unmatchedBlocksOwed: number;
   lineBuffer: string;
@@ -870,6 +872,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     id: sessionId,
     unmatchedBlocksOwed: takeUnmatchedBlocksOwed(sessionId),
     controlStreamStalledSince: null,
+    reopeningWindowIds: new Set<string>(),
     transportTerminalId: sessionId,
     projectId,
     transportProjectId: projectId,
@@ -2079,7 +2082,10 @@ function upsertWindowProjection(
   // servers. A snapshot with no identity is matched against tombstones that
   // had none either, which is the best available answer for a tmux too old to
   // report one.
-  if (hiddenWindowIdsForConnection(snapshot.connectionKey ?? null).includes(snapshot.windowId)) {
+  if (
+    !session.reopeningWindowIds?.has(snapshot.windowId)
+    && hiddenWindowIdsForConnection(snapshot.connectionKey ?? null).includes(snapshot.windowId)
+  ) {
     session.optimisticallyClosedWindowIds.add(snapshot.windowId);
   }
   if (session.optimisticallyClosedWindowIds.has(snapshot.windowId)) {
@@ -5267,6 +5273,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     id: transportTerminalId,
     unmatchedBlocksOwed: takeUnmatchedBlocksOwed(transportTerminalId),
     controlStreamStalledSince: null,
+    reopeningWindowIds: new Set<string>(),
     transportTerminalId,
     projectId,
     transportProjectId: projectId,
@@ -6622,7 +6629,7 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
  * have done something.
  */
 export async function reopenLastClosedTmuxTab(): Promise<boolean> {
-  const closed = takeMostRecentlyClosed(Date.now());
+  const closed = peekMostRecentlyClosed(Date.now());
   if (!closed) {
     debugLog("tmux.action", "nothing left to reopen", {});
     return false;
@@ -6630,7 +6637,9 @@ export async function reopenLastClosedTmuxTab(): Promise<boolean> {
 
   const session = findControlSessionForClosedTab(closed);
   if (!session) {
-    debugLog("tmux.action", "cannot reopen; no live control session", {
+    // Kept, not dropped: the server may be reachable again later, and this is
+    // still the last tab that was closed.
+    debugLog("tmux.action", "cannot reopen yet; no live control session", {
       windowId: closed.windowId,
       title: closed.title,
     });
@@ -6663,17 +6672,36 @@ export async function reopenLastClosedTmuxTab(): Promise<boolean> {
     closedForMs: Date.now() - closed.closedAt,
   });
 
-  await refreshSingleWindow(session, closed.windowId);
+  // The tombstone stays on disk until this succeeds, so the check that keeps a
+  // closed tab hidden has to be told this one is on its way back.
+  session.reopeningWindowIds ??= new Set<string>();
+  session.reopeningWindowIds.add(closed.windowId);
+  try {
+    await refreshSingleWindow(session, closed.windowId);
+  } catch (error) {
+    // The server could not be asked — a dropped ssh leaves the control stream
+    // answering nothing. Keep the tab so the next attempt, after re-attaching,
+    // still has something to reopen.
+    debugLogError("tmux.action", "could not reach the server to reopen a tab", error);
+    return false;
+  } finally {
+    session.reopeningWindowIds.delete(closed.windowId);
+  }
 
   const restored = session.windows.get(closed.windowId);
   if (!restored) {
-    debugLog("tmux.action", "reopened window did not come back", {
+    // The server answered and the window is not there. Nothing will bring it
+    // back, so stop offering it and let the next press reach an older tab.
+    forgetClosedTab(closed);
+    debugLog("tmux.action", "reopened window is gone; forgetting it", {
       sessionId: session.id,
       windowId: closed.windowId,
       title: closed.title,
     });
     return false;
   }
+
+  forgetClosedTab(closed);
 
   // Land in the tab, the way a browser does. Without this the reopen is
   // invisible: the window returns to its own place among twenty others and
