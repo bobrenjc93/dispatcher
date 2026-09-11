@@ -146,12 +146,25 @@ export function forgetClosedTab(tab: Pick<ClosedTab, "connectionKey" | "windowId
  * you a tab, not a stale row that fails.
  */
 export function takeMostRecentlyClosed(now: number): ClosedTab | null {
-  const live = listClosedTabs().filter((entry) => !isClosedTabExpired(entry, now));
-  const next = live[0] ?? null;
+  const next = peekMostRecentlyClosed(now);
   if (next) {
     forgetClosedTab(next);
   }
   return next;
+}
+
+/**
+ * The same entry, left where it is.
+ *
+ * Reopening has to be able to fail. The server may be unreachable — a dropped
+ * ssh leaves the control stream answering nothing — and forgetting the tab
+ * before knowing whether it came back loses it for good: the shortcut reports
+ * success, no tab appears, and pressing it again reaches for an older one. A
+ * tab is only forgotten once it is on screen, or once the server says the
+ * window is gone.
+ */
+export function peekMostRecentlyClosed(now: number): ClosedTab | null {
+  return listClosedTabs().find((entry) => !isClosedTabExpired(entry, now)) ?? null;
 }
 
 export function isClosedTabExpired(tab: ClosedTab, now: number): boolean {
