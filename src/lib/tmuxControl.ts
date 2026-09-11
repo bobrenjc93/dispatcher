@@ -45,6 +45,11 @@ import {
 } from "./replication";
 import { noteControlModeStarted } from "./tmuxAttachWatchdog";
 import {
+  buildControlStreamStalledNotice,
+  hasControlStreamStalled,
+  isShellRejectingControlCommand,
+} from "./tmuxControlStall";
+import {
   describeViewportChange,
   hashViewportLines,
   isDecorationOnlyChange,
@@ -85,6 +90,8 @@ import {
 
 interface PendingCommand {
   command: string;
+  /** When it was written, so an unanswered queue can be recognised. */
+  sentAt: number;
   resolve: (lines: string[]) => void;
   reject: (error: Error) => void;
   // Runs synchronously as the reply block closes, before the awaiting
@@ -188,6 +195,8 @@ interface TmuxPaneState {
    * woken by a no-op repaint goes back to being done.
    */
   outputActivityRevertPoint: number | null;
+  /** When this pane last reported a wake, so a busy one cannot flood the log. */
+  lastWokeLogAt: number;
   // While tmux and xterm are being resized/replayed, cursor-relative live
   // output can be interpreted against the old local grid. A short barrier lets
   // the authoritative capture win instead of layering those transient frames
@@ -235,6 +244,8 @@ interface TmuxControlSession {
   transportNotes: string;
   transportMetadataAdopted: boolean;
   controlModeActive: boolean;
+  /** When the far end stopped speaking control mode, or null while it is. */
+  controlStreamStalledSince: number | null;
   /** Reply blocks to swallow before matching pending commands. See transportUnmatchedBlocksOwed. */
   unmatchedBlocksOwed: number;
   lineBuffer: string;
@@ -367,8 +378,15 @@ const TMUX_OUTPUT_LOG_LIMIT = 25;
 /**
  * How long a pane must have been silent for its next output to count as a
  * tab waking up, rather than as part of ongoing work.
+ *
+ * Deliberately short. A minute was too long to see the complaint that matters:
+ * a tab that goes green every twenty seconds never clears the bar, so the log
+ * stayed silent about the very thing being asked about.
  */
-const TMUX_WOKE_AFTER_QUIET_MS = 60_000;
+const TMUX_WOKE_AFTER_QUIET_MS = 10_000;
+
+/** Least time between two wake reports for one pane, so a busy pane cannot flood. */
+const TMUX_WOKE_LOG_INTERVAL_MS = 20_000;
 const TMUX_TRANSPORT_LOG_LIMIT = 25;
 const TMUX_TRANSPORT_SUMMARY_INTERVAL_MS = 5_000;
 const TMUX_BOOTSTRAP_FALLBACK_DELAY_MS = 100;
@@ -439,6 +457,7 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.viewportSignature ??= null;
   pane.viewportLines ??= null;
   pane.outputActivityRevertPoint ??= null;
+  pane.lastWokeLogAt ??= 0;
   pane.layoutRedrawBarrierUntil ??= 0;
   pane.layoutRedrawBarrierReason ??= null;
   pane.layoutRedrawSuppressedChunks ??= 0;
@@ -850,6 +869,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
   const recovered: TmuxControlSession = {
     id: sessionId,
     unmatchedBlocksOwed: takeUnmatchedBlocksOwed(sessionId),
+    controlStreamStalledSince: null,
     transportTerminalId: sessionId,
     projectId,
     transportProjectId: projectId,
@@ -992,6 +1012,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       viewportSignature: null,
       viewportLines: null,
       outputActivityRevertPoint: null,
+      lastWokeLogAt: 0,
     });
     paneTerminalToSessionId.set(session.id, sessionId);
 
@@ -2228,6 +2249,7 @@ function upsertWindowProjection(
         viewportSignature: null,
         viewportLines: null,
         outputActivityRevertPoint: null,
+        lastWokeLogAt: 0,
       };
       session.panes.set(paneSnapshot.paneId, paneState);
       paneTerminalToSessionId.set(terminalId, session.id);
@@ -3083,6 +3105,60 @@ function schedulePaneVisibleRedraw(
   }, nextDelayMs);
 }
 
+/**
+ * Say that the far end has stopped speaking control mode, once.
+ *
+ * Everything queued is failed so the awaiting code unwinds instead of hanging,
+ * and the panes are told in the only place the user is looking — their own
+ * screen. Nothing is torn down: the session, its windows and its terminals all
+ * stay, because the connection may well come back and because two earlier
+ * versions of this detector destroyed sessions that were alive.
+ */
+function markControlStreamStalled(session: TmuxControlSession, reason: string) {
+  if (session.controlStreamStalledSince !== null) {
+    return;
+  }
+  session.controlStreamStalledSince = Date.now();
+
+  const pending = session.pendingCommands;
+  session.pendingCommands = [];
+  debugLog("tmux.session", "control stream is no longer answering", {
+    sessionId: session.id,
+    transportTerminalId: session.transportTerminalId,
+    reason,
+    abandonedCommands: pending.length,
+    oldestCommand: pending[0]?.command ?? null,
+  });
+  recordSessionEvent("tmux-control-stream-stalled", {
+    terminalId: session.transportTerminalId,
+    reason,
+    abandonedCommands: pending.length,
+  });
+  for (const command of pending) {
+    command.reject(new Error("tmux control stream is not answering"));
+  }
+
+  const notice = buildControlStreamStalledNotice(
+    `ssh ${session.transportTitle || "the host"} and run \`smux -CC a\` (or \`tmux -CC a\`)`
+  );
+  for (const pane of session.panes.values()) {
+    queueTerminalOutput(pane.terminalId, notice, { allowParkedWrite: true });
+  }
+}
+
+/** Control-mode traffic means the far end is back; a wrong guess costs nothing. */
+function noteControlStreamAlive(session: TmuxControlSession) {
+  if (session.controlStreamStalledSince === null) {
+    return;
+  }
+  debugLog("tmux.session", "control stream is answering again", {
+    sessionId: session.id,
+    transportTerminalId: session.transportTerminalId,
+    stalledForMs: Date.now() - session.controlStreamStalledSince,
+  });
+  session.controlStreamStalledSince = null;
+}
+
 async function sendCommand(
   session: TmuxControlSession,
   command: string,
@@ -3100,6 +3176,21 @@ async function sendCommand(
     throw new Error(`tmux control session is no longer active: ${session.id}`);
   }
 
+  if (
+    hasControlStreamStalled({
+      pendingCommandCount: session.pendingCommands.length,
+      oldestPendingSentAt: session.pendingCommands[0]?.sentAt ?? null,
+      now: Date.now(),
+    })
+  ) {
+    markControlStreamStalled(session, "no reply to a queued command");
+  }
+  if (session.controlStreamStalledSince !== null) {
+    // Writing more would only add to a queue nothing is reading, which is how
+    // one session accumulated thirty-five commands over half an hour.
+    throw new Error(`tmux control stream is not answering: ${session.id}`);
+  }
+
   debugLog("tmux.command", "queue", {
     sessionId: session.id,
     transportTerminalId: session.transportTerminalId,
@@ -3109,7 +3200,13 @@ async function sendCommand(
   });
 
   return new Promise<string[]>((resolve, reject) => {
-    const pending: PendingCommand = { command, resolve, reject, onSettle: options?.onSettle };
+    const pending: PendingCommand = {
+      command,
+      sentAt: Date.now(),
+      resolve,
+      reject,
+      onSettle: options?.onSettle,
+    };
     session.pendingCommands.push(pending);
     writeTerminal(session.transportTerminalId, `${command}\n`).catch((error) => {
       session.pendingCommands = session.pendingCommands.filter((entry) => entry !== pending);
@@ -3880,7 +3977,14 @@ function settleBackgroundOutputActivity(
   if (verdict === "changed" && !decorationOnly) {
     // Real work. Logged when it follows a quiet spell, because that is the
     // case somebody asks about later.
-    if (change && revertPoint !== null && quietForMs >= TMUX_WOKE_AFTER_QUIET_MS) {
+    const now = Date.now();
+    if (
+      change
+      && revertPoint !== null
+      && quietForMs >= TMUX_WOKE_AFTER_QUIET_MS
+      && now - pane.lastWokeLogAt >= TMUX_WOKE_LOG_INTERVAL_MS
+    ) {
+      pane.lastWokeLogAt = now;
       debugLog("tmux.activity", "background output woke a quiet tab", {
         paneId: pane.paneId,
         terminalId: pane.terminalId,
@@ -5085,6 +5189,13 @@ function processControlLine(session: TmuxControlSession, line: string) {
       sessionId: session.id,
       line: previewDebugText(line, 200),
     });
+    if (isShellRejectingControlCommand(line)) {
+      // A shell naming one of our own commands. Application output cannot
+      // produce this, which is what makes it safe to act on.
+      markControlStreamStalled(session, "shell rejected a control command");
+    }
+  } else {
+    noteControlStreamAlive(session);
   }
 
   handleNotification(session, line);
@@ -5155,6 +5266,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
   const session: TmuxControlSession = {
     id: transportTerminalId,
     unmatchedBlocksOwed: takeUnmatchedBlocksOwed(transportTerminalId),
+    controlStreamStalledSince: null,
     transportTerminalId,
     projectId,
     transportProjectId: projectId,
