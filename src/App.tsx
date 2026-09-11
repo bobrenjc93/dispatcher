@@ -310,7 +310,26 @@ export default function App() {
 
   const [dialog, setDialog] = useState<DialogMode>(null);
   const [sidebarWidth, setSidebarWidth] = useState(240);
+  const sidebarWidthRef = useRef(sidebarWidth);
+  sidebarWidthRef.current = sidebarWidth;
   const sidebarDividerRef = useRef<HTMLDivElement>(null);
+  const appRootRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Write the width straight to CSS.
+   *
+   * The sidebar's width is a custom property rather than a React style, so a
+   * drag can move it without re-rendering. Going through state meant every
+   * mouse move reconciled the whole app — sidebar rows, panes, the lot — which
+   * is what made dragging feel like wading.
+   */
+  const applySidebarWidth = useCallback((width: number) => {
+    appRootRef.current?.style.setProperty("--sidebar-width", `${width}px`);
+  }, []);
+
+  useEffect(() => {
+    applySidebarWidth(sidebarWidth);
+  }, [applySidebarWidth, sidebarWidth]);
 
   useEffect(() => {
     window.localStorage.setItem(KEY_DEBUG_VISIBLE_STORAGE_KEY, showKeyDebug ? "1" : "0");
@@ -328,26 +347,45 @@ export default function App() {
   const handleSidebarDividerMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
-    const startWidth = sidebarWidth;
+    const startWidth = sidebarWidthRef.current;
+    let width = startWidth;
+    let frame = 0;
 
-    const onMouseMove = (e: MouseEvent) => {
-      setSidebarWidth(
-        clampSidebarWidth(startWidth + (e.clientX - startX), window.innerWidth)
-      );
+    // A mouse can report several moves per frame, and only the last one is
+    // worth drawing.
+    const onMouseMove = (event: MouseEvent) => {
+      width = clampSidebarWidth(startWidth + (event.clientX - startX), window.innerWidth);
+      if (frame !== 0) {
+        return;
+      }
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        applySidebarWidth(width);
+      });
     };
 
     const onMouseUp = () => {
+      if (frame !== 0) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
+      applySidebarWidth(width);
+      // One render, once the drag is over, so the rest of the app learns the
+      // width it has been looking at all along.
+      setSidebarWidth(width);
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      document.body.classList.remove("sidebar-resizing");
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
     };
 
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
+    document.body.classList.add("sidebar-resizing");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
-  }, [sidebarWidth]);
+  }, [applySidebarWidth]);
 
   // Pre-spawn PTY pool for instant terminal creation, and refresh
   // periodically so pooled shells have up-to-date history/env. Give the first
@@ -1175,6 +1213,7 @@ export default function App() {
 
   return (
     <div
+      ref={appRootRef}
       className={`app${isCompact ? " app-compact" : ""}${
         isCompact && compactTouchGesture === "history" ? " touch-history" : ""
       }`}
@@ -1252,7 +1291,11 @@ export default function App() {
         onDeleteProject={handleDeleteProject}
         onDeleteTerminal={handleDeleteTerminal}
         onMoveTerminal={handleMoveTerminal}
-        style={isCompact ? undefined : { width: sidebarWidth, minWidth: sidebarWidth }}
+        style={
+          isCompact
+            ? undefined
+            : { width: "var(--sidebar-width)", minWidth: "var(--sidebar-width)" }
+        }
       />
       {!isCompact && (
         <div
