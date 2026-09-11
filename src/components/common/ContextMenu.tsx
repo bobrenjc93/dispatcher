@@ -1,4 +1,5 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { resolveContextMenuPlacement } from "../../lib/contextMenuPosition";
 
 export interface ContextMenuItem {
   label: string;
@@ -36,24 +37,43 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     };
   }, [onClose]);
 
-  // Keep menu within viewport
+  // Keep the menu on the screen. Measured after the first paint, because the
+  // height depends on how many items there are and how far they wrap.
+  const [placement, setPlacement] = useState<{
+    left: number;
+    top: number;
+    maxHeight: number | null;
+  } | null>(null);
+
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    if (rect.right > window.innerWidth) {
-      el.style.left = `${x - rect.width}px`;
-    }
-    if (rect.bottom > window.innerHeight) {
-      el.style.top = `${y - rect.height}px`;
-    }
-  }, [x, y]);
+    setPlacement(
+      resolveContextMenuPlacement({
+        x,
+        y,
+        width: rect.width,
+        height: rect.height,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+      })
+    );
+  }, [x, y, items.length]);
 
   return (
     <div
       ref={ref}
       className="context-menu"
-      style={{ left: x, top: y }}
+      style={{
+        left: placement?.left ?? x,
+        top: placement?.top ?? y,
+        // Only set once measuring says the menu cannot fit, so a menu that
+        // fits keeps its natural height and no scrollbar.
+        ...(placement?.maxHeight === null || placement === null
+          ? null
+          : { maxHeight: placement.maxHeight, overflowY: "auto" as const }),
+      }}
       role="menu"
     >
       {items.map((item, i) => (

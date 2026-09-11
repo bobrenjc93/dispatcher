@@ -1406,6 +1406,9 @@ body.sidebar-resizing .terminal-pane {
   padding: 4px;
   min-width: 140px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  /* A menu that has to scroll is one a finger will be scrolling. */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .context-menu-item {
