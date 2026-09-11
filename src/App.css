@@ -538,6 +538,18 @@ body.sidebar-dragging * {
 }
 
 /* Sidebar Terminal Node */
+/* Dragging the divider changes one custom property and nothing else. Row
+   transitions would otherwise animate on every frame of the drag, and the
+   terminal has no business reacting to a pointer that is still moving. */
+body.sidebar-resizing .sidebar-terminal-node,
+body.sidebar-resizing .sidebar-project-node {
+  transition: none;
+}
+
+body.sidebar-resizing .terminal-pane {
+  pointer-events: none;
+}
+
 .sidebar-terminal-node {
   display: flex;
   align-items: center;
