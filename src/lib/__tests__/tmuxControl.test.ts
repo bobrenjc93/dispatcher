@@ -3691,6 +3691,60 @@ describe("tmuxControl", () => {
     });
   });
 
+  it("stops writing once a shell starts answering instead of tmux", async () => {
+    // ssh dropped, the remote `smux -CC` died with it, and the PTY fell back
+    // to a login shell. Dispatcher kept typing control commands into it for
+    // thirty-four minutes — thirty-five queued, none answerable — and the tab
+    // just looked frozen.
+    const transportTerminalId = "transport-control-stream-lost";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      "zsh: command not found: refresh-client\n"
+    );
+    await flushMicrotasks();
+
+    // The pane is told, on its own screen, why it stopped moving.
+    const notices = (queueTerminalOutputMock.mock.calls as unknown as [string, string][])
+      .filter(([, data]) => typeof data === "string" && data.includes("control connection is gone"));
+    expect(notices.length).toBeGreaterThan(0);
+    expect(notices[0][0]).toBe(paneTerminalId);
+
+    // And nothing further is written to a stream that cannot answer.
+    writeTerminalMock.mockClear();
+    await expect(sendInputToTmuxTerminal(paneTerminalId, "ls\r")).rejects.toThrow();
+    expect(writeTerminalMock).not.toHaveBeenCalled();
+  });
+
+  it("picks back up when control mode answers again", async () => {
+    // The response has to be reversible: two earlier versions of this
+    // detector tore down sessions that were alive.
+    const transportTerminalId = "transport-control-stream-returns";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+
+    routeTmuxTransportOutput(transportTerminalId, "zsh: command not found: capture-pane\n");
+    await flushMicrotasks();
+    await expect(sendInputToTmuxTerminal(paneTerminalId, "ls\r")).rejects.toThrow();
+
+    // A single control-mode notification is proof the far end is back.
+    routeTmuxTransportOutput(transportTerminalId, "%window-renamed @1 back\n");
+    await flushMicrotasks();
+
+    writeTerminalMock.mockClear();
+    void sendInputToTmuxTerminal(paneTerminalId, "ls\r");
+    await flushMicrotasks();
+    expect(writeTerminalMock).toHaveBeenCalled();
+  });
+
   it("keeps the tab when a targeted window query answers with nothing", async () => {
     // Seen in the wild: `display-message -p -t @42` returned zero lines while
     // that window's pane was printing three milliseconds later. Reading the
