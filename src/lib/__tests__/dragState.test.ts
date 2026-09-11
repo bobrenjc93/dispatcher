@@ -173,6 +173,98 @@ describe("dragState", () => {
     }
   });
 
+  it("opens the menu when a touch is held and lifted without moving", () => {
+    // A phone has no right button, so the long press has to reach the same
+    // menu — otherwise Push on Inactivity and the rest are desktop-only.
+    vi.useFakeTimers();
+    try {
+      const dragged = document.createElement("div");
+      dragged.dataset.nodeId = "dragged-node";
+      dragged.dataset.projectId = "project";
+      dragged.dataset.parentNodeId = "root";
+      document.body.append(dragged);
+
+      const onReorderChild = vi.fn();
+      registerDragCallbacks({
+        onMoveTerminal: vi.fn(),
+        onReorderChild,
+        onReorderProject: vi.fn(),
+      });
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: vi.fn(() => dragged),
+      });
+
+      const onPressWithoutMove = vi.fn();
+      startDrag(
+        { type: "terminal", terminalId: "terminal", projectId: "project", nodeId: "dragged-node" },
+        30,
+        40,
+        dragged,
+        "touch",
+        { onPressWithoutMove }
+      );
+
+      vi.advanceTimersByTime(400);
+      // A finger never holds perfectly still; a couple of pixels is the same
+      // gesture.
+      document.dispatchEvent(pointerEvent("pointermove", 32, 41));
+      document.dispatchEvent(pointerEvent("pointerup", 32, 41));
+
+      expect(onPressWithoutMove).toHaveBeenCalledWith(32, 41);
+      expect(onReorderChild).not.toHaveBeenCalled();
+      expect(dragged.classList.contains("is-dragging")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still reorders when a held touch goes somewhere", () => {
+    vi.useFakeTimers();
+    try {
+      const dragged = document.createElement("div");
+      dragged.dataset.nodeId = "dragged-node";
+      dragged.dataset.projectId = "project";
+      dragged.dataset.parentNodeId = "root";
+      const target = document.createElement("div");
+      target.dataset.nodeId = "target-node";
+      target.dataset.projectId = "project";
+      target.dataset.parentNodeId = "root";
+      document.body.append(dragged, target);
+      mockRect(target, 100, 20);
+
+      const onReorderChild = vi.fn();
+      registerDragCallbacks({
+        onMoveTerminal: vi.fn(),
+        onReorderChild,
+        onReorderProject: vi.fn(),
+      });
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: vi.fn(() => target),
+      });
+
+      const onPressWithoutMove = vi.fn();
+      startDrag(
+        { type: "terminal", terminalId: "terminal", projectId: "project", nodeId: "dragged-node" },
+        0,
+        0,
+        dragged,
+        "touch",
+        { onPressWithoutMove }
+      );
+
+      vi.advanceTimersByTime(400);
+      document.dispatchEvent(pointerEvent("pointermove", 0, 120));
+      document.dispatchEvent(pointerEvent("pointerup", 0, 120));
+
+      expect(onReorderChild).toHaveBeenCalledWith("root", "dragged-node", "target-node", "after");
+      expect(onPressWithoutMove).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lets a touch that moves before the long press scroll instead of dragging", () => {
     vi.useFakeTimers();
     try {

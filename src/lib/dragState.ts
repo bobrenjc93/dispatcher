@@ -42,6 +42,17 @@ let draggedEl: HTMLElement | null = null;
 
 let pointerTypeStarted: string | undefined;
 let longPressTimer: number | null = null;
+/** Furthest the pointer has travelled from where it went down. */
+let maxTravel = 0;
+/**
+ * What to do when a touch is held and then lifted without going anywhere.
+ *
+ * A press that holds still is the only gesture a finger has spare — the list
+ * scrolls, so movement belongs to the scroller. Holding then moving reorders,
+ * as it already did; holding then lifting opens the menu, which is what a long
+ * press does everywhere else on a phone.
+ */
+let pressWithoutMove: ((x: number, y: number) => void) | null = null;
 
 let lastIndicatorEl: HTMLElement | null = null;
 let lastDragOverEl: HTMLElement | null = null;
@@ -178,6 +189,11 @@ function activateDrag() {
 function handleDragMove(e: PointerEvent | MouseEvent) {
   if (!info) return;
 
+  maxTravel = Math.max(
+    maxTravel,
+    Math.abs(e.clientX - startX) + Math.abs(e.clientY - startY)
+  );
+
   if (!active) {
     const pointerType = "pointerType" in e ? e.pointerType : pointerTypeStarted;
     if (isTouchLikePointer(pointerType)) {
@@ -249,6 +265,22 @@ function handleMouseMove(e: MouseEvent) {
 function handleDragEnd(e: PointerEvent | MouseEvent) {
   if (!info || !active) {
     end();
+    return;
+  }
+
+  // Held and lifted without going anywhere: a long press, not a reorder. The
+  // reorder below would be a no-op regardless — the drop target is the row it
+  // started on — so this only decides what the gesture meant.
+  if (
+    isTouchLikePointer(pointerTypeStarted)
+    && pressWithoutMove
+    && maxTravel <= TOUCH_LONG_PRESS_SLOP
+  ) {
+    const openMenu = pressWithoutMove;
+    const x = e.clientX;
+    const y = e.clientY;
+    end();
+    openMenu(x, y);
     return;
   }
 
@@ -369,6 +401,8 @@ function end() {
   active = false;
   draggedEl = null;
   pointerTypeStarted = undefined;
+  maxTravel = 0;
+  pressWithoutMove = null;
 }
 
 export function startDrag(
@@ -376,7 +410,11 @@ export function startDrag(
   x: number,
   y: number,
   element: HTMLElement,
-  pointerType?: string
+  pointerType?: string,
+  options?: {
+    /** Called when a touch is held and lifted without moving. */
+    onPressWithoutMove?: (x: number, y: number) => void;
+  }
 ) {
   info = dragInfo;
   startX = x;
@@ -384,6 +422,8 @@ export function startDrag(
   active = false;
   draggedEl = element;
   pointerTypeStarted = pointerType;
+  maxTravel = 0;
+  pressWithoutMove = options?.onPressWithoutMove ?? null;
   document.addEventListener("pointermove", handlePointerMove);
   document.addEventListener("pointerup", handlePointerUp);
   document.addEventListener("pointercancel", handlePointerCancel);

@@ -133,7 +133,14 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     // A modifier means the click is about selecting, not moving. Starting a
     // drag here would turn a shift-click into a reorder.
     if (e.shiftKey || e.metaKey || e.ctrlKey) return;
-    startDrag({ type: "terminal", terminalId, projectId, nodeId }, e.clientX, e.clientY, e.currentTarget as HTMLElement, e.pointerType);
+    startDrag(
+      { type: "terminal", terminalId, projectId, nodeId },
+      e.clientX,
+      e.clientY,
+      e.currentTarget as HTMLElement,
+      e.pointerType,
+      { onPressWithoutMove: openMenuAt }
+    );
   };
 
   const handleClick = (e: React.MouseEvent) => {
@@ -161,9 +168,13 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     });
   };
 
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  /**
+   * Open the menu at a point, for whichever gesture asked for it.
+   *
+   * A phone has no right button, so a long press has to reach the same menu —
+   * without it, Push on Inactivity and the rest are desktop-only settings.
+   */
+  const openMenuAt = (x: number, y: number) => {
     const selection = useTabSelectionStore.getState();
     const targets = selectionTargets(selection, terminalId);
     if (selection.terminalIds.length > 0 && !selection.terminalIds.includes(terminalId)) {
@@ -173,7 +184,13 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
       // later shift-click would measure from.
       useTabSelectionStore.getState().clear();
     }
-    setMenu({ x: e.clientX, y: e.clientY, targets });
+    setMenu({ x, y, targets });
+  };
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openMenuAt(e.clientX, e.clientY);
   };
 
   // Read once per render; the monitor clears the deadline when it lapses,
