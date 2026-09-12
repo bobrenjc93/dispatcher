@@ -470,17 +470,6 @@ export interface ReplicatedActions {
    * itself once its web app is closed, which is exactly when this matters.
    */
   registerPushSubscription: (registration: PushRegistration) => void;
-  /**
-   * Send one notification now, on request, bypassing every rule about when a
-   * tab deserves one.
-   *
-   * Push is the only part of Dispatcher whose success is invisible from the
-   * machine that produced it: the desktop can see a push service accept a
-   * message and still have no idea whether anything appeared on a phone.
-   * Checking that without waiting for a tab to go quiet needs a deliberate
-   * way to ask.
-   */
-  sendTestPush: (tabRootTerminalId: string, title: string) => void;
 }
 
 export type ActionName = keyof ReplicatedActions;

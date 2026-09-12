@@ -5,8 +5,8 @@ import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useTabSelectionStore } from "../../stores/useTabSelectionStore";
-import { findLayoutKeyForTerminal } from "../../lib/layoutUtils";
 import { performAction } from "../../lib/replication";
+import { findLayoutKeyForTerminal } from "../../lib/layoutUtils";
 import {
   classifyTabClick,
   commonValue,
@@ -368,26 +368,6 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
             (value) => ({ bounceOnAttention: value })
           ),
       },
-      // One push to one phone. There is nothing useful about sending several
-      // at once, so this stays a single-tab action.
-      ...(isBulk
-        ? []
-        : [
-            {
-              label: "Send a Test Push",
-              icon: (
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path d="M12.25 1.75L6.5 7.5M12.25 1.75L8.5 12.25L6.5 7.5M12.25 1.75L1.75 5.5L6.5 7.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              ),
-              onClick: () => {
-                // Relayed rather than called: only the desktop can reach a
-                // push service, and this menu is usually being tapped on the
-                // phone that is meant to receive the result.
-                performAction("sendTestPush", terminalId, session.title);
-              },
-            },
-          ]),
       {
         label: withCount("Inactivity Threshold"),
         // The current value goes in the shortcut slot rather than into
