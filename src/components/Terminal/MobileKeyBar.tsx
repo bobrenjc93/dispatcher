@@ -304,16 +304,6 @@ export function MobileKeyBar() {
         >
           select
         </button>
-        <button
-          type="button"
-          className="mobile-key"
-          title="Paste from the clipboard"
-          onPointerDown={keepFocus}
-          onMouseDown={keepFocus}
-          onClick={pasteClipboard}
-        >
-          paste
-        </button>
         {CHORD_KEYS.map((key) => (
           <button
             key={key.label}
@@ -327,6 +317,16 @@ export function MobileKeyBar() {
             {key.label}
           </button>
         ))}
+        <button
+          type="button"
+          className="mobile-key"
+          title="Paste from the clipboard"
+          onPointerDown={keepFocus}
+          onMouseDown={keepFocus}
+          onClick={pasteClipboard}
+        >
+          paste
+        </button>
         <button
           type="button"
           className="mobile-key"

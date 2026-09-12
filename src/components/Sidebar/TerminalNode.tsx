@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { StatusDot } from "../common/StatusDot";
 import { ContextMenu, type ContextMenuItem } from "../common/ContextMenu";
 import { useTerminalStore } from "../../stores/useTerminalStore";
@@ -498,7 +499,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
           items={buildMenuItems(menu.targets)}
         />
       )}
-      {snoozeTargets && (
+      {snoozeTargets && createPortal(
         <SnoozeDialog
           count={snoozeTargets.length}
           onCancel={() => setSnoozeTargets(null)}
@@ -508,9 +509,10 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
             }
             setSnoozeTargets(null);
           }}
-        />
+        />,
+        document.body
       )}
-      {thresholdTargets && (
+      {thresholdTargets && createPortal(
         <InactivityThresholdDialog
           currentMs={
             commonValue(
@@ -527,10 +529,16 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
             }
             setThresholdTargets(null);
           }}
-        />
+        />,
+        document.body
       )}
     </div>
   );
+}
+
+/** Whether raising the on-screen keyboard unasked would be a nuisance. */
+function prefersNoAutoFocus(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(hover: none)").matches;
 }
 
 /**
@@ -555,6 +563,13 @@ function InactivityThresholdDialog(props: {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    // Not on a touchscreen. Focusing raises the keyboard over a dialog the
+    // user has not looked at yet, and on a phone that arrives as the sidebar
+    // slides away — tapping the field when they are ready is one tap and no
+    // surprise.
+    if (prefersNoAutoFocus()) {
+      return;
+    }
     inputRef.current?.focus();
     inputRef.current?.select();
   }, []);
@@ -636,6 +651,9 @@ function SnoozeDialog(props: {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (prefersNoAutoFocus()) {
+      return;
+    }
     inputRef.current?.focus();
     inputRef.current?.select();
   }, []);
