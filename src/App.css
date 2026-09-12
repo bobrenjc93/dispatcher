@@ -1405,6 +1405,13 @@ body.sidebar-resizing .terminal-pane {
   border-radius: 8px;
   padding: 4px;
   min-width: 140px;
+  /* Its natural width, not whatever happens to be left to the right of the
+     press. A shrink-to-fit box opened near the right edge is squeezed: the
+     labels wrap and the shortcut and tick columns, which must not shrink, are
+     pushed outside it — so on a phone you could not see whether Push on
+     Inactivity was on. Capped so it still cannot outgrow the screen. */
+  width: max-content;
+  max-width: calc(100vw - 16px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   /* A menu that has to scroll is one a finger will be scrolling. */
   -webkit-overflow-scrolling: touch;
@@ -1438,6 +1445,9 @@ body.sidebar-resizing .terminal-pane {
 
 .context-menu-label {
   flex: 1;
+  /* Lets the label be the thing that gives when the cap bites, rather than the
+     columns beside it. */
+  min-width: 0;
 }
 
 .context-menu-shortcut {

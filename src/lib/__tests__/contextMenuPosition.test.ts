@@ -50,6 +50,23 @@ describe("resolveContextMenuPlacement", () => {
     expect(placement.top).toBe(8);
   });
 
+  it("pulls a menu opened near the right edge fully into view", () => {
+    // The case from a phone: pressed 212px across a 461px screen with a menu
+    // that naturally wants 250px. Left where it was, its right-hand columns —
+    // the shortcut and the tick that says whether Push on Inactivity is on —
+    // sit off the screen.
+    const placement = resolveContextMenuPlacement({
+      x: 212,
+      y: 300,
+      width: 250,
+      height: 500,
+      viewportWidth: 461,
+      viewportHeight: 844,
+    });
+    expect(placement.left + 250).toBeLessThanOrEqual(461 - 8);
+    expect(placement.left).toBeGreaterThanOrEqual(8);
+  });
+
   it("keeps the near edge visible when the menu is wider than the screen", () => {
     // Nothing fits, so show the side the items start on rather than the side
     // they end on.
