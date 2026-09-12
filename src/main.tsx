@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { debugLog } from "./lib/debugLog";
-import { initWebBridge, isWebClient } from "./lib/webBridge";
+import { initWebBridge, isWebClient, onBridgeReattach } from "./lib/webBridge";
 import { startRendererHeartbeat } from "./lib/rendererHeartbeat";
 import App from "./App";
 
@@ -57,11 +57,28 @@ void initWebBridge().then(() => {
   });
   startRendererHeartbeat();
 
-  ReactDOM.createRoot(document.getElementById("root")!).render(
-    <React.StrictMode>
-      <RootErrorBoundary>
-        <App />
-      </RootErrorBoundary>
-    </React.StrictMode>
-  );
+  const root = ReactDOM.createRoot(document.getElementById("root")!);
+  // Bumped to rebuild the tree from scratch. A replica's terminal output
+  // channels belong to the socket that created them, so a reconnect has to
+  // make them again — and mounting is what makes them. The alternative was
+  // reloading the page, which on a phone meant fetching and parsing
+  // everything a second time before any of this ran.
+  let generation = 0;
+  const draw = () => {
+    root.render(
+      <React.StrictMode>
+        <RootErrorBoundary>
+          <App key={generation} />
+        </RootErrorBoundary>
+      </React.StrictMode>
+    );
+  };
+
+  onBridgeReattach(() => {
+    generation += 1;
+    debugLog("app.runtime", "rebuilding on a new connection", { generation });
+    draw();
+  });
+
+  draw();
 });

@@ -146,6 +146,8 @@ function handleServerMessage(raw: string) {
         return;
       }
       pendingInvokes.delete(message.id);
+      // The rebuilt app is being answered, so it is working.
+      noteBridgeAnswered();
       if (message.ok) {
         pending.resolve(message.value ?? null);
       } else {
@@ -190,12 +192,19 @@ function connect(onFirstOpen: () => void) {
   socket = ws;
 
   ws.onopen = () => {
+    const isReopen = socketEverOpened;
     opened = true;
     socketEverOpened = true;
     socketReady = true;
     setDisconnectedOverlay(false);
     flushQueue();
     onFirstOpen();
+    if (isReopen && reattach) {
+      // A new socket knows nothing of the channels the last one carried, so
+      // the app is rebuilt on top of it.
+      expectReattachToWork();
+      reattach();
+    }
     // Nothing keeps this socket alive from here. The server pings it, which
     // the browser answers at the protocol level without involving this page —
     // and so keeps working when the page's own timers are throttled.
@@ -215,11 +224,15 @@ function connect(onFirstOpen: () => void) {
     // to re-attach every terminal in place, come back with a clean boot once
     // the app is reachable again. Scrollback is replayed on attach, and tab
     // state is restored from the shared snapshot, so little is lost.
+    // Anything waiting on the old socket will never hear back from it.
+    failPendingInvokes();
     if (opened) {
-      // Straight away. This used to wait a second first, which bought nothing
-      // — the page is about to be replaced either way — and on a phone
-      // returning from the background it was a second of staring at an
-      // overlay before anything started happening.
+      if (reattach) {
+        connect(onFirstOpen);
+        return;
+      }
+      // No way to rebuild, so start over. Straight away: waiting a second
+      // bought nothing when the page is about to be replaced anyway.
       reloadOnce();
       return;
     }
@@ -231,6 +244,70 @@ function connect(onFirstOpen: () => void) {
   ws.onerror = () => {
     // `onclose` always follows; the retry is handled there.
   };
+}
+
+/**
+ * Fail everything waiting on a socket that has gone.
+ *
+ * A reply can only arrive on the connection that carried the request, so these
+ * would otherwise hang for the life of the page — and the callers awaiting
+ * them are mid-render.
+ */
+function failPendingInvokes() {
+  const waiting = [...pendingInvokes.values()];
+  pendingInvokes.clear();
+  for (const pending of waiting) {
+    pending.reject(new Error("the Dispatcher connection dropped"));
+  }
+}
+
+let reattach: (() => void) | null = null;
+
+/**
+ * How to rebuild the app's side of a fresh socket.
+ *
+ * Coming back from the background used to reload the page, because the
+ * terminal output channels belong to the socket that created them and a clean
+ * boot was easier to trust than re-attaching each one. But a reload throws
+ * away a page that is already loaded and pays for the whole thing again —
+ * measured at nine seconds on a phone before a single line of Dispatcher code
+ * runs. Remounting re-creates the channels the same way the first mount did,
+ * and keeps the bundle, the stores and the fonts.
+ *
+ * Without one registered, the reload is still what happens.
+ */
+export function onBridgeReattach(handler: () => void) {
+  reattach = handler;
+}
+
+/**
+ * If a rebuilt app does not start talking, fall back to what always worked.
+ *
+ * Reattaching replaces a reload that was slow but dependable. A silent failure
+ * here would leave a page that looks right and does nothing, which is worse
+ * than the wait — so the first reply on the new socket has to arrive, or the
+ * page reloads after all.
+ */
+const REATTACH_HEALTH_TIMEOUT_MS = 8_000;
+let reattachHealthTimer: number | null = null;
+
+function expectReattachToWork() {
+  clearReattachHealthTimer();
+  reattachHealthTimer = window.setTimeout(() => {
+    reattachHealthTimer = null;
+    reloadOnce();
+  }, REATTACH_HEALTH_TIMEOUT_MS);
+}
+
+function noteBridgeAnswered() {
+  clearReattachHealthTimer();
+}
+
+function clearReattachHealthTimer() {
+  if (reattachHealthTimer !== null) {
+    window.clearTimeout(reattachHealthTimer);
+    reattachHealthTimer = null;
+  }
 }
 
 let reloading = false;
@@ -267,7 +344,7 @@ function watchForResume(onFirstOpen: () => void) {
       return;
     }
     setDisconnectedOverlay(true);
-    if (socketEverOpened) {
+    if (socketEverOpened && !reattach) {
       reloadOnce();
       return;
     }
