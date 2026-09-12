@@ -218,6 +218,19 @@ function carriedElements(): HTMLElement[] {
   );
 }
 
+/**
+ * The collection a point is over.
+ *
+ * Not `[data-project-id]`: that attribute is on the collection, on its list of
+ * tabs, and on every tab row, so the nearest one while dragging over another
+ * project's tabs was a tab — which has no header, so no drop was offered at
+ * all. Most of a collection's height is its tabs, so most of the sidebar did
+ * nothing.
+ */
+function closestProjectNode(el: Element): HTMLElement | null {
+  return el.closest<HTMLElement>(".sidebar-project-node");
+}
+
 function getMidY(el: HTMLElement): number {
   const rect = el.getBoundingClientRect();
   return rect.top + rect.height / 2;
@@ -274,15 +287,15 @@ function handleDragMove(e: PointerEvent | MouseEvent) {
   if (!el) return;
 
   if (info.type === "project") {
-    const projectNode = el.closest<HTMLElement>("[data-project-id]");
+    const projectNode = closestProjectNode(el);
     if (projectNode && projectNode.dataset.projectId !== info.projectId) {
-      // Use the header for midpoint calculation (wrapper includes children)
-      const header = projectNode.querySelector<HTMLElement>(".sidebar-project-header");
-      if (header) {
-        const cls = e.clientY < getMidY(header) ? "drop-indicator-above" : "drop-indicator-below";
-        projectNode.classList.add(cls);
-        lastIndicatorEl = projectNode;
-      }
+      // Measured against the whole collection, and drawn on it. The midpoint
+      // used to come from the header while the line was drawn around
+      // everything, so the line flipped sides near the title and then
+      // appeared an entire list of tabs away from the pointer.
+      const cls = e.clientY < getMidY(projectNode) ? "drop-indicator-above" : "drop-indicator-below";
+      projectNode.classList.add(cls);
+      lastIndicatorEl = projectNode;
     }
   } else if (info.type === "terminal") {
     const terminalNode = el.closest<HTMLElement>("[data-node-id]");
@@ -343,13 +356,10 @@ function handleDragEnd(e: PointerEvent | MouseEvent) {
   const callbacks = dragRuntime.callbacks;
   if (el && callbacks) {
     if (info.type === "project") {
-      const projectNode = el.closest<HTMLElement>("[data-project-id]");
+      const projectNode = closestProjectNode(el);
       if (projectNode && projectNode.dataset.projectId !== info.projectId) {
-        const header = projectNode.querySelector<HTMLElement>(".sidebar-project-header");
-        if (header) {
-          const position = e.clientY < getMidY(header) ? "before" : "after";
-          callbacks.onReorderProject(info.projectId, projectNode.dataset.projectId!, position);
-        }
+        const position = e.clientY < getMidY(projectNode) ? "before" : "after";
+        callbacks.onReorderProject(info.projectId, projectNode.dataset.projectId!, position);
       }
     } else if (info.type === "terminal") {
       const terminalNode = el.closest<HTMLElement>("[data-node-id]");

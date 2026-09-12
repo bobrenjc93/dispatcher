@@ -277,6 +277,78 @@ describe("dragState", () => {
     expect(onReorderChild).not.toHaveBeenCalled();
   });
 
+  it("reorders projects when dropped over another collection's tabs", () => {
+    // Most of a collection's height is its tabs, and a tab carries the same
+    // data-project-id as the collection around it — so the nearest match was
+    // a tab, which has no header, and the drop was silently ignored.
+    const dragged = document.createElement("div");
+    dragged.className = "sidebar-project-node";
+    dragged.dataset.projectId = "dragged-project";
+
+    const target = document.createElement("div");
+    target.className = "sidebar-project-node";
+    target.dataset.projectId = "target-project";
+    const targetHeader = document.createElement("div");
+    targetHeader.className = "sidebar-project-header";
+    const targetTab = document.createElement("div");
+    targetTab.className = "sidebar-terminal-node";
+    targetTab.dataset.projectId = "target-project";
+    targetTab.dataset.nodeId = "target-tab";
+    target.append(targetHeader, targetTab);
+    document.body.append(dragged, target);
+
+    // A tall collection: the pointer is over a tab well below its middle.
+    mockRect(target, 100, 400);
+    mockRect(targetHeader, 100, 20);
+
+    const onReorderProject = vi.fn();
+    registerDragCallbacks({
+      onMoveTerminal: vi.fn(),
+      onReorderChild: vi.fn(),
+      onReorderProject,
+    });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => targetTab),
+    });
+
+    startDrag({ type: "project", projectId: "dragged-project" }, 0, 0, dragged);
+    document.dispatchEvent(pointerEvent("pointermove", 0, 450));
+    // The line is drawn on the collection, which is the boundary it lands at.
+    expect(target.classList.contains("drop-indicator-below")).toBe(true);
+
+    document.dispatchEvent(pointerEvent("pointerup", 0, 450));
+    expect(onReorderProject).toHaveBeenCalledWith("dragged-project", "target-project", "after");
+  });
+
+  it("puts a project above a collection when dropped on its upper half", () => {
+    const dragged = document.createElement("div");
+    dragged.className = "sidebar-project-node";
+    dragged.dataset.projectId = "dragged-project";
+    const target = document.createElement("div");
+    target.className = "sidebar-project-node";
+    target.dataset.projectId = "target-project";
+    document.body.append(dragged, target);
+    mockRect(target, 100, 400);
+
+    const onReorderProject = vi.fn();
+    registerDragCallbacks({
+      onMoveTerminal: vi.fn(),
+      onReorderChild: vi.fn(),
+      onReorderProject,
+    });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => target),
+    });
+
+    startDrag({ type: "project", projectId: "dragged-project" }, 0, 0, dragged);
+    document.dispatchEvent(pointerEvent("pointermove", 0, 150));
+    expect(target.classList.contains("drop-indicator-above")).toBe(true);
+    document.dispatchEvent(pointerEvent("pointerup", 0, 150));
+    expect(onReorderProject).toHaveBeenCalledWith("dragged-project", "target-project", "before");
+  });
+
   it("opens the menu when a touch is held and lifted without moving", () => {
     // A phone has no right button, so the long press has to reach the same
     // menu — otherwise Push on Inactivity and the rest are desktop-only.
