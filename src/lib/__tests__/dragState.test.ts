@@ -173,6 +173,110 @@ describe("dragState", () => {
     }
   });
 
+  it("drops a whole selection together, in order", () => {
+    // Shift-clicking several rows and dragging one of them should move all of
+    // them: picking up a selection and having one row come away is not what a
+    // list does anywhere else.
+    const first = document.createElement("div");
+    first.dataset.nodeId = "first-node";
+    first.dataset.projectId = "project";
+    first.dataset.parentNodeId = "root";
+    const second = document.createElement("div");
+    second.dataset.nodeId = "second-node";
+    second.dataset.projectId = "project";
+    second.dataset.parentNodeId = "root";
+    const target = document.createElement("div");
+    target.dataset.nodeId = "target-node";
+    target.dataset.projectId = "project";
+    target.dataset.parentNodeId = "root";
+    document.body.append(first, second, target);
+    mockRect(target, 100, 20);
+
+    const onReorderChild = vi.fn();
+    registerDragCallbacks({
+      onMoveTerminal: vi.fn(),
+      onReorderChild,
+      onReorderProject: vi.fn(),
+    });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => target),
+    });
+
+    startDrag(
+      {
+        type: "terminal",
+        terminalId: "first",
+        projectId: "project",
+        nodeId: "first-node",
+        nodes: [
+          { terminalId: "first", nodeId: "first-node" },
+          { terminalId: "second", nodeId: "second-node" },
+        ],
+      },
+      0,
+      0,
+      first
+    );
+
+    document.dispatchEvent(pointerEvent("pointermove", 0, 120));
+    // Both rows show as moving, not just the one under the pointer.
+    expect(first.classList.contains("is-dragging")).toBe(true);
+    expect(second.classList.contains("is-dragging")).toBe(true);
+
+    document.dispatchEvent(pointerEvent("pointerup", 0, 120));
+
+    expect(onReorderChild.mock.calls).toEqual([
+      ["root", "first-node", "target-node", "after"],
+      ["root", "second-node", "first-node", "after"],
+    ]);
+    expect(second.classList.contains("is-dragging")).toBe(false);
+  });
+
+  it("ignores a selection dropped on one of its own rows", () => {
+    const dragged = document.createElement("div");
+    dragged.dataset.nodeId = "dragged-node";
+    dragged.dataset.projectId = "project";
+    dragged.dataset.parentNodeId = "root";
+    const alsoSelected = document.createElement("div");
+    alsoSelected.dataset.nodeId = "also-selected";
+    alsoSelected.dataset.projectId = "project";
+    alsoSelected.dataset.parentNodeId = "root";
+    document.body.append(dragged, alsoSelected);
+    mockRect(alsoSelected, 100, 20);
+
+    const onReorderChild = vi.fn();
+    registerDragCallbacks({
+      onMoveTerminal: vi.fn(),
+      onReorderChild,
+      onReorderProject: vi.fn(),
+    });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => alsoSelected),
+    });
+
+    startDrag(
+      {
+        type: "terminal",
+        terminalId: "dragged",
+        projectId: "project",
+        nodeId: "dragged-node",
+        nodes: [
+          { terminalId: "dragged", nodeId: "dragged-node" },
+          { terminalId: "also", nodeId: "also-selected" },
+        ],
+      },
+      0,
+      0,
+      dragged
+    );
+    document.dispatchEvent(pointerEvent("pointermove", 0, 120));
+    document.dispatchEvent(pointerEvent("pointerup", 0, 120));
+
+    expect(onReorderChild).not.toHaveBeenCalled();
+  });
+
   it("opens the menu when a touch is held and lifted without moving", () => {
     // A phone has no right button, so the long press has to reach the same
     // menu — otherwise Push on Inactivity and the rest are desktop-only.

@@ -16,7 +16,12 @@ import {
 } from "../../lib/tabSelection";
 import type { TerminalSession } from "../../types/terminal";
 import type { TerminalSettingsPatch } from "../../lib/terminalSettings";
-import { shouldIgnoreDragStartTarget, startDrag } from "../../lib/dragState";
+import {
+  shouldIgnoreDragStartTarget,
+  startDrag,
+  type DraggedTerminal,
+} from "../../lib/dragState";
+import { findNodeByTerminalId } from "../../lib/treeUtils";
 import { focusTerminalInstance } from "../../hooks/useTerminalBridge";
 import { renameTmuxTerminal } from "../../lib/tmuxControl";
 import { prepareInactionNotificationSound } from "../../lib/inactionNotification";
@@ -51,6 +56,28 @@ function activeTabTerminalId(): string | null {
   // The sidebar lists tabs, and the active terminal may be a pane inside one.
   return findLayoutKeyForTerminal(useLayoutStore.getState().layouts, activeTerminalId)
     ?? activeTerminalId;
+}
+
+/**
+ * The rows a drag from this one should carry.
+ *
+ * A selection is dragged as one thing, the way a file list does it. Pressing a
+ * row outside the selection drags that row alone — the selection is not what
+ * you grabbed.
+ */
+function draggedSelection(terminalId: string, nodeId: string): DraggedTerminal[] {
+  const selection = useTabSelectionStore.getState();
+  if (selection.terminalIds.length < 2 || !selection.terminalIds.includes(terminalId)) {
+    return [{ terminalId, nodeId }];
+  }
+
+  const nodes = useProjectStore.getState().nodes;
+  return selection.terminalIds
+    .map((id) => {
+      const entry = findNodeByTerminalId(nodes, id);
+      return entry ? { terminalId: id, nodeId: entry.nodeId } : null;
+    })
+    .filter((node): node is DraggedTerminal => node !== null);
 }
 
 function currentTabOrder(): string[] {
@@ -144,7 +171,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     // drag here would turn a shift-click into a reorder.
     if (e.shiftKey || e.metaKey || e.ctrlKey) return;
     startDrag(
-      { type: "terminal", terminalId, projectId, nodeId },
+      { type: "terminal", terminalId, projectId, nodeId, nodes: draggedSelection(terminalId, nodeId) },
       e.clientX,
       e.clientY,
       e.currentTarget as HTMLElement,

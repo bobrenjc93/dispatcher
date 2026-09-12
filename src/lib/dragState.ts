@@ -1,6 +1,23 @@
+import { planReorderSequence } from "./dragReorderPlan";
+export interface DraggedTerminal {
+  terminalId: string;
+  nodeId: string;
+}
+
 type DragInfo =
   | { type: "project"; projectId: string }
-  | { type: "terminal"; terminalId: string; projectId: string; nodeId: string };
+  | {
+      type: "terminal";
+      terminalId: string;
+      projectId: string;
+      nodeId: string;
+      /**
+       * Every row being dragged, in sidebar order, including the one pressed.
+       * A selection is dragged as one thing; without this only the row under
+       * the finger moved and the rest stayed where they were.
+       */
+      nodes?: readonly DraggedTerminal[];
+    };
 
 interface DragCallbacks {
   onReorderProject: (draggedId: string, targetId: string, position: "before" | "after") => void;
@@ -170,6 +187,37 @@ function clearIndicators() {
   }
 }
 
+/** The rows this drag is carrying, which is one unless a selection was pressed. */
+function draggedTerminals(dragInfo: DragInfo): readonly DraggedTerminal[] {
+  if (dragInfo.type !== "terminal") {
+    return [];
+  }
+  return dragInfo.nodes?.length
+    ? dragInfo.nodes
+    : [{ terminalId: dragInfo.terminalId, nodeId: dragInfo.nodeId }];
+}
+
+/** The rows of a dragged selection, other than the one under the pointer. */
+function carriedElements(): HTMLElement[] {
+  if (!info || info.type !== "terminal") {
+    return [];
+  }
+  const pressedNodeId = info.nodeId;
+  const wanted = new Set(
+    draggedTerminals(info)
+      .map((node) => node.nodeId)
+      .filter((nodeId) => nodeId !== pressedNodeId)
+  );
+  if (wanted.size === 0) {
+    return [];
+  }
+  // Matched on the dataset rather than through a selector, so an id never has
+  // to be escaped to be found.
+  return [...document.querySelectorAll<HTMLElement>("[data-node-id]")].filter((el) =>
+    wanted.has(el.dataset.nodeId ?? "")
+  );
+}
+
 function getMidY(el: HTMLElement): number {
   const rect = el.getBoundingClientRect();
   return rect.top + rect.height / 2;
@@ -182,6 +230,11 @@ function activateDrag() {
   clearLongPressTimer();
   active = true;
   draggedEl?.classList.add("is-dragging");
+  // The rest of a dragged selection is off under the finger too, and a
+  // selection where only one row dims reads as only one row moving.
+  for (const el of carriedElements()) {
+    el.classList.add("is-dragging");
+  }
   setTextSelectionSuppressed();
   clearDocumentSelection();
 }
@@ -233,7 +286,8 @@ function handleDragMove(e: PointerEvent | MouseEvent) {
     }
   } else if (info.type === "terminal") {
     const terminalNode = el.closest<HTMLElement>("[data-node-id]");
-    if (terminalNode && terminalNode.dataset.nodeId !== info.nodeId) {
+    const carried = new Set(draggedTerminals(info).map((node) => node.nodeId));
+    if (terminalNode && !carried.has(terminalNode.dataset.nodeId ?? "")) {
       const cls = e.clientY < getMidY(terminalNode) ? "drop-indicator-above" : "drop-indicator-below";
       terminalNode.classList.add(cls);
       lastIndicatorEl = terminalNode;
@@ -299,22 +353,34 @@ function handleDragEnd(e: PointerEvent | MouseEvent) {
       }
     } else if (info.type === "terminal") {
       const terminalNode = el.closest<HTMLElement>("[data-node-id]");
-      if (terminalNode && terminalNode.dataset.nodeId !== info.nodeId) {
+      const carriedNodes = draggedTerminals(info);
+      const carried = new Set(carriedNodes.map((node) => node.nodeId));
+      if (terminalNode && !carried.has(terminalNode.dataset.nodeId ?? "")) {
         const targetProjectId = terminalNode.dataset.projectId;
         const parentNodeId = terminalNode.dataset.parentNodeId;
         if (targetProjectId && parentNodeId) {
           const position = e.clientY < getMidY(terminalNode) ? "before" : "after";
-          if (targetProjectId === info.projectId) {
-            callbacks.onReorderChild(parentNodeId, info.nodeId, terminalNode.dataset.nodeId!, position);
-          } else {
-            callbacks.onMoveTerminal(
-              info.terminalId,
-              info.projectId,
-              targetProjectId,
-              parentNodeId,
-              terminalNode.dataset.nodeId!,
-              position
-            );
+          const steps = planReorderSequence(
+            carriedNodes.map((node) => node.nodeId),
+            terminalNode.dataset.nodeId!,
+            position
+          );
+          for (const step of steps) {
+            if (targetProjectId === info.projectId) {
+              callbacks.onReorderChild(parentNodeId, step.nodeId, step.targetNodeId, step.position);
+              continue;
+            }
+            const carriedNode = carriedNodes.find((node) => node.nodeId === step.nodeId);
+            if (carriedNode) {
+              callbacks.onMoveTerminal(
+                carriedNode.terminalId,
+                info.projectId,
+                targetProjectId,
+                parentNodeId,
+                step.targetNodeId,
+                step.position
+              );
+            }
           }
         }
       } else if (!terminalNode) {
@@ -387,6 +453,9 @@ function end() {
   clearLongPressTimer();
   if (active) {
     draggedEl?.classList.remove("is-dragging");
+    for (const el of carriedElements()) {
+      el.classList.remove("is-dragging");
+    }
     // Prevent the click event that follows pointerup after a drag
     document.addEventListener("click", preventClick, { capture: true, once: true });
   }
