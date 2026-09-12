@@ -25,6 +25,7 @@ import { getClientId } from "./clientId";
 import { debugLog } from "./debugLog";
 import type { PushRegistration } from "./webPushSubscribe";
 import type { DocumentPatch } from "./documentPatch";
+import type { TerminalSettingsPatch } from "./terminalSettings";
 import { isWebClient } from "./webBridge";
 
 const MIRROR_EVENT = "dispatcher-mirror";
@@ -450,6 +451,14 @@ export interface ReplicatedActions {
   closePane: (terminalId: string) => void;
   deleteProject: (projectId: string) => void;
   renameTerminal: (terminalId: string, name: string) => void;
+  /**
+   * A per-tab setting from the context menu.
+   *
+   * Relayed rather than written locally: a replica's edit to the workspace
+   * document is overwritten by the desktop's next snapshot, so toggling Push
+   * on Inactivity from a phone appeared to do nothing at all.
+   */
+  patchTerminalSettings: (terminalId: string, patch: TerminalSettingsPatch) => void;
   focusTerminal: (terminalId: string) => void;
   /** Edits a replica made to the workspace document, for the desktop to merge. */
   documentPatch: (patch: DocumentPatch) => void;

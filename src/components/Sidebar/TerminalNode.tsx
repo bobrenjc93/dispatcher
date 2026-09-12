@@ -15,6 +15,7 @@ import {
   visibleTabOrder,
 } from "../../lib/tabSelection";
 import type { TerminalSession } from "../../types/terminal";
+import type { TerminalSettingsPatch } from "../../lib/terminalSettings";
 import { shouldIgnoreDragStartTarget, startDrag } from "../../lib/dragState";
 import { focusTerminalInstance } from "../../hooks/useTerminalBridge";
 import { renameTmuxTerminal } from "../../lib/tmuxControl";
@@ -65,7 +66,16 @@ function currentTabOrder(): string[] {
 export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isActive, onClick, onDeleteTerminals }: TerminalNodeProps) {
   const session = useTerminalStore((s) => s.sessions[terminalId]);
   const updateTitle = useTerminalStore((s) => s.updateTitle);
-  const patchSession = useTerminalStore((s) => s.patchSession);
+  /**
+   * Change a tab's settings wherever this menu is open.
+   *
+   * Relayed rather than written straight to the store: on a phone the local
+   * edit is overwritten by the desktop's next snapshot, so the tick came
+   * straight back off and the menu looked inert.
+   */
+  const patchSettings = (id: string, patch: TerminalSettingsPatch) => {
+    performAction("patchTerminalSettings", id, patch);
+  };
   // A boolean rather than the list: every tab would re-render on every
   // selection change if it subscribed to the array.
   const isSelected = useTabSelectionStore((s) => s.terminalIds.includes(terminalId));
@@ -219,7 +229,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
       targetSessions.length > 0 && targetSessions.every(read);
     const toggleAcross = (
       read: (value: TerminalSession) => boolean,
-      write: (value: boolean) => Partial<TerminalSession>,
+      write: (value: boolean) => TerminalSettingsPatch,
       onEnable?: () => void
     ) => {
       const next = nextToggleValue(targetSessions.map(read));
@@ -227,7 +237,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
         onEnable?.();
       }
       for (const id of targets) {
-        patchSession(id, write(next));
+        patchSettings(id, write(next));
       }
     };
 
@@ -280,7 +290,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
         onClick: () => {
           if (allSnoozed) {
             for (const id of targets) {
-              patchSession(id, { snoozedUntil: undefined });
+              patchSettings(id, { snoozedUntil: null });
             }
             return;
           }
@@ -487,7 +497,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
           onCancel={() => setSnoozeTargets(null)}
           onSubmit={(until) => {
             for (const id of snoozeTargets) {
-              patchSession(id, { snoozedUntil: until });
+              patchSettings(id, { snoozedUntil: until });
             }
             setSnoozeTargets(null);
           }}
@@ -506,7 +516,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
           onCancel={() => setThresholdTargets(null)}
           onSubmit={(value) => {
             for (const id of thresholdTargets) {
-              patchSession(id, { inactivityThresholdMs: value });
+              patchSettings(id, { inactivityThresholdMs: value ?? null });
             }
             setThresholdTargets(null);
           }}

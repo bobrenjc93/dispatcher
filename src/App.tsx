@@ -66,6 +66,7 @@ import {
   splitTmuxTerminal,
 } from "./lib/tmuxControl";
 import { onTerminalExit } from "./lib/terminalEvents";
+import { toSessionPatch, type TerminalSettingsPatch } from "./lib/terminalSettings";
 import { visibleTabs } from "./lib/tabSelection";
 import { collectVisibleTerminalRefs, findProjectIdForTerminal, resolveSiblingInsertIndex } from "./lib/treeUtils";
 import {
@@ -889,6 +890,16 @@ export default function App() {
   const handleDeleteTerminal = useReplicatedAction("deleteTerminal", handleDeleteTerminalLocal);
   const handleSplitPane = useReplicatedAction("splitPane", handleSplitPaneLocal);
   const handleClosePane = useReplicatedAction("closePane", handleClosePaneLocal);
+  // A tab's settings are changed here wherever the menu was opened. A phone
+  // writing them into its own copy of the workspace loses them to the next
+  // snapshot from this window.
+  useReplicatedAction(
+    "patchTerminalSettings",
+    useCallback((terminalId: string, patch: TerminalSettingsPatch) => {
+      useTerminalStore.getState().patchSession(terminalId, toSessionPatch(patch));
+    }, [])
+  );
+
   const handleSendTestPush = useReplicatedAction(
     "sendTestPush",
     useCallback((tabRootTerminalId: string, title: string) => {
