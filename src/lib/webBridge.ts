@@ -182,6 +182,8 @@ function handleServerMessage(raw: string) {
   }
 }
 
+let socketEverOpened = false;
+
 function connect(onFirstOpen: () => void) {
   let opened = false;
   const ws = new WebSocket(socketUrl());
@@ -189,6 +191,7 @@ function connect(onFirstOpen: () => void) {
 
   ws.onopen = () => {
     opened = true;
+    socketEverOpened = true;
     socketReady = true;
     setDisconnectedOverlay(false);
     flushQueue();
@@ -212,18 +215,64 @@ function connect(onFirstOpen: () => void) {
     // to re-attach every terminal in place, come back with a clean boot once
     // the app is reachable again. Scrollback is replayed on attach, and tab
     // state is restored from the shared snapshot, so little is lost.
-    window.setTimeout(() => {
-      if (opened) {
-        window.location.reload();
-      } else {
-        connect(onFirstOpen);
-      }
-    }, RECONNECT_DELAY_MS);
+    if (opened) {
+      // Straight away. This used to wait a second first, which bought nothing
+      // — the page is about to be replaced either way — and on a phone
+      // returning from the background it was a second of staring at an
+      // overlay before anything started happening.
+      reloadOnce();
+      return;
+    }
+    // Nothing ever connected, so this is a retry rather than a recovery, and
+    // retries should not be a hot loop.
+    window.setTimeout(() => connect(onFirstOpen), RECONNECT_DELAY_MS);
   };
 
   ws.onerror = () => {
     // `onclose` always follows; the retry is handled there.
   };
+}
+
+let reloading = false;
+
+/** Reload, but only ever once: close and visibility can both ask at the same moment. */
+function reloadOnce() {
+  if (reloading) {
+    return;
+  }
+  reloading = true;
+  window.location.reload();
+}
+
+/**
+ * A phone that has been away comes back to a socket that died while it slept.
+ *
+ * Waiting for `onclose` to be delivered means waiting on iOS to get round to
+ * it, which is where a good part of the delay on returning to the app went.
+ * Looking at the socket the moment the page is shown is immediate and costs
+ * nothing when it is healthy.
+ */
+function watchForResume(onFirstOpen: () => void) {
+  if (typeof document === "undefined") {
+    return;
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") {
+      return;
+    }
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      return;
+    }
+    if (socket && socket.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+    setDisconnectedOverlay(true);
+    if (socketEverOpened) {
+      reloadOnce();
+      return;
+    }
+    connect(onFirstOpen);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -428,11 +477,13 @@ export function initWebBridge(): Promise<void> {
 
   return new Promise((resolve) => {
     let settled = false;
-    connect(() => {
+    const onFirstOpen = () => {
       if (!settled) {
         settled = true;
         resolve();
       }
-    });
+    };
+    watchForResume(onFirstOpen);
+    connect(onFirstOpen);
   });
 }
