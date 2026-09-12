@@ -2,7 +2,7 @@ import { useEffect, useCallback, useState, useRef } from "react";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { ProjectView } from "./components/Layout/ProjectView";
 import { rememberPushSubscription } from "./lib/pushRegistry";
-import { confirmPushRegistration, sendTestPushNotification } from "./lib/pushNotify";
+import { confirmPushRegistration } from "./lib/pushNotify";
 import type { PushRegistration } from "./lib/webPushSubscribe";
 import { PushSetupPrompt } from "./components/common/PushSetupPrompt";
 import { startAppFocusTracking } from "./lib/appFocus";
@@ -897,13 +897,6 @@ export default function App() {
     "patchTerminalSettings",
     useCallback((terminalId: string, patch: TerminalSettingsPatch) => {
       useTerminalStore.getState().patchSession(terminalId, toSessionPatch(patch));
-    }, [])
-  );
-
-  const handleSendTestPush = useReplicatedAction(
-    "sendTestPush",
-    useCallback((tabRootTerminalId: string, title: string) => {
-      void sendTestPushNotification({ tabRootTerminalId, title, now: Date.now() });
     }, [])
   );
 
