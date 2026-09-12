@@ -16,9 +16,31 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/icon-256.png" />
     <title>Dispatcher</title>
+    <style>
+      /* Painted from the HTML itself, so a reload shows this rather than
+         black while the bundle parses, the socket opens and the workspace
+         hydrates — which on a phone coming back from the background is
+         seconds, not milliseconds. It hands over the moment React has put
+         anything in #root; no timer decides when, so nothing can leave it up
+         or take it down early. */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #1a1a1a;
+        color: #8a8a8a;
+        font: 14px system-ui, -apple-system, sans-serif;
+      }
+      #root:not(:empty) ~ #boot-splash {
+        display: none;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="boot-splash">Starting Dispatcher…</div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
