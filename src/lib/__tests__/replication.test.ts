@@ -13,6 +13,7 @@ const {
   mirrorTerminalOutput,
   performAction,
   registerActionHandler,
+  forgetRequestedSnapshots,
   requestMirrorSnapshot,
   setReplicaCount,
   trimSnapshotBuffer,
@@ -204,6 +205,24 @@ describe("desktop-as-master replication", () => {
     expect(relayCalls()).toHaveLength(afterFirst);
 
     requestMirrorSnapshot("term-c");
+    expect(relayCalls()).toHaveLength(afterFirst + 1);
+  });
+
+  it("asks again once the connection it asked on has gone", () => {
+    // Reconnecting rebuilds the app on a fresh socket rather than reloading
+    // the page, so this record outlives the connection it describes. A pane
+    // that mounts believing its snapshot is already coming asks for nothing,
+    // and the tab shows whatever it had before the phone was put down —
+    // switching to another tab and back was the only way to get anything.
+    isWebClient.mockReturnValue(true);
+    requestMirrorSnapshot("term-d");
+    const afterFirst = relayCalls().length;
+
+    requestMirrorSnapshot("term-d");
+    expect(relayCalls()).toHaveLength(afterFirst);
+
+    forgetRequestedSnapshots();
+    requestMirrorSnapshot("term-d");
     expect(relayCalls()).toHaveLength(afterFirst + 1);
   });
 });
