@@ -232,9 +232,9 @@ pub fn start(app_handle: AppHandle, preferred_port: u16) {
             tauri::is_dev()
         ));
 
-        // Whether browsers get HTTPS depends on a Tailscale setup this app
-        // does not own, so record what is there. Read-only.
-        crate::tailscale::log_detection(port);
+        // Browsers only get a secure context over HTTPS, which on this
+        // machine means Tailscale Serve. Set it up if it can be.
+        crate::tailscale::log_detection(port, preferred_port);
 
         if let Err(err) = axum::serve(listener, router).await {
             let _ = crate::debug_log::append_debug_log(&format!(

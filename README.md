@@ -144,21 +144,32 @@ not being HTTPS.
 
 [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) fixes this by
 putting a real certificate in front of the port, on a name only your tailnet
-can reach. Dispatcher does **not** set this up for you — it changes your
-machine's tailnet configuration, which is yours to decide — so it is two
-commands, once:
+can reach. **Dispatcher sets this up for you** at startup when it can, because
+the alternative is a manual step nobody knows to take and a phone that quietly
+cannot copy, paste, or receive a notification.
+
+To see the URL to open on your phone:
 
 ```sh
-tailscale serve --bg 3003
 tailscale serve status
 ```
 
-The second prints the URL to open on your phone, something like
-`https://your-machine.tailXXXXXX.ts.net`. The mapping lives in tailscaled, not
-in Dispatcher, so it survives reboots and app upgrades; `tailscale serve --https=443 off`
-removes it.
+It prints something like `https://your-machine.tailXXXXXX.ts.net`. The mapping
+lives in tailscaled rather than in Dispatcher, so it survives reboots and app
+upgrades — and it outlives Dispatcher itself. To remove it:
 
-Two prerequisites, both on the tailnet rather than this machine:
+```sh
+tailscale serve --https=443 off
+```
+
+Dispatcher only claims the slot when nothing else holds it. `tailscale serve`
+owns the handler for `/` on your node's HTTPS port, so if that is already
+pointed at something which is not a Dispatcher, it is left alone and the
+reason is written to the diagnostic log. A mapping left behind by an earlier
+Dispatcher *is* replaced, which is what makes a moved port heal itself.
+
+Two prerequisites, both on the tailnet rather than this machine, and neither
+of which Dispatcher can turn on for you:
 [MagicDNS](https://tailscale.com/kb/1081/magicdns) and
 [HTTPS certificates](https://tailscale.com/kb/1153/enabling-https), each a
 toggle in the admin console. Without them Serve has no name and no certificate
@@ -169,15 +180,15 @@ every interface, so it replaces "anyone on this LAN gets a shell" with "any
 device signed into your tailnet does" — still unauthenticated within that
 tailnet, so the warning above continues to apply.
 
-Dispatcher checks for all of this at startup and writes what it finds to the
+Dispatcher checks all of this at startup and writes what it finds to the
 diagnostic log, so a phone with no clipboard has an explanation:
 
 ```
 [backend:tailscale] cli=/usr/local/bin/tailscale state=Running magicDns=true https=true name=your-machine.tailXXXXXX.ts.net port=3003 serve=serving https://your-machine.tailXXXXXX.ts.net
 ```
 
-The check only reads. It never runs `tailscale serve`, and Dispatcher works
-without Tailscale installed at all — just over plain HTTP.
+Dispatcher works without Tailscale installed at all — just over plain HTTP,
+with the limitations above.
 
 ### On a phone
 

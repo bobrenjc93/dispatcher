@@ -157,6 +157,42 @@ fn find_cli() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// Whether Dispatcher should configure Serve itself.
+///
+/// Only when it would work and nothing else is using the slot. `tailscale
+/// serve` sets the handler for `/` on the node's HTTPS port, so taking that
+/// over from something the user set up deliberately would be theft — but a
+/// mapping already pointing at a port in Dispatcher's own range is a previous
+/// Dispatcher, and replacing it is the whole point when the port has moved.
+pub fn should_enable_serve(
+    backend_state: &str,
+    magic_dns: bool,
+    https_certs: bool,
+    serve: &ServeState,
+    our_port: u16,
+    preferred_port: u16,
+) -> bool {
+    if backend_state != "Running" || !magic_dns || !https_certs {
+        // Serve has nothing to present without a name and a certificate.
+        return false;
+    }
+    match serve {
+        ServeState::ProxyingUs(_) => false,
+        ServeState::Off => true,
+        ServeState::ProxyingOther(ports) => ports
+            .iter()
+            .all(|port| is_dispatcher_port(*port, preferred_port) && *port != our_port),
+    }
+}
+
+/// Ports Dispatcher itself might have bound: the preferred one and its walk-up.
+fn is_dispatcher_port(port: u16, preferred_port: u16) -> bool {
+    port >= preferred_port && port < preferred_port.saturating_add(PORT_SCAN_LIMIT)
+}
+
+/// How far the web server walks when its preferred port is taken.
+const PORT_SCAN_LIMIT: u16 = 32;
+
 /// Run the CLI and return its stdout, or `None` if it failed or took too long.
 async fn probe(cli: &PathBuf, args: &[&str]) -> Option<String> {
     let child = tokio::process::Command::new(cli)
@@ -186,11 +222,66 @@ async fn probe(cli: &PathBuf, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Record what Tailscale can and cannot do for browser clients on `port`.
+/// Point Tailscale Serve at this Dispatcher.
+///
+/// Reported in full either way: this changes the machine's tailnet
+/// configuration, it outlives the app, and somebody reading the log later
+/// should be able to see that Dispatcher did it and undo it.
+async fn enable_serve(cli: &PathBuf, port: u16) {
+    let port_arg = port.to_string();
+    let child = tokio::process::Command::new(cli)
+        .args(["serve", "--bg", &port_arg])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn();
+
+    let Ok(child) = child else {
+        let _ = crate::debug_log::append_debug_log(
+            "[backend:tailscale] could not run the CLI to enable serve",
+        );
+        return;
+    };
+
+    match tokio::time::timeout(PROBE_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(output)) if output.status.success() => {
+            let _ = crate::debug_log::append_debug_log(&format!(
+                "[backend:tailscale] enabled serve for port {port};                  undo it with `tailscale serve --https=443 off`"
+            ));
+        }
+        Ok(Ok(output)) => {
+            let _ = crate::debug_log::append_debug_log(&format!(
+                "[backend:tailscale] serve was refused port={} status={} stderr={}",
+                port,
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(Err(err)) => {
+            let _ = crate::debug_log::append_debug_log(&format!(
+                "[backend:tailscale] serve failed to run port={port} error={err}"
+            ));
+        }
+        Err(_) => {
+            let _ = crate::debug_log::append_debug_log(&format!(
+                "[backend:tailscale] serve timed out port={port}"
+            ));
+        }
+    }
+}
+
+/// Set Tailscale up to serve browser clients over HTTPS, and say what happened.
+///
+/// Plain HTTP is not a secure context, so a phone loses the clipboard, service
+/// workers and web push — and the symptom is copy and paste quietly doing
+/// nothing rather than anything that names the cause. Where Tailscale can fix
+/// that, Dispatcher does it rather than leaving a manual step nobody knows to
+/// take.
 ///
 /// Best effort throughout: every failure is a log line, never an error the
 /// user sees. Dispatcher works without Tailscale, just over plain HTTP.
-pub fn log_detection(port: u16) {
+pub fn log_detection(port: u16, preferred_port: u16) {
     tauri::async_runtime::spawn(async move {
         let Some(cli) = find_cli() else {
             let _ = crate::debug_log::append_debug_log(
@@ -253,9 +344,21 @@ pub fn log_detection(port: u16) {
             return;
         }
 
-        // Say what is missing, in the order it has to be fixed. Each of these
-        // is a prerequisite for the next, and a phone hitting a Serve URL
-        // without them gets a certificate error rather than a clue.
+        if should_enable_serve(
+            &status.backend_state,
+            !status.magic_dns_suffix.is_empty(),
+            !status.cert_domains.is_empty(),
+            &serve,
+            port,
+            preferred_port,
+        ) {
+            enable_serve(&cli, port).await;
+            return;
+        }
+
+        // Say what is in the way, in the order it has to be fixed. Each of
+        // these is a prerequisite for the next, and a phone hitting a Serve
+        // URL without them gets a certificate error rather than a clue.
         let blocker = if status.backend_state != "Running" {
             "tailscaled is not running"
         } else if status.magic_dns_suffix.is_empty() {
@@ -263,11 +366,11 @@ pub fn log_detection(port: u16) {
         } else if status.cert_domains.is_empty() {
             "HTTPS certificates are not enabled for this tailnet"
         } else {
-            "nothing is proxying this port"
+            "serve is pointed at something that is not Dispatcher, and taking it over is not ours to do"
         };
         let _ = crate::debug_log::append_debug_log(&format!(
             "[backend:tailscale] not serving Dispatcher over HTTPS: {blocker}. \
-             See the Tailscale section of the README; run `tailscale serve --bg {port}` to set it up"
+             See the Tailscale section of the README; `tailscale serve --bg {port}` sets it up by hand"
         ));
     });
 }
@@ -304,6 +407,42 @@ mod tests {
             summarize_serve(&serve_status("http://127.0.0.1:3003"), 3003),
             ServeState::ProxyingUs("https://host.tailnet.ts.net".to_string())
         );
+    }
+
+    #[test]
+    fn sets_serve_up_when_there_is_nothing_in_the_way() {
+        assert!(should_enable_serve("Running", true, true, &ServeState::Off, 3003, 3003));
+    }
+
+    #[test]
+    fn leaves_serve_alone_when_it_could_not_work() {
+        // Without a name and a certificate there is nothing to present, and a
+        // phone sent to the URL would get a certificate error instead.
+        assert!(!should_enable_serve("Stopped", true, true, &ServeState::Off, 3003, 3003));
+        assert!(!should_enable_serve("Running", false, true, &ServeState::Off, 3003, 3003));
+        assert!(!should_enable_serve("Running", true, false, &ServeState::Off, 3003, 3003));
+    }
+
+    #[test]
+    fn does_nothing_when_serve_already_points_here() {
+        let serving = ServeState::ProxyingUs("https://host.ts.net".to_string());
+        assert!(!should_enable_serve("Running", true, true, &serving, 3003, 3003));
+    }
+
+    #[test]
+    fn replaces_a_mapping_left_by_an_earlier_dispatcher() {
+        // The port moves whenever 3003 is taken, and a mapping left pointing
+        // at the old one sends the phone to a dead page.
+        let stale = ServeState::ProxyingOther(vec![3003]);
+        assert!(should_enable_serve("Running", true, true, &stale, 3004, 3003));
+    }
+
+    #[test]
+    fn will_not_take_over_something_that_is_not_dispatcher() {
+        // `tailscale serve` owns the handler for `/`, so claiming it from a
+        // service the user set up deliberately would take that service down.
+        let someone_else = ServeState::ProxyingOther(vec![8080]);
+        assert!(!should_enable_serve("Running", true, true, &someone_else, 3003, 3003));
     }
 
     #[test]
