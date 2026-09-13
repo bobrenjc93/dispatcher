@@ -4066,6 +4066,32 @@ describe("tmuxControl", () => {
     expect(getWrittenTmuxCommand(0)).toBe("kill-window -t @1\n");
   });
 
+  it("keeps an expired closed tab remembered until the kill is confirmed", async () => {
+    // The kill is optimistic and everything tracking it — the retry timers,
+    // the projection tombstone — lives in memory. Forgetting the stored entry
+    // before the server has answered means a kill that never lands leaves the
+    // window alive with nothing left to suppress it, and the tab the user
+    // closed yesterday walks back in on the next attach.
+    const transportTerminalId = "transport-closed-tab-reap-unconfirmed";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId } = getHydratedTmuxIds();
+    await closeTmuxTerminal(windowTerminalId);
+    writeTerminalMock.mockClear();
+
+    vi.setSystemTime(Date.now() + CLOSED_TAB_TTL_MS + 1);
+    reapExpiredClosedTmuxTabs();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getWrittenTmuxCommand(0)).toBe("kill-window -t @1\n");
+
+    // Nothing has come back yet, so the window must be assumed alive.
+    expect(listClosedTabs().map((tab) => tab.windowId)).toContain("@1");
+
+    await answerPendingTmuxCommands(transportTerminalId, [42]);
+    expect(listClosedTabs().map((tab) => tab.windowId)).not.toContain("@1");
+  });
+
   it("reopens the most recently closed window", async () => {
     const transportTerminalId = "transport-closed-tab-reopen";
     seedTransportTerminal(transportTerminalId);
