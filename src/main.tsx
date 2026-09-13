@@ -3,6 +3,8 @@ import ReactDOM from "react-dom/client";
 import { debugLog } from "./lib/debugLog";
 import { initWebBridge, isWebClient, onBridgeReattach } from "./lib/webBridge";
 import { startRendererHeartbeat } from "./lib/rendererHeartbeat";
+import { forgetRequestedSnapshots } from "./lib/replication";
+import { useMirrorHydrationStore } from "./stores/useMirrorHydrationStore";
 import App from "./App";
 
 document.title = "Dispatcher";
@@ -76,6 +78,11 @@ void initWebBridge().then(() => {
 
   onBridgeReattach(() => {
     generation += 1;
+    // The new tree must ask for its content again. Both of these remember what
+    // the *last* socket was told, and a pane that believes its snapshot is
+    // already on the way asks for nothing at all.
+    forgetRequestedSnapshots();
+    useMirrorHydrationStore.getState().forgetAllHydration();
     debugLog("app.runtime", "rebuilding on a new connection", { generation });
     draw();
   });

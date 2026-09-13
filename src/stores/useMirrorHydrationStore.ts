@@ -15,6 +15,8 @@ interface MirrorHydrationStore {
   hydratedTerminalIds: ReadonlySet<string>;
   markTerminalHydrated: (terminalId: string) => void;
   forgetTerminalHydration: (terminalId: string) => void;
+  /** Nothing has arrived on a new connection yet, whatever arrived on the last. */
+  forgetAllHydration: () => void;
 }
 
 export const useMirrorHydrationStore = create<MirrorHydrationStore>()((set) => ({
@@ -39,4 +41,10 @@ export const useMirrorHydrationStore = create<MirrorHydrationStore>()((set) => (
       next.delete(terminalId);
       return { hydratedTerminalIds: next };
     }),
+  forgetAllHydration: () =>
+    set((state) =>
+      state.hydratedTerminalIds.size === 0
+        ? state
+        : { hydratedTerminalIds: new Set<string>() }
+    ),
 }));

@@ -585,6 +585,22 @@ const REQUEST_SNAPSHOT = "requestSnapshot" as ActionName;
  */
 const requestedSnapshotTerminalIds = new Set<string>();
 
+/**
+ * Forget what has been asked for, because the connection it was asked on is
+ * gone.
+ *
+ * These records are per page, and a reconnect used to be a page load, so they
+ * were never wrong. Rebuilding on a fresh socket instead means a pane can
+ * mount again while this still says its snapshot was requested — so it asks
+ * for nothing, the desktop replays nothing, and the tab sits showing whatever
+ * it had before the phone went away. Switching to another tab and back was the
+ * only way to get anything, because that tab had not been asked for yet.
+ */
+export function forgetRequestedSnapshots() {
+  requestedSnapshotTerminalIds.clear();
+  snapshotRequestedAt.clear();
+}
+
 /** Replica side: ask the master to replay one terminal's screen and history. */
 export function requestMirrorSnapshot(terminalId: string) {
   if (requestedSnapshotTerminalIds.has(terminalId)) {
