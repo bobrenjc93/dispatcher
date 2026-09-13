@@ -5,6 +5,11 @@ import { useLayoutStore } from "../stores/useLayoutStore";
 import { useProjectStore } from "../stores/useProjectStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import {
+  clearActiveTerminalIntent,
+  getActiveTerminalIntent,
+  resolveAdoptedActiveTerminal,
+} from "./activeTerminalIntent";
+import {
   APP_STATE_LAYOUTS_KEY,
   APP_STATE_PROJECTS_KEY,
   APP_STATE_STORAGE_KEYS,
@@ -182,11 +187,24 @@ export function applySharedAppState(
   // was in flight when the click happened revert it, on either side.
   const localActiveTerminalId = useTerminalStore.getState().activeTerminalId;
   const keepLocalActiveTerminal = isPrimaryClient() && localActiveTerminalId !== null;
+  // A replica adopts the desktop's tab, except while waiting to hear back
+  // about one it just picked itself. Snapshots published before the desktop
+  // knew still name the old tab, and how often those arrive depends only on
+  // how busy that tab is — which is why tapping a push notification switched
+  // tabs or did not depending on what the tab you were already on was doing.
+  const adopted = resolveAdoptedActiveTerminal({
+    incoming: terminalState.activeTerminalId ?? null,
+    intent: isPrimaryClient() ? null : getActiveTerminalIntent(),
+    now: Date.now(),
+  });
+  if (adopted.intentSettled) {
+    clearActiveTerminalIntent();
+  }
   useTerminalStore.setState({
     sessions: terminalState.sessions,
     activeTerminalId: keepLocalActiveTerminal
       ? localActiveTerminalId
-      : terminalState.activeTerminalId ?? null,
+      : adopted.activeTerminalId,
   });
 
   writeAppStateSnapshotToLocalStorage(snapshot);

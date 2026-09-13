@@ -14,6 +14,7 @@ import {
   getAppStateSignature,
 } from "../appStateSnapshot";
 import { useProjectStore } from "../../stores/useProjectStore";
+import { clearActiveTerminalIntent } from "../activeTerminalIntent";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import type { TerminalSession } from "../../types/terminal";
 
@@ -169,6 +170,28 @@ describe("who owns the active tab", () => {
     applySharedAppState(fromMaster, "test");
 
     expect(useTerminalStore.getState().activeTerminalId).toBe("t1");
+  });
+
+  it("holds a replica's own choice until the desktop catches up", () => {
+    // Tapping a push notification for another tab set it locally and relayed
+    // the intent — and a snapshot published before the desktop heard about it
+    // put the phone straight back. Whether that happened came down to how
+    // busy the tab you were already on was, since a busy tab republishes the
+    // document constantly and a quiet one never does.
+    isPrimaryClientMock.mockReturnValue(false);
+    const stale = snapshotWithActive("t2");
+    clearActiveTerminalIntent();
+    useTerminalStore.getState().setActiveTerminal("t1");
+
+    applySharedAppState(stale, "test");
+    expect(useTerminalStore.getState().activeTerminalId).toBe("t1");
+
+    // Once the desktop agrees, it is back in charge.
+    const caughtUp = snapshotWithActive("t1");
+    applySharedAppState(caughtUp, "test");
+    useTerminalStore.setState({ activeTerminalId: "t1" });
+    applySharedAppState(snapshotWithActive("t2"), "test");
+    expect(useTerminalStore.getState().activeTerminalId).toBe("t2");
   });
 
   it("adopts one when the desktop has none yet, as on a cold start", () => {

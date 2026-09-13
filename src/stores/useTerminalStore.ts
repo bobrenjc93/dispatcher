@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { getScopedStorageKey } from "../lib/storageNamespace";
+import { noteActiveTerminalIntent } from "../lib/activeTerminalIntent";
 import type { TerminalSession } from "../types/terminal";
 
 interface TerminalStore {
@@ -132,6 +133,10 @@ export const useTerminalStore = create<TerminalStore>()(
       },
 
       setActiveTerminal: (id) => {
+        // A replica only asks; the desktop decides, and its answer comes back
+        // in a snapshot. Until it does, this is what stops a snapshot that was
+        // already in flight from putting the tab straight back.
+        noteActiveTerminalIntent(id);
         if (id) {
           set((state) => {
             const session = state.sessions[id];
