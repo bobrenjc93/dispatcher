@@ -118,6 +118,8 @@ interface PendingTmuxCloseCleanup {
   paneIds: string[];
   attempts: number;
   retryTimerIds: Set<number>;
+  /** Run once the server has agreed the target is gone. */
+  onConfirmed?: () => void;
 }
 
 interface PendingNewWindowAnchor {
@@ -1754,6 +1756,11 @@ function finishOptimisticTmuxClose(
     reason,
     attempts: cleanup?.attempts ?? 0,
   });
+
+  // Every reason we get here means the target is gone: tmux accepted the kill,
+  // rejected it because something already removed the target, or a snapshot
+  // came back without it.
+  cleanup?.onConfirmed?.();
 }
 
 function scheduleOptimisticTmuxCloseCleanup(
@@ -1762,7 +1769,8 @@ function scheduleOptimisticTmuxCloseCleanup(
   targetId: string,
   windowId: string,
   command: string,
-  paneIds: readonly string[] = []
+  paneIds: readonly string[] = [],
+  onConfirmed?: () => void
 ) {
   ensureOptimisticCloseState(session);
   const key = getTmuxCloseCleanupKey(kind, targetId);
@@ -1775,6 +1783,7 @@ function scheduleOptimisticTmuxCloseCleanup(
     paneIds: [...paneIds],
     attempts: 0,
     retryTimerIds: new Set(),
+    onConfirmed,
   };
   session.pendingCloseCleanups.set(key, cleanup);
 
@@ -5939,7 +5948,8 @@ function findControlSessionForClosedTab(
 function killClosedTmuxWindow(
   session: TmuxControlSession,
   windowId: string,
-  reason: string
+  reason: string,
+  onConfirmed?: () => void
 ) {
   ensureOptimisticCloseState(session);
   session.optimisticallyClosedWindowIds.add(windowId);
@@ -5954,7 +5964,8 @@ function killClosedTmuxWindow(
     windowId,
     windowId,
     `kill-window -t ${windowId}`,
-    []
+    [],
+    onConfirmed
   );
 }
 
@@ -6733,18 +6744,30 @@ export async function reopenLastClosedTmuxTab(): Promise<boolean> {
 export function reapExpiredClosedTmuxTabs(): void {
   for (const tab of expiredClosedTabs(Date.now())) {
     const session = findControlSessionForClosedTab(tab);
-    if (!session) {
+    if (!session || !session.controlModeActive) {
       // Nothing can reach it right now: the transport has not attached yet,
       // the server is gone, or it has restarted and the window id belongs to
       // somebody else. The entry stays, so the tab stays closed, and a later
       // tick kills the window if the server comes back.
+      //
+      // Control mode is checked as well as the session, because this sweep
+      // runs at startup: a session recovered from the store is matched by any
+      // tombstone — it has no windows yet, so it cannot disagree with one —
+      // but it cannot carry a command, and every retry would be dropped.
       debugLog("tmux.action", "expired closed tab has no reachable session", {
         windowId: tab.windowId,
         title: tab.title,
+        sessionId: session?.id ?? null,
       });
       continue;
     }
-    forgetClosedTab(tab);
-    killClosedTmuxWindow(session, tab.windowId, "grace-period-expired");
+    // Forgotten only once the server agrees the window is gone. The kill is
+    // optimistic and everything chasing it is in memory, so dropping the entry
+    // up front means a kill that never lands — the app quits, the ssh link
+    // drops — leaves the window running with nothing left to suppress it, and
+    // the tab comes back on the next attach.
+    killClosedTmuxWindow(session, tab.windowId, "grace-period-expired", () => {
+      forgetClosedTab(tab);
+    });
   }
 }
