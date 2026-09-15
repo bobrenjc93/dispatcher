@@ -2072,6 +2072,77 @@ function detachControlSessionProjections(session: TmuxControlSession, reason: st
   session.pendingPaneOutput.clear();
 }
 
+/**
+ * Copies of a window left over from a duplicated projection.
+ *
+ * Retiring the superseded session stops new duplicates, but a run that already
+ * made them has two tabs per window saved in the workspace, and only one of
+ * them is adopted on the way back. The rest would sit in the sidebar forever,
+ * pointing at a window that another tab is already showing.
+ *
+ * Only ever an abandoned copy: a tab some live session is still driving is a
+ * real tab, not litter, and the identity has to be the full connection key,
+ * because a window id on its own is recycled between servers.
+ */
+function pruneDuplicateWindowProjections(
+  keep: TmuxWindowState,
+  connectionKey: string | undefined
+) {
+  if (!connectionKey) {
+    return;
+  }
+
+  const terminals = useTerminalStore.getState().sessions;
+  for (const [terminalId, terminal] of Object.entries(terminals)) {
+    if (
+      terminalId === keep.terminalId
+      || terminal.backendKind !== "tmux-window"
+      || terminal.tmuxWindowId !== keep.windowId
+      || terminal.tmuxConnectionKey !== connectionKey
+      || (terminal.tmuxControlSessionId && controlSessions.has(terminal.tmuxControlSessionId))
+    ) {
+      continue;
+    }
+
+    const layout = useLayoutStore.getState().layouts[terminalId];
+    const paneTerminalIds = layout ? findTerminalIds(layout) : [];
+    const nodeId = findNodeByTerminalId(useProjectStore.getState().nodes, terminalId)?.nodeId;
+    // Removing the tab being looked at otherwise lands on whichever tab the
+    // store happens to list last. The copy that is being kept shows the same
+    // window, so it is the one place the user expects to still be.
+    const activeTerminalId = useTerminalStore.getState().activeTerminalId;
+    const wasLookingAtThisCopy =
+      activeTerminalId === terminalId
+      || (activeTerminalId !== null && paneTerminalIds.includes(activeTerminalId));
+    debugLog("tmux.session", "prune duplicate window projection", {
+      windowId: keep.windowId,
+      connectionKey,
+      keptTerminalId: keep.terminalId,
+      removedTerminalId: terminalId,
+      removedNodeId: nodeId ?? null,
+      removedPaneTerminalIds: paneTerminalIds,
+      title: terminal.title,
+    });
+
+    for (const paneTerminalId of paneTerminalIds) {
+      disposePaneTerminal(paneTerminalId, {
+        windowId: keep.windowId,
+        reason: "duplicate-window-projection",
+      });
+    }
+    if (nodeId) {
+      removeWindowNodeFromAllParents(nodeId);
+      useProjectStore.getState().removeNode(nodeId);
+    }
+    useLayoutStore.getState().removeLayout(terminalId);
+    useTerminalStore.getState().removeSession(terminalId);
+    windowTerminalToSessionId.delete(terminalId);
+    if (wasLookingAtThisCopy) {
+      useTerminalStore.getState().setActiveTerminal(keep.terminalId);
+    }
+  }
+}
+
 function upsertWindowProjection(
   session: TmuxControlSession,
   snapshot: TmuxWindowSnapshot,
@@ -2173,6 +2244,8 @@ function upsertWindowProjection(
         parentId: session.parentNodeId,
       });
     }
+
+    pruneDuplicateWindowProjections(windowState, snapshot.connectionKey);
   }
 
   useTerminalStore.getState().patchSession(windowState.terminalId, {
@@ -4503,6 +4576,57 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
   });
 }
 
+/**
+ * Two control clients on one tmux server.
+ *
+ * `tmux -CC a` from a second terminal is an ordinary thing to do, usually
+ * because the first one looks wedged, and tmux is happy to have both attached.
+ * Dispatcher is not: a tab is a projection of a window, so two sessions
+ * projecting one server give every window two tabs, both live, both streaming
+ * the same pane.
+ *
+ * The newest attach is the one that was just asked for, so the older session
+ * yields the whole server rather than a window at a time -- they are the same
+ * windows, so there is nothing left for it to hold. Tearing it down unbinds
+ * its tabs, which is the disconnected-placeholder state hydration already
+ * knows how to adopt, so the new session inherits the existing tabs instead of
+ * building new ones. It also leaves `controlSessions`, so it cannot claim them
+ * back on its next refresh and trade the duplicate to and fro.
+ */
+function retireSupersededControlSessions(
+  session: TmuxControlSession,
+  snapshots: readonly TmuxWindowSnapshot[]
+) {
+  const connectionKey = snapshots.find((snapshot) => snapshot.connectionKey)?.connectionKey;
+  if (!connectionKey) {
+    // Nothing durable to compare. Window ids are recycled between servers, so
+    // an id alone cannot tell "the same server twice" from two servers.
+    return;
+  }
+
+  for (const other of [...controlSessions.values()]) {
+    if (other.id === session.id) {
+      continue;
+    }
+    const sharesServer = [...other.windows.values()].some(
+      (window) => window.connectionKey === connectionKey
+    );
+    if (!sharesServer) {
+      continue;
+    }
+    debugLog("tmux.session", "retire superseded control session", {
+      sessionId: other.id,
+      transportTerminalId: other.transportTerminalId,
+      supersededBySessionId: session.id,
+      supersededByTransportTerminalId: session.transportTerminalId,
+      connectionKey,
+      windows: other.windows.size,
+      panes: other.panes.size,
+    });
+    teardownControlSession(other, "superseded-by-reattach");
+  }
+}
+
 async function hydrateControlSession(session: TmuxControlSession) {
   if (
     !session.controlModeActive
@@ -4558,6 +4682,10 @@ async function hydrateControlSession(session: TmuxControlSession) {
       });
       return;
     }
+
+    // Before anything is projected, so the windows this session is about to
+    // claim are unbound and can be adopted rather than built a second time.
+    retireSupersededControlSessions(session, rawWindowSnapshots);
 
     reconcileOptimisticTmuxClosesFromSnapshot(
       session,
