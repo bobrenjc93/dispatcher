@@ -2199,10 +2199,9 @@ function readTerminalVisualTextSnapshot(
 /**
  * Everything the terminal is holding, scrollback included.
  *
- * Distinct from {@link readTerminalVisibleText}, which answers "what would I
- * copy right now" and stops at the viewport. This answers "show me the text so
- * I can pick through it", which is only useful if it goes back further than
- * the screen.
+ * Goes back further than the screen on purpose: this answers "show me the
+ * text so I can pick through it", which is no use if it stops at the
+ * viewport.
  *
  * Capped, because a terminal keeps 50k lines and rendering all of them into a
  * textarea on a phone is a way to lock the UI up. The tail is what is kept: on
@@ -2227,28 +2226,6 @@ export function readTerminalScrollbackText(terminalId: string, maxLines = 4000):
   return lines.join("\n");
 }
 
-export function readTerminalVisibleText(terminalId: string): string {
-  const xterm = instances.get(terminalId)?.xterm;
-  if (!xterm) {
-    return "";
-  }
-
-  const selection = xterm.getSelection();
-  if (selection) {
-    return selection;
-  }
-
-  const buffer = xterm.buffer.active;
-  const lines: string[] = [];
-  for (let row = 0; row < xterm.rows; row += 1) {
-    lines.push(buffer.getLine(buffer.viewportY + row)?.translateToString(true) ?? "");
-  }
-  // Trailing blank rows are padding, not content.
-  while (lines.length > 0 && lines[lines.length - 1].trim() === "") {
-    lines.pop();
-  }
-  return lines.join("\n");
-}
 
 export function focusTerminalInstance(terminalId: string) {
   instances.get(terminalId)?.xterm.focus();

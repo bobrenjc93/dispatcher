@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useUiStore } from "../../stores/useUiStore";
-import { readClipboardText } from "../../lib/clipboardRead";
 import {
   COMPOSE_HISTORY_START,
   loadComposeHistory,
@@ -11,7 +10,6 @@ import {
 import {
   pasteTextIntoTerminalById,
   readTerminalScrollbackText,
-  readTerminalVisibleText,
   sendSyntheticTerminalInput,
 } from "../../hooks/useTerminalBridge";
 
@@ -64,84 +62,11 @@ const TRAILING_KEYS: KeyDefinition[] = [
 ];
 
 /**
- * A field to paste into, for when the page cannot read the clipboard itself.
+ * What a background action is doing, and how it went.
  *
- * The terminal is a canvas, so a long-press over it offers nothing to paste
- * into. A real text field does, and the browser will happily fill one from the
- * clipboard on the user's own gesture even where it refuses to hand the same
- * text to script. Two extra taps, but it works on plain HTTP.
- */
-function PasteTarget(props: { onSubmit: (text: string) => void; onCancel: () => void }) {
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
-
-  useEffect(() => {
-    // Best effort: iOS may decline to raise the keyboard for a focus it did not
-    // consider user-initiated, in which case tapping the field does it.
-    inputRef.current?.focus();
-  }, []);
-
-  return (
-    <div
-      className="paste-target-backdrop"
-      role="presentation"
-      onPointerDown={props.onCancel}
-    >
-      <div
-        className="paste-target"
-        role="dialog"
-        aria-label="Paste into terminal"
-        onPointerDown={(event) => event.stopPropagation()}
-      >
-        <p className="paste-target-hint">Long-press the box, choose Paste.</p>
-        <textarea
-          ref={inputRef}
-          className="paste-target-input"
-          rows={2}
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          placeholder="Paste here"
-          onPaste={(event) => {
-            // Take the text off the event rather than reading the field back:
-            // this fires before the value lands, and it is the only path that
-            // sees the paste whole, newlines and all.
-            const text = event.clipboardData?.getData("text");
-            if (text) {
-              event.preventDefault();
-              props.onSubmit(text);
-            }
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              props.onCancel();
-            }
-          }}
-        />
-        <div className="paste-target-actions">
-          <button type="button" className="mobile-key" onClick={props.onCancel}>
-            cancel
-          </button>
-          <button
-            type="button"
-            className="mobile-key"
-            onClick={() => props.onSubmit(inputRef.current?.value ?? "")}
-          >
-            send
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * What a copy or paste is doing, and how it went.
- *
- * These actions produce nothing visible in the terminal — a successful copy
- * looks exactly like a button that did not register, which on a phone is the
- * difference between trusting the thing and tapping it four times.
+ * Copying produces nothing visible in the terminal — success looks exactly
+ * like a button that did not register, which on a phone is the difference
+ * between trusting the thing and tapping it four times.
  */
 type ActionStatus =
   | { kind: "idle" }
@@ -151,7 +76,6 @@ type ActionStatus =
 
 export function MobileKeyBar() {
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
-  const [isPasteTargetOpen, setPasteTargetOpen] = useState(false);
   const [isComposeOpen, setComposeOpen] = useState(false);
   const [isSelectOpen, setSelectOpen] = useState(false);
   const [status, setStatus] = useState<ActionStatus>({ kind: "idle" });
@@ -180,49 +104,6 @@ export function MobileKeyBar() {
     event.preventDefault();
   };
 
-  // A finger cannot drag-select a canvas, so offer the text directly: the
-  // selection if there is one, otherwise what is on screen.
-  const copyVisible = () => {
-    const text = readTerminalVisibleText(activeTerminalId);
-    if (!text) {
-      setStatus({ kind: "failed", label: "Nothing to copy" });
-      return;
-    }
-    if (!navigator.clipboard) {
-      // No secure context, so there is no clipboard to write to. Saying so
-      // beats a button that silently does nothing.
-      setStatus({ kind: "failed", label: "Clipboard needs HTTPS" });
-      return;
-    }
-    setStatus({ kind: "busy", label: "Copying" });
-    void navigator.clipboard
-      .writeText(text)
-      .then(() => setStatus({ kind: "done", label: "Copied" }))
-      .catch(() => setStatus({ kind: "failed", label: "Copy failed" }));
-  };
-
-  // A phone keyboard has no paste key, and the terminal is a canvas, so the
-  // usual long-press-to-paste never reaches it. The clipboard read is the
-  // browser's own — the phone's clipboard, not the desktop's, which is what
-  // someone pasting on their phone means. Over plain HTTP there is no clipboard
-  // API to ask, so fall back to a field the user can paste into by hand.
-  const pasteClipboard = () => {
-    setStatus({ kind: "busy", label: "Pasting" });
-    void readClipboardText(navigator.clipboard)
-      .then((text) => {
-        if (!text) {
-          // Not a failure: the fallback field is about to ask for the text.
-          setStatus({ kind: "idle" });
-          setPasteTargetOpen(true);
-          return;
-        }
-        return pasteTextIntoTerminalById(activeTerminalId, text).then(() =>
-          setStatus({ kind: "done", label: "Pasted" })
-        );
-      })
-      .catch(() => setStatus({ kind: "failed", label: "Paste failed" }));
-  };
-
   // Paste the body, then send Enter as a separate keystroke rather than
   // appending "\r" to the text. The paste goes out bracketed, and the whole
   // point of bracketed paste is that a newline inside it does not submit —
@@ -236,14 +117,6 @@ export function MobileKeyBar() {
     void pasteTextIntoTerminalById(activeTerminalId, text).then(() => {
       sendSyntheticTerminalInput(activeTerminalId, "\r");
     });
-  };
-
-  const submitPastedText = (text: string) => {
-    setPasteTargetOpen(false);
-    if (text) {
-      setStatus({ kind: "done", label: "Pasted" });
-      void pasteTextIntoTerminalById(activeTerminalId, text);
-    }
   };
 
   return (
@@ -269,12 +142,6 @@ export function MobileKeyBar() {
         <ComposeDialog
           onSubmit={submitComposedText}
           onCancel={() => setComposeOpen(false)}
-        />
-      )}
-      {isPasteTargetOpen && (
-        <PasteTarget
-          onSubmit={submitPastedText}
-          onCancel={() => setPasteTargetOpen(false)}
         />
       )}
       <div className="mobile-key-bar" role="toolbar" aria-label="Terminal keys">
@@ -324,26 +191,6 @@ export function MobileKeyBar() {
             {key.label}
           </button>
         ))}
-        <button
-          type="button"
-          className="mobile-key"
-          title="Paste from the clipboard"
-          onPointerDown={keepFocus}
-          onMouseDown={keepFocus}
-          onClick={pasteClipboard}
-        >
-          paste
-        </button>
-        <button
-          type="button"
-          className="mobile-key"
-          title="Copy the selection, or the visible screen"
-          onPointerDown={keepFocus}
-          onMouseDown={keepFocus}
-          onClick={copyVisible}
-        >
-          copy
-        </button>
         {TRAILING_KEYS.map((key) => (
           <button
             key={key.label}
