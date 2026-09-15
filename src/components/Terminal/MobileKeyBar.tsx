@@ -3,6 +3,12 @@ import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useUiStore } from "../../stores/useUiStore";
 import { readClipboardText } from "../../lib/clipboardRead";
 import {
+  COMPOSE_HISTORY_START,
+  loadComposeHistory,
+  rememberComposedText,
+  stepComposeHistory,
+} from "../../lib/composeHistory";
+import {
   pasteTextIntoTerminalById,
   readTerminalScrollbackText,
   readTerminalVisibleText,
@@ -226,6 +232,7 @@ export function MobileKeyBar() {
     if (!text) {
       return;
     }
+    rememberComposedText(text);
     void pasteTextIntoTerminalById(activeTerminalId, text).then(() => {
       sendSyntheticTerminalInput(activeTerminalId, "\r");
     });
@@ -373,10 +380,37 @@ function ComposeDialog(props: {
 }) {
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  // Read once on open, so a submission made from another window mid-compose
+  // cannot renumber the entries under the buttons.
+  const [history] = useState(loadComposeHistory);
+  const [cursor, setCursor] = useState(COMPOSE_HISTORY_START);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  const step = (direction: "older" | "newer") => {
+    const next = stepComposeHistory({ history, cursor, current: draft, direction });
+    if (!next) {
+      return;
+    }
+    setCursor(next.cursor);
+    setDraft(next.text);
+    // Put the caret at the end rather than wherever it was in the old text,
+    // which is where you want it to carry on typing. The field has to have
+    // taken the new value first, hence the frame's delay.
+    requestAnimationFrame(() => {
+      const field = inputRef.current;
+      if (!field) {
+        return;
+      }
+      field.focus();
+      field.setSelectionRange(next.text.length, next.text.length);
+    });
+  };
+
+  const canGoOlder = cursor.index + 1 < history.length;
+  const canGoNewer = cursor.index >= 0;
 
   return (
     <div className="compose-backdrop">
@@ -391,7 +425,14 @@ function ComposeDialog(props: {
           className="compose-input"
           placeholder="Type or dictate…"
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            // Edited, so it is no longer the history entry it started as. Left
+            // on the old index, stepping back down would discard the edit.
+            setCursor((current) =>
+              current.index === -1 ? current : { index: -1, draft: current.draft }
+            );
+          }}
           onKeyDown={(event) => {
             // Enter inserts a newline; sending is an explicit button. A
             // multi-line paste is a normal thing to want here, and a field
@@ -403,6 +444,33 @@ function ComposeDialog(props: {
           }}
         />
         <div className="compose-actions">
+          {/* Two buttons rather than the arrow keys: the field needs those for
+              moving the caret, and a phone keyboard has no arrows anyway. */}
+          <button
+            type="button"
+            className="mobile-key compose-history-key"
+            title="Previous submission"
+            aria-label="Previous submission"
+            disabled={!canGoOlder}
+            // Keep the keyboard up; a tap that dismissed it would cost a tap
+            // to get back to typing.
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => step("older")}
+          >
+            {"↑"}
+          </button>
+          <button
+            type="button"
+            className="mobile-key compose-history-key"
+            title="Next submission"
+            aria-label="Next submission"
+            disabled={!canGoNewer}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => step("newer")}
+          >
+            {"↓"}
+          </button>
+          <span className="compose-actions-spacer" />
           <button type="button" className="mobile-key" onClick={props.onCancel}>
             cancel
           </button>
