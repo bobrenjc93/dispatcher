@@ -25,6 +25,7 @@ import {
 import { findNodeByTerminalId } from "../../lib/treeUtils";
 import { focusTerminalInstance } from "../../hooks/useTerminalBridge";
 import { renameTmuxTerminal } from "../../lib/tmuxControl";
+import { isTouchPointer } from "../../lib/terminalMouse";
 import { prepareInactionNotificationSound } from "../../lib/inactionNotification";
 import {
   DEFAULT_SNOOZE_MS,
@@ -145,9 +146,9 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
 
   if (!session) return null;
 
-  const commitRename = () => {
+  const applyRename = (name: string) => {
     setEditing(false);
-    const trimmed = draft.trim();
+    const trimmed = name.trim();
     if (trimmed && trimmed !== session.title) {
       void renameTmuxTerminal(terminalId, trimmed)
         .then((handled) => {
@@ -159,11 +160,19 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
           updateTitle(terminalId, trimmed);
         });
     }
+    // Handing focus back to the terminal is right with a keyboard and wrong
+    // without one: on a phone it raises the soft keyboard over the tab that
+    // was just renamed, for a terminal the user was not about to type into.
+    if (prefersNoAutoFocus()) {
+      return;
+    }
     const activeId = useTerminalStore.getState().activeTerminalId;
     if (activeId) {
       requestAnimationFrame(() => focusTerminalInstance(activeId));
     }
   };
+
+  const commitRename = () => applyRename(draft);
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -454,7 +463,9 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
       onContextMenu={handleContextMenu}
     >
       <StatusDot terminalId={terminalId} />
-      {editing ? (
+      {editing && isTouchPointer() ? (
+        <span className="terminal-node-title">{session.title}</span>
+      ) : editing ? (
         <input
           ref={inputRef}
           className="sidebar-rename-input"
@@ -532,6 +543,87 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
         />,
         document.body
       )}
+      {editing && isTouchPointer() && createPortal(
+        <RenameDialog
+          currentTitle={session.title}
+          onCancel={() => setEditing(false)}
+          onSubmit={applyRename}
+        />,
+        document.body
+      )}
+    </div>
+  );
+}
+
+/**
+ * Renaming a tab on a touchscreen.
+ *
+ * The desktop renames in place, in the sidebar row itself, which is as direct
+ * as it gets with a keyboard and pointer. On a phone the same row is a poor
+ * text field: it is one line of a drawer that the keyboard covers as it opens,
+ * and it commits on blur — so the tap that dismisses the keyboard, or the one
+ * that scrolls the list, saves whatever happens to be in the box. Half-typed
+ * names and accidental renames both come from that.
+ *
+ * So the field moves somewhere a thumb can see it, keeps the keyboard clear of
+ * it, and commits only when Save is pressed. Blur does nothing here, which is
+ * the whole point.
+ */
+function RenameDialog(props: {
+  currentTitle: string;
+  onSubmit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(props.currentTitle);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <div className="rename-dialog-backdrop" role="presentation" onPointerDown={props.onCancel}>
+      <div
+        className="rename-dialog"
+        role="dialog"
+        aria-label="Rename tab"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p className="rename-dialog-hint">Rename this tab</p>
+        <input
+          ref={inputRef}
+          className="rename-dialog-input"
+          type="text"
+          // The name is usually a near-repeat of the old one, so the old one
+          // is the better starting point than an empty box -- and the phone's
+          // own select-all is one tap away when it is not.
+          value={draft}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            if (event.key === "Enter") {
+              event.preventDefault();
+              props.onSubmit(draft);
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              props.onCancel();
+            }
+          }}
+        />
+        <div className="rename-dialog-actions">
+          <button type="button" className="rename-dialog-btn" onClick={props.onCancel}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="rename-dialog-btn is-primary"
+            onClick={() => props.onSubmit(draft)}
+          >
+            Save
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
