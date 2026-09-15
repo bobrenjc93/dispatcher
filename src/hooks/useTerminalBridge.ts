@@ -68,6 +68,7 @@ import {
   syncTmuxWindowSizeFromPaneTerminal,
   type TmuxPasteProgress,
 } from "../lib/tmuxControl";
+import { wrapBracketedPaste } from "../lib/tmuxControlProtocol";
 
 // ---------------------------------------------------------------------------
 // Persistent terminal instances — survive React remounts caused by layout
@@ -394,14 +395,20 @@ export function useTerminalPasteProgress(terminalId: string): TerminalPasteProgr
   return progress;
 }
 
-async function pasteTextIntoTerminal(terminalId: string, xterm: Terminal, text: string) {
+/**
+ * `xterm` is null when nothing is mounted for this terminal, which happens
+ * when a paste arrives from a phone for a tab the desktop is not showing. A
+ * tmux paste is addressed by pane id and needs no instance; focusing and
+ * scrolling are just courtesies to a pane that is on screen.
+ */
+async function pasteTextIntoTerminal(terminalId: string, xterm: Terminal | null, text: string) {
   pushKeyDebug(`terminal.paste-data:${terminalId}`, describeTerminalData(text));
-  xterm.focus();
+  xterm?.focus();
 
   const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
   if (backendKind === "tmux-pane") {
     markPastedTerminalActivity(terminalId, text);
-    xterm.scrollToBottom();
+    xterm?.scrollToBottom();
     const startedAt = Date.now();
     setTerminalPasteProgress(terminalId, {
       phase: "preparing",
@@ -425,6 +432,12 @@ async function pasteTextIntoTerminal(terminalId: string, xterm: Terminal, text: 
     return;
   }
 
+  if (!xterm) {
+    // A local PTY takes its paste through xterm's own onData, so with nothing
+    // mounted the text has to be written straight to it.
+    await writeTerminal(terminalId, text);
+    return;
+  }
   xterm.paste(text);
 }
 
@@ -450,18 +463,32 @@ async function pasteClipboardIntoTerminal(terminalId: string, xterm: Terminal) {
  * line at a time.
  */
 export async function pasteTextIntoTerminalById(terminalId: string, text: string) {
-  const instance = instances.get(terminalId);
-  if (!instance || !text) {
+  if (!text) {
     return;
   }
+
+  const instance = instances.get(terminalId);
 
   if (isReplicaClient()) {
-    instance.xterm.focus();
-    instance.xterm.paste(text);
+    if (instance) {
+      instance.xterm.focus();
+      instance.xterm.paste(text);
+      return;
+    }
+    // No mounted xterm to paste through. A tab switched to a moment ago is
+    // exactly that: the pane is known and active, but its instance has not
+    // finished mounting. Returning here dropped the text silently, and the
+    // compose box sent its Enter regardless -- which is why the phone's text
+    // button appeared to do nothing until the terminal had been tapped once.
+    //
+    // Relay what xterm would have put on the wire. The desktop unwraps the
+    // markers and performs a real paste, so this is the same route, just
+    // without needing something on screen to bounce off.
+    performAction("terminalInput", terminalId, wrapBracketedPaste(text));
     return;
   }
 
-  await pasteTextIntoTerminal(terminalId, instance.xterm, text);
+  await pasteTextIntoTerminal(terminalId, instance?.xterm ?? null, text);
 }
 
 async function copyTerminalSelectionToClipboard(terminalId: string, xterm: Terminal) {

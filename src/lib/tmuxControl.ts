@@ -10,6 +10,8 @@ import {
   TMUX_CONTROL_START,
   buildTmuxNewWindowCommand,
   buildTmuxPaneCaptureCommand,
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
   buildTmuxPaneCursorCommand,
   buildTmuxPaneSnapshotCommand,
   buildTmuxWindowSnapshotCommand,
@@ -418,8 +420,6 @@ const TMUX_LAYOUT_REDRAW_BARRIER_MS = 1_500;
 const TMUX_LAYOUT_REDRAW_SUPPRESSION_SUMMARY_INTERVAL_MS = 1_000;
 const TMUX_PASTE_BUFFER_CHUNK_SIZE = 8_000;
 const TMUX_CLOSE_CLEANUP_RETRY_DELAYS_MS = [0, 1_000, 5_000, 15_000, 45_000] as const;
-const BRACKETED_PASTE_START = "\u001b[200~";
-const BRACKETED_PASTE_END = "\u001b[201~";
 let tmuxPasteBufferSequence = 0;
 const TMUX_CONTROL_LINE_PREFIXES = [
   "%begin",

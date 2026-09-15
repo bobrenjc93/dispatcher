@@ -154,8 +154,26 @@ vi.mock("../../components/common/FontSettings", () => ({
   buildFontFamilyCSS: vi.fn(() => "Menlo"),
 }));
 
+// Replica mode is off by default so every other test in this file keeps the
+// desktop's behaviour; the paste relay test turns it on for itself.
+const { replicaState, performActionMock } = vi.hoisted(() => ({
+  replicaState: { isReplica: false },
+  performActionMock: vi.fn(),
+}));
+
+vi.mock("../../lib/replication", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/replication")>();
+  return {
+    ...actual,
+    isReplicaClient: () => replicaState.isReplica,
+    isPrimaryClient: () => !replicaState.isReplica,
+    performAction: (...args: unknown[]) => performActionMock(...args),
+  };
+});
+
 import {
   captureTerminalScreenshot,
+  pasteTextIntoTerminalById,
   disposeTerminalInstance,
   ensureTerminalScreenshotTarget,
   handleTerminalInputData,
@@ -188,6 +206,8 @@ describe("useTerminalBridge synthetic input", () => {
     useTerminalStore.setState({ sessions: {}, activeTerminalId: null });
     clearStatusResizeSuppressionsForTests();
     globalThis.__dispatcherTmuxTransportOutputRouter = undefined;
+    replicaState.isReplica = false;
+    performActionMock.mockClear();
   });
 
   afterEach(() => {
@@ -217,6 +237,37 @@ describe("useTerminalBridge synthetic input", () => {
 
     expect(createdTerminals[0].scrollToBottom).toHaveBeenCalledTimes(1);
     expect(writeTerminalMock).toHaveBeenCalledWith("term-scroll-test", "\u0003");
+  });
+
+  it("relays a replica's paste for a terminal with nothing mounted", async () => {
+    // The phone's text button. Switch tabs and use it straight away and the
+    // new pane's xterm has not finished mounting, so there was no instance to
+    // paste through and the text was dropped without a word -- while the Enter
+    // that follows it went out anyway, so the box closed having sent nothing.
+    replicaState.isReplica = true;
+    expect(hasTerminalFrontend("term-unmounted-paste")).toBe(false);
+
+    await pasteTextIntoTerminalById("term-unmounted-paste", "run the thing");
+
+    // Wrapped the way xterm would have, so the desktop recognises it as a
+    // paste and not as typing.
+    expect(performActionMock).toHaveBeenCalledWith(
+      "terminalInput",
+      "term-unmounted-paste",
+      "[200~run the thing[201~"
+    );
+  });
+
+  it("still pastes through a mounted xterm on a replica", async () => {
+    replicaState.isReplica = true;
+    ensureTerminalScreenshotTarget("term-mounted-paste");
+
+    await pasteTextIntoTerminalById("term-mounted-paste", "hello");
+
+    // xterm's own paste relays through onData, so this must not also be sent
+    // as a second, hand-wrapped copy.
+    expect(performActionMock).not.toHaveBeenCalled();
+    disposeTerminalInstance("term-mounted-paste");
   });
 
   it("routes existing PTY channel output through the current tmux router", async () => {
