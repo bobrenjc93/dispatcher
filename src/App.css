@@ -2190,6 +2190,21 @@ body.sidebar-resizing .terminal-pane {
     flex-shrink: 0;
   }
 
+  /* History on the left, send and cancel on the right. Keeping them apart
+     matters more here than anywhere else in the app: send is destructive in
+     the sense that it cannot be taken back, and it should not sit a thumb's
+     width from a button used for browsing. */
+  .compose-actions-spacer {
+    flex: 1;
+  }
+
+  .compose-history-key:disabled {
+    opacity: 0.35;
+    /* Nothing to go back to is a normal state here, not an error, so the
+       button stays put and stops responding rather than disappearing. */
+    pointer-events: none;
+  }
+
   /* Corrections and dictation are the reason this exists, so unlike the paste
      target the field is a plain one with nothing switched off. */
   .compose-input {
