@@ -4046,6 +4046,63 @@ describe("tmuxControl", () => {
     expect(writeTerminalMock).not.toHaveBeenCalled();
   });
 
+  it("adopts the existing tabs when a second client attaches to the same server", async () => {
+    // `smux -CC a` from a second terminal, usually because the first one looks
+    // wedged. tmux is happy to have both clients; Dispatcher used to answer by
+    // showing every window twice, both tabs live and both streaming the same
+    // pane, because a tab already bound to a control session was never
+    // considered adoptable.
+    const first = "transport-attach-first";
+    const second = "transport-attach-second";
+    const windowLine = "@1\thappy\t1\t*\tgpu-dev\t/tmp/smux-1081/default\t$0\t1788974979";
+    const paneLine = "@1\t%1\t0\t0\t80\t24\t1\t/home/dev\t4\t7\t0";
+
+    const attach = async (transportTerminalId: string) => {
+      routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.runOnlyPendingTimersAsync();
+      routeTmuxTransportOutput(
+        transportTerminalId,
+        ["%begin 1 0", windowLine, "%end 1 0", "%begin 2 0", paneLine, "%end 2 0", ""].join("\n")
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.runOnlyPendingTimersAsync();
+    };
+
+    seedTransportTerminal(first);
+    useTerminalStore.setState((state) => ({
+      sessions: { ...state.sessions, [second]: makeTerminalSession(second) },
+    }));
+    useProjectStore.setState((state) => ({
+      nodes: {
+        ...state.nodes,
+        root: { ...state.nodes.root, children: ["transport-node", "second-transport-node"] },
+        "second-transport-node": {
+          id: "second-transport-node",
+          type: "terminal",
+          name: "Shell",
+          terminalId: second,
+          parentId: "root",
+        },
+      },
+    }));
+
+    await attach(first);
+    const windowTerminalId = getWindowTerminalIdByWindowId("@1");
+
+    await attach(second);
+
+    const windowTabs = Object.entries(useTerminalStore.getState().sessions).filter(
+      ([, s]) => s.backendKind === "tmux-window" && s.tmuxWindowId === "@1"
+    );
+    expect(windowTabs).toHaveLength(1);
+    // The same tab, so its notes, position and scrollback survive the reattach.
+    expect(windowTabs[0][0]).toBe(windowTerminalId);
+    // And it is the new client driving it.
+    expect(windowTabs[0][1].tmuxControlSessionId).toBe(second);
+  });
+
   it("kills a closed window once its grace period runs out", async () => {
     const transportTerminalId = "transport-closed-tab-reap";
     seedTransportTerminal(transportTerminalId);
