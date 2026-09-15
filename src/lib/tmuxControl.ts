@@ -2244,9 +2244,13 @@ function upsertWindowProjection(
         parentId: session.parentNodeId,
       });
     }
-
-    pruneDuplicateWindowProjections(windowState, snapshot.connectionKey);
   }
+
+  // Outside the branch above: a session recovered from the store comes back
+  // with its windows already in hand, so it never takes the create-or-adopt
+  // path, and that is exactly the session holding one half of a duplicate
+  // saved by an earlier run.
+  pruneDuplicateWindowProjections(windowState, snapshot.connectionKey);
 
   useTerminalStore.getState().patchSession(windowState.terminalId, {
     title: snapshot.title,

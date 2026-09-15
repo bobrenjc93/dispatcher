@@ -4103,6 +4103,104 @@ describe("tmuxControl", () => {
     expect(windowTabs[0][1].tmuxControlSessionId).toBe(second);
   });
 
+  it("clears a duplicate tab left in the store by an earlier run", async () => {
+    // The healing half. A session recovered from the store comes back with its
+    // windows already in hand, so it never runs create-or-adopt -- and that is
+    // precisely the session holding one half of a duplicate that an earlier
+    // run saved. Without pruning outside that branch the leftover tab sits in
+    // the sidebar forever, pointing at a window another tab already shows.
+    const transportTerminalId = "transport-duplicate-cleanup";
+    const connectionKey = JSON.stringify([
+      "gpu-dev",
+      "/tmp/smux-1081/default",
+      "$0",
+      "1788974979",
+    ]);
+    const windowLine = "@1\thappy\t1\t*\tgpu-dev\t/tmp/smux-1081/default\t$0\t1788974979";
+    const paneLine = "@1\t%1\t0\t0\t80\t24\t1\t/home/dev\t4\t7\t0";
+
+    seedTransportTerminal(transportTerminalId);
+    routeTmuxTransportOutput(transportTerminalId, TMUX_CONTROL_START);
+    await vi.runOnlyPendingTimersAsync();
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      ["%begin 1 0", windowLine, "%end 1 0", "%begin 2 0", paneLine, "%end 2 0", ""].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+
+    const keptTerminalId = getWindowTerminalIdByWindowId("@1");
+
+    // The copy a duplicated run left behind: same server, same window, bound
+    // to nothing.
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        duplicate: makeTerminalSession("duplicate", {
+          title: "happy",
+          backendKind: "tmux-window",
+          tmuxWindowId: "@1",
+          tmuxConnectionKey: connectionKey,
+        }),
+        "duplicate-pane": makeTerminalSession("duplicate-pane", {
+          title: "happy",
+          backendKind: "tmux-pane",
+          tmuxWindowId: "@1",
+          tmuxPaneId: "%1",
+          tmuxConnectionKey: connectionKey,
+        }),
+      },
+    }));
+    useProjectStore.setState((state) => ({
+      nodes: {
+        ...state.nodes,
+        root: {
+          ...state.nodes.root,
+          children: [...(state.nodes.root.children ?? []), "duplicate-node"],
+        },
+        "duplicate-node": {
+          id: "duplicate-node",
+          type: "terminal",
+          name: "happy",
+          terminalId: "duplicate",
+          parentId: "root",
+        },
+      },
+    }));
+    useLayoutStore.setState((state) => ({
+      layouts: {
+        ...state.layouts,
+        duplicate: { type: "terminal", id: "layout-duplicate", terminalId: "duplicate-pane" },
+      },
+    }));
+
+    // Settle the initial pane capture so the refresh replies below line up
+    // with the refresh's own two commands.
+    routeTmuxTransportOutput(transportTerminalId, ["%begin 3 0", "%end 3 0", ""].join("\n"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    routeTmuxTransportOutput(transportTerminalId, "%window-add @1\n");
+    await vi.runOnlyPendingTimersAsync();
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      ["%begin 4 0", windowLine, "%end 4 0", "%begin 5 0", paneLine, "%end 5 0", ""].join("\n")
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.runOnlyPendingTimersAsync();
+
+    const sessions = useTerminalStore.getState().sessions;
+    expect(Object.keys(sessions)).not.toContain("duplicate");
+    expect(Object.keys(sessions)).not.toContain("duplicate-pane");
+    expect(useProjectStore.getState().nodes["duplicate-node"]).toBeUndefined();
+    expect(useLayoutStore.getState().layouts.duplicate).toBeUndefined();
+    // The real tab is untouched.
+    expect(sessions[keptTerminalId]).toBeDefined();
+  });
+
   it("kills a closed window once its grace period runs out", async () => {
     const transportTerminalId = "transport-closed-tab-reap";
     seedTransportTerminal(transportTerminalId);
