@@ -1318,6 +1318,81 @@ body.sidebar-resizing .terminal-pane {
   color: var(--text-primary);
 }
 
+/* Renaming a tab on a touchscreen. Pinned to the top rather than centred:
+   the soft keyboard takes the bottom half of the screen as this opens, and a
+   centred dialog ends up behind it — which is the whole reason the sidebar's
+   own inline field was no good here. */
+.rename-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2100;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 16px;
+  padding-top: calc(24px + env(safe-area-inset-top));
+  background: rgb(0 0 0 / 55%);
+}
+
+.rename-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 360px;
+  max-width: 100%;
+  padding: 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
+}
+
+.rename-dialog-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.rename-dialog-input {
+  width: 100%;
+  padding: 10px;
+  box-sizing: border-box;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Under 16px iOS zooms the page on focus and does not zoom back out. */
+  font-size: 16px;
+}
+
+.rename-dialog-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.rename-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rename-dialog-btn {
+  /* Bigger than the desktop dialogs' buttons: these are hit with a thumb. */
+  padding: 10px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.rename-dialog-btn.is-primary {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
 /* One-time offer to set up push, shown on a device where it can work. */
 .push-setup-backdrop {
   position: fixed;
