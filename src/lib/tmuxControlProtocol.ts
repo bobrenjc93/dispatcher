@@ -1,5 +1,21 @@
 export const TMUX_CONTROL_START = "\u001bP1000p";
 export const TMUX_CONTROL_END = "\u001b\\";
+
+export const BRACKETED_PASTE_START = "\u001b[200~";
+export const BRACKETED_PASTE_END = "\u001b[201~";
+
+/**
+ * Mark text as a paste rather than as typing.
+ *
+ * This is what xterm puts on the wire when something is pasted into it, and
+ * the desktop recognises it on the way in and turns it back into a real tmux
+ * paste. A replica that has to relay a paste with no xterm to do it -- a tab
+ * switched to a moment ago has no mounted instance yet -- can say the same
+ * thing by hand.
+ */
+export function wrapBracketedPaste(text: string): string {
+  return `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`;
+}
 const TMUX_WINDOW_SNAPSHOT_FORMAT =
   '"#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}\\t#{host}\\t#{socket_path}\\t#{session_id}\\t#{session_created}"';
 const TMUX_PANE_SNAPSHOT_FORMAT =
