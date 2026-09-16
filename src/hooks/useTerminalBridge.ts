@@ -62,6 +62,7 @@ import {
 } from "../lib/statusResizeSuppression";
 import {
   clearTmuxTerminal,
+  getActivePaneTerminalIdForWindowTerminal,
   getCurrentTmuxTransportOutputRouter,
   sendInputToTmuxTerminal,
   sendPasteToTmuxTerminal,
@@ -1033,7 +1034,18 @@ function isTransientFocusSequence(data: string): boolean {
 /** Per-terminal dictation revision tracking; see `resolveDictationInput`. */
 const dictationStates = new Map<string, DictationState>();
 
-export function handleTerminalInputData(terminalId: string, inputFromKeyboard: string) {
+export function handleTerminalInputData(
+  inputTerminalId: string,
+  inputFromKeyboard: string
+) {
+  // A phone addresses the tab it is looking at, and a tmux tab's terminal is
+  // the window -- the sidebar row, which owns the layout and no process. Only
+  // the pane inside it can take input. Sent to the window, a keystroke reaches
+  // `writeTerminal` against an id with no PTY and is lost to its own catch.
+  const terminalId =
+    useTerminalStore.getState().sessions[inputTerminalId]?.backendKind === "tmux-window"
+      ? getActivePaneTerminalIdForWindowTerminal(inputTerminalId) ?? inputTerminalId
+      : inputTerminalId;
   let data = inputFromKeyboard;
 
   // iOS dictation re-sends the whole phrase on every revision, expecting the

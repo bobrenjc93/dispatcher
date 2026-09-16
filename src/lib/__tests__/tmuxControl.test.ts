@@ -52,6 +52,7 @@ import {
   reapExpiredClosedTmuxTabs,
   reopenLastClosedTmuxTab,
   createTmuxWindowForTerminal,
+  getActivePaneTerminalIdForWindowTerminal,
   handleTmuxTerminalFocus,
   resizeTmuxPaneByTerminal,
   resumeLiveControlSessions,
@@ -4199,6 +4200,22 @@ describe("tmuxControl", () => {
     expect(useLayoutStore.getState().layouts.duplicate).toBeUndefined();
     // The real tab is untouched.
     expect(sessions[keptTerminalId]).toBeDefined();
+  });
+
+  it("points input at a tab's pane rather than at the tab itself", async () => {
+    // A phone addresses the tab it is looking at, and a tmux tab's terminal is
+    // the window: the sidebar row, which owns the layout and no process. Input
+    // sent there reached a terminal with no PTY and was lost to a swallowed
+    // write error -- the text button on mobile appearing to do nothing at all.
+    const transportTerminalId = "transport-window-input-target";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+
+    expect(getActivePaneTerminalIdForWindowTerminal(windowTerminalId)).toBe(paneTerminalId);
+    // A pane is already the right target, and an unknown id is nobody's tab.
+    expect(getActivePaneTerminalIdForWindowTerminal(paneTerminalId)).toBeNull();
+    expect(getActivePaneTerminalIdForWindowTerminal("not-a-terminal")).toBeNull();
   });
 
   it("kills a closed window once its grace period runs out", async () => {

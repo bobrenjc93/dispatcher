@@ -52,6 +52,15 @@ export function resolveAdoptedActiveTerminal(args: {
   intent: ActiveTerminalIntent | null;
   now: number;
   ttlMs?: number;
+  /**
+   * Whether the incoming terminal is in the tab the intent asked for.
+   *
+   * A tab is two terminals. Tapping a row picks the window; the desktop
+   * answers with the pane inside it, and those ids never match — so waiting
+   * for equality means waiting for the timeout, every time, while the replica
+   * holds an id that cannot take input.
+   */
+  incomingSharesTab?: boolean;
 }): { activeTerminalId: string | null; intentSettled: boolean } {
   const { incoming, intent: pending, now } = args;
   if (!pending) {
@@ -62,8 +71,10 @@ export function resolveAdoptedActiveTerminal(args: {
     // rather than holding a tab open on a request that evidently went nowhere.
     return { activeTerminalId: incoming, intentSettled: true };
   }
-  if (incoming === pending.terminalId) {
-    // The desktop has caught up; there is nothing left to protect.
+  if (incoming === pending.terminalId || args.incomingSharesTab) {
+    // The desktop has caught up; there is nothing left to protect. Taking its
+    // id rather than the requested one matters: it names the pane, and the
+    // pane is the half of the tab that input can reach.
     return { activeTerminalId: incoming, intentSettled: true };
   }
   return { activeTerminalId: pending.terminalId, intentSettled: false };

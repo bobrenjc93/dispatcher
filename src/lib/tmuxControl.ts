@@ -5832,6 +5832,44 @@ async function performTmuxPaste(
   return true;
 }
 
+/**
+ * The pane that input aimed at a whole tab should land in.
+ *
+ * A tmux tab is two terminals: the window, which is the row in the sidebar and
+ * owns the layout, and the pane inside it, which owns the PTY. Only the pane
+ * can take input, and anything addressed to the window has nowhere to go --
+ * `writeTerminal` fails against an id with no process behind it, and the
+ * failure is swallowed, so the keystroke simply disappears.
+ *
+ * Returns null for anything that is not a tmux window, including a pane, which
+ * is already the right target.
+ */
+export function getActivePaneTerminalIdForWindowTerminal(
+  windowTerminalId: string
+): string | null {
+  const sessionId = windowTerminalToSessionId.get(windowTerminalId);
+  const session = sessionId ? controlSessions.get(sessionId) : null;
+  if (!session) {
+    return null;
+  }
+  const window = [...session.windows.values()].find(
+    (candidate) => candidate.terminalId === windowTerminalId
+  );
+  if (!window) {
+    return null;
+  }
+  const activePane = window.activePaneId ? session.panes.get(window.activePaneId) : null;
+  if (activePane) {
+    return activePane.terminalId;
+  }
+  // No active pane recorded yet -- a tab hydrated but never focused. Any pane
+  // of the window beats dropping the input.
+  const anyPane = [...session.panes.values()].find(
+    (pane) => pane.windowId === window.windowId
+  );
+  return anyPane?.terminalId ?? null;
+}
+
 export async function sendInputToTmuxTerminal(terminalId: string, data: string): Promise<boolean> {
   const bracketedPastePayload = getBracketedPastePayload(data);
   if (bracketedPastePayload !== null) {
