@@ -414,6 +414,31 @@ const TMUX_VISIBLE_REDRAW_QUIET_MS = 1_200;
 // over live output anyway.
 const TMUX_VISIBLE_REDRAW_QUIET_DEADLINE_MS = 5_000;
 const TMUX_VISIBLE_REDRAW_RETRY_MAX_MS = 3_000;
+/**
+ * Consecutive races after which a repair paints anyway.
+ *
+ * Discarding a capture that output overtook is right once or twice: the frame
+ * it describes is already behind, and the bytes that overtook it are on their
+ * way to the same screen. It stops being right when it never ends. A pane
+ * running a spinner writes every hundred milliseconds or so, which is faster
+ * than the capture round trip, so the check can refuse every attempt for as
+ * long as the pane stays busy -- and the frame it is refusing to repair is a
+ * corrupted one, because a repair is only ever scheduled when something has
+ * already gone wrong with it.
+ *
+ * The same reasoning the quiet deadline already makes: a frame a few hundred
+ * milliseconds stale but whole beats a current one with a duplicated line in
+ * it, and the next write brings it up to date regardless.
+ */
+const TMUX_VISIBLE_REDRAW_RACE_LIMIT = 4;
+
+/** Whether a raced capture should be painted rather than dropped again. */
+export function shouldPaintRacedVisibleRedraw(
+  raceCount: number,
+  limit: number = TMUX_VISIBLE_REDRAW_RACE_LIMIT
+): boolean {
+  return raceCount >= limit;
+}
 const TMUX_BACKGROUND_VIEWPORT_REFRESH_DEBOUNCE_MS = 350;
 const TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS = 1_000;
 const TMUX_LAYOUT_REDRAW_BARRIER_MS = 1_500;
@@ -4220,7 +4245,16 @@ async function redrawVisiblePaneContent(
     });
     return;
   }
-  if (currentPane.outputGeneration !== outputGenerationAtCapture) {
+  if (
+    currentPane.outputGeneration !== outputGenerationAtCapture
+    // A visible repair that has lost this race too many times in a row paints
+    // regardless. Background refreshes keep deferring: nothing is on screen to
+    // be wrong, so there is no corrupted frame to weigh against staleness.
+    && !(
+      !options?.backgroundRefresh
+      && shouldPaintRacedVisibleRedraw(currentPane.visibleRedrawRaceCount)
+    )
+  ) {
     if (!options?.backgroundRefresh) {
       currentPane.visibleRedrawRaceCount += 1;
     }

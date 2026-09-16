@@ -53,6 +53,7 @@ import {
   reopenLastClosedTmuxTab,
   createTmuxWindowForTerminal,
   getActivePaneTerminalIdForWindowTerminal,
+  shouldPaintRacedVisibleRedraw,
   handleTmuxTerminalFocus,
   resizeTmuxPaneByTerminal,
   resumeLiveControlSessions,
@@ -4216,6 +4217,19 @@ describe("tmuxControl", () => {
     // A pane is already the right target, and an unknown id is nobody's tab.
     expect(getActivePaneTerminalIdForWindowTerminal(paneTerminalId)).toBeNull();
     expect(getActivePaneTerminalIdForWindowTerminal("not-a-terminal")).toBeNull();
+  });
+
+  it("paints a repair that keeps losing the race to live output", () => {
+    // A repair is only scheduled once the frame is already wrong, and the
+    // diff-rendering TUIs in these panes rewrite only the cells they believe
+    // changed -- so no later write fixes it on its own. A pane running a
+    // spinner writes faster than the capture round trip, so refusing every
+    // raced capture leaves the duplicate line on screen for as long as the
+    // pane stays busy. Observed: every attempt raced across two minutes.
+    expect(shouldPaintRacedVisibleRedraw(0)).toBe(false);
+    expect(shouldPaintRacedVisibleRedraw(3)).toBe(false);
+    expect(shouldPaintRacedVisibleRedraw(4)).toBe(true);
+    expect(shouldPaintRacedVisibleRedraw(40)).toBe(true);
   });
 
   it("kills a closed window once its grace period runs out", async () => {
