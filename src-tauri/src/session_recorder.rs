@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -42,6 +42,13 @@ const MAX_RECORDING_BYTES: u64 = 24 * 1024 * 1024;
 const MAX_RUNS_KEPT: usize = 12;
 /// Ceiling for everything under `recordings/`.
 const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Ceiling for one run.
+///
+/// The per-file limit bounds a runaway `cat`, not a run: a session with ninety
+/// panes reaches ninety times it and stays inside every other rule, because
+/// the total is only enforced when the app starts. A long-lived window is
+/// exactly the case that never restarts, so the ceiling it needs is this one.
+const MAX_RUN_BYTES: u64 = 512 * 1024 * 1024;
 
 fn now_unix_secs() -> u64 {
     SystemTime::now()
@@ -158,6 +165,9 @@ pub struct SessionRecorder {
     run_dir: PathBuf,
     started_at_unix: u64,
     started_at_millis: u128,
+    /// Bytes written by this run, across every file in it.
+    run_bytes: AtomicU64,
+    run_capped: AtomicBool,
     files: Mutex<HashMap<String, Recording>>,
     index: Mutex<HashMap<String, Value>>,
 }
@@ -187,6 +197,8 @@ impl SessionRecorder {
             run_dir,
             started_at_unix,
             started_at_millis: now_unix_millis(),
+            run_bytes: AtomicU64::new(0),
+            run_capped: AtomicBool::new(false),
             files: Mutex::new(HashMap::new()),
             index: Mutex::new(HashMap::new()),
         }
@@ -212,6 +224,10 @@ impl SessionRecorder {
             return;
         }
 
+        if self.run_capped.load(Ordering::Relaxed) {
+            return;
+        }
+
         let mut files = self.files.lock().unwrap();
         if !files.contains_key(&key) {
             let path = self.run_dir.join(&file_name);
@@ -231,7 +247,17 @@ impl SessionRecorder {
         }
 
         if let Some(recording) = files.get_mut(&key) {
+            let before = recording.bytes;
             apply(recording);
+            let written = recording.bytes.saturating_sub(before);
+            if written > 0 {
+                let total = self.run_bytes.fetch_add(written, Ordering::Relaxed) + written;
+                if total >= MAX_RUN_BYTES && !self.run_capped.swap(true, Ordering::Relaxed) {
+                    let _ = crate::debug_log::append_debug_log(&format!(
+                        "[backend:recorder] run reached {MAX_RUN_BYTES} bytes; recording stopped"
+                    ));
+                }
+            }
         }
     }
 
