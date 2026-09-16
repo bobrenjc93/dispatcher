@@ -264,8 +264,16 @@ const TERMINAL_RESPONSE_QUERY_PATTERN =
 // and capture replays, so feeding these renderer answers back through tmux
 // send-keys can inject stale OSC/DSR bytes into whatever app is foregrounded.
 // Keep this allowlist narrow: strip only well-known replies xterm itself emits.
+//
+// The cursor report is matched in both its forms. `CSI ?6n` asks for the
+// extended one and is answered `CSI ?Pl;PcR`, with the private marker the
+// plain reply does not carry — and the query side of this pair has always
+// known about `?6n`. Missing the `?` on the way back let the reply through as
+// if it were typing: tmux delivered it to the program, the program asked
+// again, and the two traded the same eight bytes about eighty times a second
+// until the renderer stopped answering its own heartbeat.
 const TERMINAL_RESPONSE_SEQUENCE_PATTERN =
-  /\x1b(?:\](?:(?:1[0-2])|4;\d+);[^\x07\x1b]*(?:\x07|\x1b\\)|\[\d+;\d+R|\[\?\d+(?:;\d+)*c|\[>\d+(?:;\d+)*c)/g;
+  /\x1b(?:\](?:(?:1[0-2])|4;\d+);[^\x07\x1b]*(?:\x07|\x1b\\)|\[\??\d+;\d+R|\[\?\d+(?:;\d+)*c|\[>\d+(?:;\d+)*c)/g;
 const HIDDEN_WRITE_FALLBACK_MS = 50;
 /**
  * Ceiling on output waiting to be written into one terminal. Reached only when

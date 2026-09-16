@@ -802,6 +802,29 @@ describe("useTerminalBridge synthetic input", () => {
     });
   });
 
+  it("strips the private cursor report as well as the plain one", () => {
+    // `CSI ?6n` asks for the extended report and is answered `CSI ?Pl;PcR`.
+    // Letting the private form through handed it to the program as if it were
+    // typing; the program asked again, and the pair traded the same eight
+    // bytes about eighty times a second until the renderer wedged.
+    expect(stripGeneratedTerminalResponseSequences("\u001b[?64;3R")).toEqual({
+      data: "",
+      strippedBytes: 8,
+      strippedCount: 1,
+    });
+    // The plain form still goes, and a real escape sequence is still untouched.
+    expect(stripGeneratedTerminalResponseSequences("\u001b[4;1R")).toEqual({
+      data: "",
+      strippedBytes: 6,
+      strippedCount: 1,
+    });
+    expect(stripGeneratedTerminalResponseSequences("\u001b[2J")).toEqual({
+      data: "\u001b[2J",
+      strippedBytes: 0,
+      strippedCount: 0,
+    });
+  });
+
   it("does not count generated terminal responses from tmux panes as user input", () => {
     useTerminalStore.getState().addSession("tmux-response-test", "A");
     useTerminalStore.getState().patchSession("tmux-response-test", {
