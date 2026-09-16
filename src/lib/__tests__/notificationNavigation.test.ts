@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, afterEach, describe, expect, it } from "vitest";
 import {
   readFocusTerminalFromUrl,
   resolveNotificationFocusTarget,
+  PENDING_FOCUS_URL,
+  takePendingNotificationFocus,
 } from "../notificationNavigation";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
@@ -92,5 +94,50 @@ describe("resolveNotificationFocusTarget", () => {
       layouts: { win: { type: "terminal", id: "s", terminalId: "stale" } as never },
     });
     expect(resolveNotificationFocusTarget("win")).toBe("win");
+  });
+});
+
+describe("takePendingNotificationFocus", () => {
+  const install = (stored: string | null) => {
+    const store = new Map<string, string>();
+    if (stored !== null) {
+      store.set(PENDING_FOCUS_URL, stored);
+    }
+    const cache = {
+      match: async (url: string) =>
+        store.has(url) ? { text: async () => store.get(url)! } : undefined,
+      delete: async (url: string) => store.delete(url),
+      put: async (url: string, response: { text: () => Promise<string> }) => {
+        store.set(url, await response.text());
+      },
+    };
+    (globalThis as { caches?: unknown }).caches = {
+      open: async () => cache,
+    };
+    return store;
+  };
+
+  afterEach(() => {
+    delete (globalThis as { caches?: unknown }).caches;
+  });
+
+  it("takes the terminal a tapped notification left behind", async () => {
+    // The worker's postMessage lands while a backgrounded home-screen app is
+    // still frozen, so nothing hears it and the app comes to the front on
+    // whatever tab it was already on. This is the copy that survives that gap.
+    const store = install("pane-b");
+    await expect(takePendingNotificationFocus()).resolves.toBe("pane-b");
+    // Taken, not read: left behind it would re-steal the tab on every wake.
+    expect(store.has(PENDING_FOCUS_URL)).toBe(false);
+  });
+
+  it("has nothing to say when no notification was tapped", async () => {
+    install(null);
+    await expect(takePendingNotificationFocus()).resolves.toBeNull();
+  });
+
+  it("stays quiet where there is no cache at all", async () => {
+    delete (globalThis as { caches?: unknown }).caches;
+    await expect(takePendingNotificationFocus()).resolves.toBeNull();
   });
 });

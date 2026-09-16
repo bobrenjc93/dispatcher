@@ -115,3 +115,34 @@ export function focusTerminalFromNotification(terminalId: string): boolean {
   });
   return true;
 }
+
+/**
+ * The terminal a tapped notification left behind, taken once.
+ *
+ * The worker also posts a message, which is faster and usually arrives. This
+ * is for when it does not: a home-screen web app is frozen while backgrounded,
+ * and a message posted while it thaws lands before anything is listening. The
+ * cache entry is still there when the page comes round.
+ */
+export const PENDING_FOCUS_CACHE = "dispatcher-pending-focus";
+export const PENDING_FOCUS_URL = "/__dispatcher_pending_focus";
+
+export async function takePendingNotificationFocus(): Promise<string | null> {
+  if (typeof caches === "undefined") {
+    return null;
+  }
+  try {
+    const cache = await caches.open(PENDING_FOCUS_CACHE);
+    const hit = await cache.match(PENDING_FOCUS_URL);
+    if (!hit) {
+      return null;
+    }
+    const terminalId = (await hit.text()).trim();
+    // Taken, not read: a target left behind would re-steal the tab on every
+    // wake for the rest of the session.
+    await cache.delete(PENDING_FOCUS_URL);
+    return terminalId || null;
+  } catch {
+    return null;
+  }
+}
