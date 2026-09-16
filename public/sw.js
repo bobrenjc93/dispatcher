@@ -54,12 +54,40 @@ self.addEventListener("push", (event) => {
  * Focus an already-open window rather than opening a second copy, and ask it
  * to switch to the tab the notification was about.
  */
+/**
+ * Where a tapped notification leaves its terminal for the page to collect.
+ *
+ * postMessage alone is not enough. On iOS a home-screen web app is frozen
+ * while backgrounded; `client.focus()` thaws it, but the page's listeners are
+ * not back yet, and a message posted into that gap is dropped with nothing to
+ * carry the terminal instead -- the app comes to the front on whatever tab it
+ * was already showing. A cache entry survives the gap, and survives this
+ * worker being killed between the tap and the page waking up.
+ */
+const PENDING_FOCUS_CACHE = "dispatcher-pending-focus";
+const PENDING_FOCUS_URL = "/__dispatcher_pending_focus";
+
+async function rememberPendingFocus(terminalId) {
+  try {
+    const cache = await caches.open(PENDING_FOCUS_CACHE);
+    await cache.put(PENDING_FOCUS_URL, new Response(terminalId));
+  } catch (error) {
+    // The message below is still worth trying.
+  }
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const terminalId = event.notification.data && event.notification.data.terminalId;
 
   event.waitUntil(
     (async () => {
+      // Written before anything is focused, so the page finds it however it
+      // wakes up -- and whether or not the message below survives.
+      if (terminalId) {
+        await rememberPendingFocus(terminalId);
+      }
+
       const all = await self.clients.matchAll({
         type: "window",
         includeUncontrolled: true,

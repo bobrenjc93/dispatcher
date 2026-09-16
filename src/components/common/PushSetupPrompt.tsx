@@ -5,6 +5,7 @@ import {
   FOCUS_TERMINAL_MESSAGE,
   focusTerminalFromNotification,
   readFocusTerminalFromUrl,
+  takePendingNotificationFocus,
 } from "../../lib/notificationNavigation";
 import { isReplicaClient } from "../../lib/replication";
 import {
@@ -158,11 +159,13 @@ export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) =
     // the tab to exist rather than giving up on the first miss.
     const { terminalId, cleanedHref } = readFocusTerminalFromUrl(window.location.href);
     let cancelled = false;
-    if (terminalId) {
-      window.history.replaceState(null, "", cleanedHref);
+
+    // The workspace arrives from the desktop asynchronously, so this waits for
+    // the tab to exist rather than giving up on the first miss.
+    const focusWhenReady = (target: string) => {
       const deadline = Date.now() + 15_000;
       const attempt = () => {
-        if (cancelled || focusTerminalFromNotification(terminalId)) {
+        if (cancelled || focusTerminalFromNotification(target)) {
           return;
         }
         if (Date.now() < deadline) {
@@ -170,10 +173,35 @@ export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) =
         }
       };
       attempt();
+    };
+
+    if (terminalId) {
+      window.history.replaceState(null, "", cleanedHref);
+      focusWhenReady(terminalId);
     }
+
+    // Resumed rather than launched: the worker's message was posted while this
+    // page was still frozen and nothing heard it, so the terminal is waiting in
+    // the cache instead. Checked again on every wake, because a tap that
+    // arrives while the app is backgrounded is exactly this case.
+    const collectPending = () => {
+      void takePendingNotificationFocus().then((pending) => {
+        if (pending && !cancelled) {
+          focusWhenReady(pending);
+        }
+      });
+    };
+    collectPending();
+    const onWake = () => {
+      if (document.visibilityState === "visible") {
+        collectPending();
+      }
+    };
+    document.addEventListener("visibilitychange", onWake);
 
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onWake);
       navigator.serviceWorker.removeEventListener("message", onMessage);
     };
   }, []);
