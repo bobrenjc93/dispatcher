@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getScopedStorageKey } from "../../lib/storageNamespace";
+import { debugLog } from "../../lib/debugLog";
 import {
   FOCUS_TERMINAL_MESSAGE,
   focusTerminalFromNotification,
@@ -98,9 +99,27 @@ export function PushSetupPrompt(props: { onRegister: (value: PushRegistration) =
         .then((registration) => {
           if (registration) {
             props.onRegister(registration);
+            return;
           }
+          // Permission says yes and yet there is no subscription to offer.
+          // Reinstalling the web app does this: iOS keeps the permission and
+          // throws away the subscription, so the silent renewal has nothing to
+          // reuse and re-subscribing failed. Staying quiet here left the
+          // desktop pushing at the endpoint the old install had -- which the
+          // push service accepts and drops, so nothing looked wrong anywhere.
+          debugLog("push", "granted but no subscription; offering setup", {
+            hasRegisteredBefore: hasRegisteredPushBefore(),
+          });
+          setVisible(true);
         })
-        .catch(() => {});
+        .catch((cause) => {
+          debugLog("push", "could not restore a subscription; offering setup", {
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
+          // A tap is the one thing this has that the silent path does not, and
+          // some failures need the gesture.
+          setVisible(true);
+        });
     };
 
     evaluate();
