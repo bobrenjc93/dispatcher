@@ -21,6 +21,25 @@ import type { LayoutNode } from "../types/layout";
 import type { Project, TreeNode } from "../types/project";
 import type { TerminalSession } from "../types/terminal";
 
+/**
+ * Whether two terminals are the window and pane halves of one tmux tab.
+ *
+ * Keyed on the connection as well as the window id, because window ids are
+ * recycled between servers and two unrelated tabs can both be `@9`.
+ */
+export function sharesTmuxTab(
+  a: TerminalSession | undefined,
+  b: TerminalSession | undefined
+): boolean {
+  if (!a || !b || !a.tmuxWindowId || !b.tmuxWindowId) {
+    return false;
+  }
+  return (
+    a.tmuxWindowId === b.tmuxWindowId
+    && (a.tmuxConnectionKey ?? null) === (b.tmuxConnectionKey ?? null)
+  );
+}
+
 export interface PersistedProjectState {
   projects?: Record<string, Project>;
   nodes?: Record<string, TreeNode>;
@@ -192,10 +211,15 @@ export function applySharedAppState(
   // knew still name the old tab, and how often those arrive depends only on
   // how busy that tab is — which is why tapping a push notification switched
   // tabs or did not depending on what the tab you were already on was doing.
+  const intent = isPrimaryClient() ? null : getActiveTerminalIntent();
   const adopted = resolveAdoptedActiveTerminal({
     incoming: terminalState.activeTerminalId ?? null,
-    intent: isPrimaryClient() ? null : getActiveTerminalIntent(),
+    intent,
     now: Date.now(),
+    incomingSharesTab: sharesTmuxTab(
+      terminalState.sessions[intent?.terminalId ?? ""],
+      terminalState.sessions[terminalState.activeTerminalId ?? ""]
+    ),
   });
   if (adopted.intentSettled) {
     clearActiveTerminalIntent();

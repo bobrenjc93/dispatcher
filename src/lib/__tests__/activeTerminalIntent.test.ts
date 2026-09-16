@@ -46,4 +46,33 @@ describe("resolveAdoptedActiveTerminal", () => {
       })
     ).toEqual({ activeTerminalId: "b", intentSettled: true });
   });
+
+  it("settles on the pane when the desktop answers with the other half of the tab", () => {
+    // Tapping a row on a phone picks the window terminal; the desktop answers
+    // with the pane inside it, and the two ids never match. Waiting for
+    // equality meant holding the window id for the full timeout -- and the
+    // window owns no PTY, so everything the key bar sent during those ten
+    // seconds was written to a terminal that could not take it and vanished.
+    expect(
+      resolveAdoptedActiveTerminal({
+        incoming: "pane",
+        intent: { terminalId: "window", at: NOW - 500 },
+        now: NOW,
+        incomingSharesTab: true,
+      })
+    ).toEqual({ activeTerminalId: "pane", intentSettled: true });
+  });
+
+  it("still holds a choice the desktop has not caught up with", () => {
+    // The case the intent exists for: a snapshot naming an unrelated tab,
+    // published before the desktop heard about the tap.
+    expect(
+      resolveAdoptedActiveTerminal({
+        incoming: "somewhere-else",
+        intent: { terminalId: "window", at: NOW - 500 },
+        now: NOW,
+        incomingSharesTab: false,
+      })
+    ).toEqual({ activeTerminalId: "window", intentSettled: false });
+  });
 });
