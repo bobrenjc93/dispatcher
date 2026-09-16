@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { getScopedStorageKey } from "../lib/storageNamespace";
+import { throttledJSONStorage } from "../lib/throttledStorage";
 import { noteActiveTerminalIntent } from "../lib/activeTerminalIntent";
 import type { TerminalSession } from "../types/terminal";
 
@@ -276,6 +277,7 @@ export const useTerminalStore = create<TerminalStore>()(
     }),
     {
       name: getScopedStorageKey("dispatcher-terminals"),
+      storage: throttledJSONStorage,
       partialize: (state) => ({
         sessions: state.sessions,
         activeTerminalId: state.activeTerminalId,

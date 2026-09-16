@@ -8,6 +8,7 @@ import {
   updateRatio,
 } from "../lib/layoutUtils";
 import { getScopedStorageKey } from "../lib/storageNamespace";
+import { throttledJSONStorage } from "../lib/throttledStorage";
 
 interface LayoutStore {
   layouts: Record<string, LayoutNode>;
@@ -78,6 +79,7 @@ export const useLayoutStore = create<LayoutStore>()(
     }),
     {
       name: getScopedStorageKey("dispatcher-layouts"),
+      storage: throttledJSONStorage,
     }
   )
 );
