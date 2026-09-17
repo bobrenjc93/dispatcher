@@ -59,6 +59,11 @@ import {
 } from "./viewportSignature";
 import { recordSessionEvent } from "./sessionRecorder";
 import { debugLog, debugLogError, previewDebugText } from "./debugLog";
+import {
+  findAttentionMarkers,
+  hasAttentionMarker,
+  noteAttentionRequested,
+} from "./attentionMarker";
 import type { ClosedTab } from "./closedTabs";
 import {
   expiredClosedTabs,
@@ -5169,6 +5174,23 @@ function handleNotification(session: TmuxControlSession, line: string) {
     const output = unescapeTmuxOutput(parsed.value);
     ensurePaneHistoryCaptureState(pane);
     const now = Date.now();
+
+    // A program asking for attention outright, rather than Dispatcher
+    // inferring it from silence. Recorded even for a parked pane: the whole
+    // point is that this arrives while nothing is watching the tab.
+    if (hasAttentionMarker(output)) {
+      const windowTerminalId = session.windows.get(pane.windowId)?.terminalId;
+      if (windowTerminalId) {
+        noteAttentionRequested(windowTerminalId, now);
+        debugLog("status.notification", "pane asked for attention", {
+          sessionId: session.id,
+          paneId: pane.paneId,
+          tabRootTerminalId: windowTerminalId,
+          markers: findAttentionMarkers(output).map((text) => previewDebugText(text, 60)),
+        });
+      }
+    }
+
     pane.outputGeneration += 1;
     pane.lastTmuxOutputAt = now;
     pane.cursorStaleSinceOutput = true;

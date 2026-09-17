@@ -19,6 +19,7 @@ import {
 } from "../lib/terminalScreenshotHash";
 import { resolveTerminalScreenshotStatus } from "../lib/terminalScreenshotStatus";
 import { debugLog, previewDebugText } from "../lib/debugLog";
+import { clearAttentionRequest, peekAttentionRequest } from "../lib/attentionMarker";
 import {
   notifyTerminalInaction,
   prepareInactionNotificationSound,
@@ -563,23 +564,41 @@ export function useTerminalScreenshotMonitor() {
         documentHasFocus: isAppFocused(),
         hasAcknowledgedCurrentOutput: args.hasAcknowledgedCurrentOutput,
       };
+      // The program said so itself. Silence is the fallback for everything
+      // that does not, and a poor one for an agent: pausing to think reads
+      // exactly like finishing, which is how a tab still working came to be
+      // announced as idle six times in one afternoon. A marker needs no
+      // waiting period -- it is already the answer the timer was guessing at.
+      const askedAt = peekAttentionRequest(args.tabRootTerminalId, notifiedChangedAt);
       const shouldChime =
         args.enabled
-        && shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAtDesktop: true });
+        && (
+          askedAt !== null
+            ? !isAppFocused()
+            : shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAtDesktop: true })
+        );
       const shouldPush =
         args.pushEnabled
-        && shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAtDesktop: false });
+        && (
+          askedAt !== null
+          || shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAtDesktop: false })
+        );
 
       if (!shouldChime && !shouldPush) {
         return;
       }
 
+      if (askedAt !== null) {
+        clearAttentionRequest(args.tabRootTerminalId);
+      }
+
       lastNotifiedChangedAt.set(args.tabRootTerminalId, args.effectiveChangedAt);
-      debugLog("status.notification", "terminal became inactive", {
+      debugLog("status.notification", askedAt !== null ? "terminal asked for you" : "terminal became inactive", {
         tabRootTerminalId: args.tabRootTerminalId,
         title: args.title,
         effectiveChangedAt: args.effectiveChangedAt,
         staleStartedAt: args.staleStartedAt,
+        askedAt,
       });
       if (shouldChime) {
         void notifyTerminalInaction();
