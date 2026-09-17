@@ -671,6 +671,19 @@ export function useTerminalScreenshotMonitor() {
       })) {
         return;
       }
+      // The dock reaches the same person the push does, off the same idea:
+      // the tab went quiet without being watched. So it needs the same second
+      // signal -- six bounces in four minutes for a tab that was thinking, not
+      // finished, because this path never learned what the other one did.
+      if (
+        !shouldTrustQuiet({
+          announces: announcesAttention(args.tabRootTerminalId),
+          hasPendingRequest:
+            peekAttentionRequest(args.tabRootTerminalId, 0) !== null,
+        })
+      ) {
+        return;
+      }
       bounceDockForAttention(args.tabRootTerminalId, args.title);
     };
 
