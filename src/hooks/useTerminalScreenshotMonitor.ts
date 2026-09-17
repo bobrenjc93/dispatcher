@@ -574,10 +574,23 @@ export function useTerminalScreenshotMonitor() {
       // announced as idle six times in one afternoon. A marker needs no
       // waiting period -- it is already the answer the timer was guessing at.
       const askedAt = peekAttentionRequest(args.tabRootTerminalId, notifiedChangedAt);
+      const announces = announcesAttention(args.tabRootTerminalId);
+      if (announces || askedAt !== null) {
+        // Only for tabs that have ever asked, so this is rare rather than a
+        // line per tab per tick.
+        debugLog("status.notification", "weighing an announced tab", {
+          tabRootTerminalId: args.tabRootTerminalId,
+          title: args.title,
+          askedAt,
+          announces,
+          notifiedChangedAt,
+          effectiveChangedAt: args.effectiveChangedAt,
+        });
+      }
       // A tab that announces itself has retired the guess. Its quiet stretches
       // are it thinking, not it finishing, and treating them as news produced
       // five pushes in eight minutes for a tab working the whole time.
-      if (askedAt === null && announcesAttention(args.tabRootTerminalId)) {
+      if (askedAt === null && announces) {
         return;
       }
       const shouldChime =
