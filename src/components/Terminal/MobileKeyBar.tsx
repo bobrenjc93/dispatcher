@@ -8,6 +8,7 @@ import {
   stepComposeHistory,
 } from "../../lib/composeHistory";
 import {
+  clearTerminalById,
   pasteTextIntoTerminalById,
   readTerminalScrollbackText,
   sendSyntheticTerminalInput,
@@ -104,6 +105,14 @@ export function MobileKeyBar() {
     event.preventDefault();
   };
 
+  // The same thing Cmd+K does on the desktop: empty the screen and drop the
+  // pane's scrollback. tmux owns the scrollback, so this goes through the
+  // desktop rather than clearing the phone's own renderer, which the next
+  // capture would simply undo.
+  const clearTerminal = () => {
+    void clearTerminalById(activeTerminalId);
+  };
+
   // Paste the body, then send Enter as a separate keystroke rather than
   // appending "\r" to the text. The paste goes out bracketed, and the whole
   // point of bracketed paste is that a newline inside it does not submit —
@@ -191,6 +200,16 @@ export function MobileKeyBar() {
             {key.label}
           </button>
         ))}
+        <button
+          type="button"
+          className="mobile-key"
+          title="Clear the screen and its scrollback (Cmd+K)"
+          onPointerDown={keepFocus}
+          onMouseDown={keepFocus}
+          onClick={clearTerminal}
+        >
+          clear
+        </button>
         {TRAILING_KEYS.map((key) => (
           <button
             key={key.label}

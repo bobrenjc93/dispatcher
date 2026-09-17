@@ -1233,6 +1233,35 @@ registerActionHandler("terminalInput", (terminalId, data) => {
   handleTerminalInputData(terminalId, data);
 });
 
+registerActionHandler("clearTerminal", (terminalId) => {
+  void clearTerminalById(terminalId);
+});
+
+/**
+ * What Cmd+K does, from anywhere.
+ *
+ * Two halves: the renderer is emptied so the screen goes blank at once, and
+ * tmux is told to drop the pane's history, which is the part that makes it
+ * stick. A replica can only ask for the second, so it asks for both together
+ * and takes the result back through the mirror.
+ */
+export async function clearTerminalById(terminalId: string): Promise<void> {
+  if (isReplicaClient()) {
+    performAction("clearTerminal", terminalId);
+    return;
+  }
+
+  instances.get(terminalId)?.xterm.clear();
+  try {
+    await clearTmuxTerminal(terminalId);
+  } catch (error) {
+    debugLog("terminal.shortcut", "tmux clear failed", {
+      terminalId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 function stripTerminalControlSequences(data: string): string {
   return data
     .replace(/\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g, "")
