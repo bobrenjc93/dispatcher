@@ -204,6 +204,8 @@ interface TmuxPaneState {
    * woken by a no-op repaint goes back to being done.
    */
   outputActivityRevertPoint: number | null;
+  /** When this sample was first asked for, so it cannot be deferred forever. */
+  backgroundViewportRefreshFirstRequestedAt: number | null;
   /** When this pane last reported a wake, so a busy one cannot flood the log. */
   lastWokeLogAt: number;
   // While tmux and xterm are being resized/replayed, cursor-relative live
@@ -445,6 +447,31 @@ export function shouldPaintRacedVisibleRedraw(
   return raceCount >= limit;
 }
 const TMUX_BACKGROUND_VIEWPORT_REFRESH_DEBOUNCE_MS = 350;
+/**
+ * Longest a background sample can be put off by more output arriving.
+ *
+ * The debounce is reset by every chunk, which is fine for a pane that pauses
+ * and starves the sample completely for one that does not: a pane emitting
+ * 28KB every five seconds went a whole day on eleven samples. That matters
+ * because the sample is what decides whether the output meant anything -- and
+ * until it runs, the activity timestamp it would have reverted stands, so the
+ * tab reads as busy for as long as it keeps talking.
+ *
+ * Waiting for a gap is an optimisation, not a precondition, exactly as it is
+ * for the visible repair below.
+ */
+const TMUX_BACKGROUND_VIEWPORT_REFRESH_MAX_DEFER_MS = 5_000;
+
+/** How long to wait, given how long this sample has already been put off. */
+export function resolveBackgroundRefreshDelayMs(args: {
+  requestedDelayMs: number;
+  waitedMs: number;
+  maxDeferMs?: number;
+}): number {
+  const remaining = (args.maxDeferMs ?? TMUX_BACKGROUND_VIEWPORT_REFRESH_MAX_DEFER_MS)
+    - args.waitedMs;
+  return Math.max(0, Math.min(args.requestedDelayMs, remaining));
+}
 const TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS = 1_000;
 const TMUX_LAYOUT_REDRAW_BARRIER_MS = 1_500;
 const TMUX_LAYOUT_REDRAW_SUPPRESSION_SUMMARY_INTERVAL_MS = 1_000;
@@ -491,6 +518,7 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.viewportSignature ??= null;
   pane.viewportLines ??= null;
   pane.outputActivityRevertPoint ??= null;
+  pane.backgroundViewportRefreshFirstRequestedAt ??= null;
   pane.lastWokeLogAt ??= 0;
   pane.layoutRedrawBarrierUntil ??= 0;
   pane.layoutRedrawBarrierReason ??= null;
@@ -1047,6 +1075,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       viewportSignature: null,
       viewportLines: null,
       outputActivityRevertPoint: null,
+      backgroundViewportRefreshFirstRequestedAt: null,
       lastWokeLogAt: 0,
     });
     paneTerminalToSessionId.set(session.id, sessionId);
@@ -2371,6 +2400,7 @@ function upsertWindowProjection(
         viewportSignature: null,
         viewportLines: null,
         outputActivityRevertPoint: null,
+        backgroundViewportRefreshFirstRequestedAt: null,
         lastWokeLogAt: 0,
       };
       session.panes.set(paneSnapshot.paneId, paneState);
@@ -3091,6 +3121,13 @@ function scheduleBackgroundPaneViewportRefresh(
     pane.backgroundViewportRefreshTimer = null;
   }
 
+  const requestedAt = Date.now();
+  pane.backgroundViewportRefreshFirstRequestedAt ??= requestedAt;
+  const effectiveDelayMs = resolveBackgroundRefreshDelayMs({
+    requestedDelayMs: delayMs,
+    waitedMs: requestedAt - pane.backgroundViewportRefreshFirstRequestedAt,
+  });
+
   const paneId = pane.paneId;
   const terminalId = pane.terminalId;
   pane.backgroundViewportRefreshTimer = window.setTimeout(() => {
@@ -3101,6 +3138,7 @@ function scheduleBackgroundPaneViewportRefresh(
 
     ensurePaneHistoryCaptureState(currentPane);
     currentPane.backgroundViewportRefreshTimer = null;
+    currentPane.backgroundViewportRefreshFirstRequestedAt = null;
     if (
       !session.controlModeActive
       || !currentPane.initialContentCaptured
@@ -3139,7 +3177,7 @@ function scheduleBackgroundPaneViewportRefresh(
         currentPane.backgroundViewportRefreshInFlight = false;
       }
     });
-  }, delayMs);
+  }, effectiveDelayMs);
 }
 
 function isTmuxOutputLikelyToNeedAuthoritativeRedraw(output: string): boolean {
