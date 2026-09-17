@@ -67,23 +67,66 @@ export function hasAttentionMarker(data: string): boolean {
  * Keyed on the tab root, because that is what a notification is about -- a
  * split tab with two panes is still one thing to be told about.
  */
-const requestedAt = new Map<string, number>();
+interface AttentionRuntime {
+  requestedAt: Map<string, number>;
+  /** Tabs that have ever asked, so silence can stop speaking for them. */
+  everAsked: Set<string>;
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __dispatcherAttentionRuntime: AttentionRuntime | undefined;
+}
+
+/**
+ * Held on globalThis, like every other piece of state two modules share here.
+ *
+ * A plain module-level map is a different map per module instance, and a dev
+ * reload hands one side a fresh copy: the marker was recorded into one and
+ * read from another, so it was written three times and found none.
+ */
+function runtime(): AttentionRuntime {
+  const existing = globalThis.__dispatcherAttentionRuntime;
+  if (existing) {
+    existing.requestedAt ??= new Map();
+    existing.everAsked ??= new Set();
+    return existing;
+  }
+  const created: AttentionRuntime = { requestedAt: new Map(), everAsked: new Set() };
+  globalThis.__dispatcherAttentionRuntime = created;
+  return created;
+}
 
 export function noteAttentionRequested(tabRootTerminalId: string, at: number = Date.now()) {
-  requestedAt.set(tabRootTerminalId, at);
+  const state = runtime();
+  state.requestedAt.set(tabRootTerminalId, at);
+  state.everAsked.add(tabRootTerminalId);
+}
+
+/**
+ * Whether this tab announces itself.
+ *
+ * Once a tab has asked outright even once, its silence stops being evidence:
+ * the program pauses to think and says nothing, which is not the same as
+ * finishing, and guessing from quiet is what produced five pushes in eight
+ * minutes for a tab that was working the whole time.
+ */
+export function announcesAttention(tabRootTerminalId: string): boolean {
+  return runtime().everAsked.has(tabRootTerminalId);
 }
 
 /** The pending request, if it is newer than the last one acted on. */
 export function peekAttentionRequest(tabRootTerminalId: string, since: number): number | null {
-  const at = requestedAt.get(tabRootTerminalId);
+  const at = runtime().requestedAt.get(tabRootTerminalId);
   return at !== undefined && at > since ? at : null;
 }
 
 export function clearAttentionRequest(tabRootTerminalId: string) {
-  requestedAt.delete(tabRootTerminalId);
+  runtime().requestedAt.delete(tabRootTerminalId);
 }
 
 /** Test seam. */
 export function resetAttentionRequests() {
-  requestedAt.clear();
+  runtime().requestedAt.clear();
+  runtime().everAsked.clear();
 }

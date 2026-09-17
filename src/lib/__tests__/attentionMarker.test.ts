@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { findAttentionMarkers, hasAttentionMarker } from "../attentionMarker";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  announcesAttention,
+  clearAttentionRequest,
+  findAttentionMarkers,
+  hasAttentionMarker,
+  noteAttentionRequested,
+  peekAttentionRequest,
+  resetAttentionRequests,
+} from "../attentionMarker";
 
 const ESC = "\u001b";
 const BEL = "\u0007";
@@ -54,5 +62,45 @@ describe("findAttentionMarkers", () => {
     const chunk = ESC + "]9;ready" + BEL;
     expect(hasAttentionMarker(chunk)).toBe(true);
     expect(hasAttentionMarker(chunk)).toBe(true);
+  });
+});
+
+describe("the registry two modules share", () => {
+  beforeEach(() => {
+    resetAttentionRequests();
+  });
+
+  it("is reachable from a second copy of the module", () => {
+    // Recorded where output is decoded and read where notifications are
+    // decided. A plain module-level map is a different map per module
+    // instance, so a reload wrote the marker into one and read from another:
+    // three recorded, none ever found. Everything shared across modules here
+    // lives on globalThis for exactly this reason.
+    noteAttentionRequested("tab", 1000);
+    const runtime = (globalThis as { __dispatcherAttentionRuntime?: unknown })
+      .__dispatcherAttentionRuntime;
+    expect(runtime).toBeDefined();
+    expect(peekAttentionRequest("tab", 0)).toBe(1000);
+  });
+
+  it("only reports a request newer than the last one acted on", () => {
+    noteAttentionRequested("tab", 1000);
+    expect(peekAttentionRequest("tab", 1000)).toBeNull();
+    expect(peekAttentionRequest("tab", 999)).toBe(1000);
+  });
+
+  it("forgets a request once it has been acted on", () => {
+    noteAttentionRequested("tab", 1000);
+    clearAttentionRequest("tab");
+    expect(peekAttentionRequest("tab", 0)).toBeNull();
+  });
+
+  it("remembers that a tab announces itself after the request is cleared", () => {
+    // This is what retires the silence guess, so it has to outlive the single
+    // request it came in on.
+    noteAttentionRequested("tab", 1000);
+    clearAttentionRequest("tab");
+    expect(announcesAttention("tab")).toBe(true);
+    expect(announcesAttention("other")).toBe(false);
   });
 });
