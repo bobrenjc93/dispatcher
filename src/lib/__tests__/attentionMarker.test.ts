@@ -4,6 +4,7 @@ import {
   clearAttentionRequest,
   findAttentionMarkers,
   hasAttentionMarker,
+  hasCarriedOnSince,
   noteAttentionRequested,
   peekAttentionRequest,
   resetAttentionRequests,
@@ -137,5 +138,24 @@ describe("shouldTrustQuiet", () => {
     // not enough either -- seven in half an hour, each followed by the program
     // carrying on within a minute.
     expect(shouldTrustQuiet({ announces: true, hasPendingRequest: true })).toBe(true);
+  });
+});
+
+describe("hasCarriedOnSince", () => {
+  it("treats the marker's own burst as part of the marker", () => {
+    // The marker rides inside the output that draws the prompt, so the change
+    // it belongs to lands a beat after it.
+    expect(hasCarriedOnSince({ askedAt: 1000, lastChangedAt: 1500 })).toBe(false);
+  });
+
+  it("sees the program starting up again", () => {
+    // Observed: announced at 20:07:25, resumed at 20:09:00, then worked for
+    // five more minutes. Keeping that request alive would pair it with the
+    // next quiet stretch and call that a finish.
+    expect(hasCarriedOnSince({ askedAt: 1000, lastChangedAt: 96_000 })).toBe(true);
+  });
+
+  it("does not count a change from before the marker", () => {
+    expect(hasCarriedOnSince({ askedAt: 5000, lastChangedAt: 1000 })).toBe(false);
   });
 });
