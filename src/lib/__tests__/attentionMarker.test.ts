@@ -103,4 +103,19 @@ describe("the registry two modules share", () => {
     expect(announcesAttention("tab")).toBe(true);
     expect(announcesAttention("other")).toBe(false);
   });
+
+  it("remembers announcers across a reload", () => {
+    // globalThis goes with the page. Forgetting on every reload hands the tab
+    // back to the silence guess until its next marker, which is minutes of
+    // pushes for a tab that has already proved it does not need guessing at.
+    noteAttentionRequested("tab", 1000);
+    expect(announcesAttention("tab")).toBe(true);
+
+    // What a reload looks like: the runtime is gone, localStorage is not.
+    delete (globalThis as { __dispatcherAttentionRuntime?: unknown })
+      .__dispatcherAttentionRuntime;
+
+    expect(announcesAttention("tab")).toBe(true);
+    expect(announcesAttention("never-asked")).toBe(false);
+  });
 });

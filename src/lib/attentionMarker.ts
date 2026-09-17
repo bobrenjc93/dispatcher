@@ -16,6 +16,8 @@
  * itself, and a tab running one still has nothing but quiet to go on.
  */
 
+import { getScopedStorageKey } from "./storageNamespace";
+
 /**
  * OSC 9, in both the terminators the spec allows.
  *
@@ -89,18 +91,59 @@ function runtime(): AttentionRuntime {
   const existing = globalThis.__dispatcherAttentionRuntime;
   if (existing) {
     existing.requestedAt ??= new Map();
-    existing.everAsked ??= new Set();
+    existing.everAsked ??= readAnnouncers();
     return existing;
   }
-  const created: AttentionRuntime = { requestedAt: new Map(), everAsked: new Set() };
+  const created: AttentionRuntime = { requestedAt: new Map(), everAsked: readAnnouncers() };
   globalThis.__dispatcherAttentionRuntime = created;
   return created;
+}
+
+/**
+ * Which tabs announce themselves, across reloads.
+ *
+ * Whether a program says when it wants you is a fact about the program, not
+ * about this run of the app -- but globalThis goes with the page. Forgetting
+ * on every reload hands the tab straight back to the silence guess until its
+ * next marker, which can be ten minutes of pushes for a tab that has already
+ * proved it does not need guessing about.
+ *
+ * Desktop-local, like the closed-tab list: a convenience for the machine
+ * doing the notifying, not part of the workspace document.
+ */
+const ANNOUNCERS_KEY = getScopedStorageKey("dispatcher.attentionAnnouncers");
+
+function readAnnouncers(): Set<string> {
+  if (typeof window === "undefined") {
+    return new Set();
+  }
+  try {
+    const raw = window.localStorage.getItem(ANNOUNCERS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeAnnouncers(ids: Set<string>) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(ANNOUNCERS_KEY, JSON.stringify([...ids]));
+  } catch {
+    // Losing it costs a reload's worth of guessing, not correctness.
+  }
 }
 
 export function noteAttentionRequested(tabRootTerminalId: string, at: number = Date.now()) {
   const state = runtime();
   state.requestedAt.set(tabRootTerminalId, at);
-  state.everAsked.add(tabRootTerminalId);
+  if (!state.everAsked.has(tabRootTerminalId)) {
+    state.everAsked.add(tabRootTerminalId);
+    writeAnnouncers(state.everAsked);
+  }
 }
 
 /**
@@ -127,6 +170,8 @@ export function clearAttentionRequest(tabRootTerminalId: string) {
 
 /** Test seam. */
 export function resetAttentionRequests() {
-  runtime().requestedAt.clear();
-  runtime().everAsked.clear();
+  const state = runtime();
+  state.requestedAt.clear();
+  state.everAsked.clear();
+  writeAnnouncers(state.everAsked);
 }
