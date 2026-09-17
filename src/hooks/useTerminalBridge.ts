@@ -527,6 +527,55 @@ function containsTerminalResponseQuery(data: string): boolean {
   return TERMINAL_RESPONSE_QUERY_PATTERN.test(data);
 }
 
+/**
+ * How long after a program asks that its answer is still its answer.
+ *
+ * Generous, because the round trip crosses a capture replay and an ssh hop,
+ * and narrow enough that a stale reply minutes later is still discarded.
+ */
+const SOLICITED_RESPONSE_GRACE_MS = 3_000;
+
+/** Panes whose program has just asked the terminal something. */
+const solicitedResponseUntil = new Map<string, number>();
+
+function noteTerminalResponseQuery(terminalId: string, now: number = Date.now()) {
+  solicitedResponseUntil.set(terminalId, now + SOLICITED_RESPONSE_GRACE_MS);
+}
+
+/**
+ * Whether a renderer answer is one the program asked for.
+ *
+ * Answers are stripped from tmux panes because our xterm is a passive
+ * renderer: replaying a capture makes it emit replies to questions nobody
+ * asked, and those would arrive at the foreground program as keystrokes.
+ *
+ * An answer to a question just asked is the opposite of that, and dropping it
+ * breaks the negotiation it belongs to. Codex asks the background colour with
+ * OSC 11, never hears back, assumes a light terminal, and draws its status
+ * line in `38;2;0;0;0` -- black on black. No TERM or NO_COLOR setting touches
+ * it, because the program is not guessing from the environment; it asked, and
+ * we ate the reply.
+ */
+export function isSolicitedTerminalResponse(
+  terminalId: string,
+  now: number = Date.now()
+): boolean {
+  const until = solicitedResponseUntil.get(terminalId);
+  if (until === undefined) {
+    return false;
+  }
+  if (now >= until) {
+    solicitedResponseUntil.delete(terminalId);
+    return false;
+  }
+  return true;
+}
+
+/** Test seam. */
+export function clearSolicitedResponsesForTests() {
+  solicitedResponseUntil.clear();
+}
+
 export function stripGeneratedTerminalResponseSequences(data: string): {
   data: string;
   strippedBytes: number;
@@ -906,6 +955,9 @@ function batchedWrite(
       ? buffer[buffer.length - 2].slice(-RESPONSE_QUERY_BOUNDARY_TAIL_CHARS)
       : "";
     if (containsTerminalResponseQuery(previousTail + data)) {
+      // The program is asking the terminal something, so its reply is expected
+      // rather than an artefact of replaying a capture.
+      noteTerminalResponseQuery(terminalId);
       flushBufferedWrite(terminalId);
       return true;
     }
@@ -1088,7 +1140,7 @@ export function handleTerminalInputData(
 
   const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
   let inputData = data;
-  if (backendKind === "tmux-pane") {
+  if (backendKind === "tmux-pane" && !isSolicitedTerminalResponse(terminalId)) {
     const sanitized = stripGeneratedTerminalResponseSequences(inputData);
     if (sanitized.strippedCount > 0) {
       debugLog("terminal.input", "suppress generated terminal response for tmux pane", {
