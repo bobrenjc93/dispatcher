@@ -460,6 +460,14 @@ export interface ReplicatedActions {
    */
   patchTerminalSettings: (terminalId: string, patch: TerminalSettingsPatch) => void;
   focusTerminal: (terminalId: string) => void;
+  /**
+   * Clear a terminal, scrollback and all.
+   *
+   * Relayed because the scrollback lives in tmux, not in the renderer: a
+   * replica clearing its own xterm would blank the phone and leave the pane's
+   * history untouched, so the next capture would put it straight back.
+   */
+  clearTerminal: (terminalId: string) => void;
   /** Edits a replica made to the workspace document, for the desktop to merge. */
   documentPatch: (patch: DocumentPatch) => void;
   /**
