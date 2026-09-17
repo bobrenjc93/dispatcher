@@ -72,6 +72,7 @@ describe("describeViewportChange", () => {
       changedChars: 0,
       changedTextRows: 0,
       changedTextChars: 0,
+      digitOnlyTextRows: 0,
       firstChangedRow: null,
       before: "",
       after: "",
@@ -136,5 +137,49 @@ describe("isDecorationOnlyChange", () => {
 
   it("is not a verdict on screens that match", () => {
     expect(isDecorationOnlyChange(describeViewportChange(["a"], ["a"]))).toBe(false);
+  });
+});
+
+describe("a counter ticking", () => {
+  const STYLE = "\u001b[0;38;5;246m";
+  const RESET = "\u001b[0m";
+
+  it("is decoration even when the number changes width", () => {
+    // Verbatim from the log of a tab that woke for this. The positional
+    // comparison scored it 41 changed text characters, because `2m 9s` is a
+    // character shorter than `1m 15s` and shifts the rest of the line -- so a
+    // clock ticking sailed past a twelve-character threshold.
+    const before = [`${STYLE}  \u23bf  Running\u2026 (1m 15s \u00b7 timeout 10m)${RESET}`];
+    const after = [`${STYLE}  \u23bf  Running\u2026 (2m 9s \u00b7 timeout 10m)${RESET}`];
+
+    const change = describeViewportChange(before, after);
+    expect(change.changedTextRows).toBe(1);
+    expect(change.digitOnlyTextRows).toBe(1);
+    expect(change.changedTextChars).toBeGreaterThan(12);
+    expect(isDecorationOnlyChange(change)).toBe(true);
+  });
+
+  it("still wakes when words change alongside the numbers", () => {
+    // The guard is "only the numbers moved". Anything else is news, however
+    // small, or a tab that finishes mid-countdown would never turn green.
+    const before = [`${STYLE}  Running\u2026 (1m 15s \u00b7 timeout 10m)${RESET}`];
+    const after = [
+      `${STYLE}  Wrote 3 files and updated the manifest (1m 16s)${RESET}`,
+    ];
+
+    const change = describeViewportChange(before, after);
+    expect(change.digitOnlyTextRows).toBe(0);
+    expect(isDecorationOnlyChange(change)).toBe(false);
+  });
+
+  it("does not excuse a screenful of numbers changing", () => {
+    // Bounded by the same row limit as any other decoration: a table of
+    // figures redrawing is a real update.
+    const before = Array.from({ length: 12 }, (_, i) => `row ${i} value ${i}`);
+    const after = Array.from({ length: 12 }, (_, i) => `row ${i} value ${i + 100}`);
+
+    const change = describeViewportChange(before, after);
+    expect(change.digitOnlyTextRows).toBe(12);
+    expect(isDecorationOnlyChange(change)).toBe(false);
   });
 });

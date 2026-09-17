@@ -62,6 +62,15 @@ export interface ViewportChangeDescription {
   /** The same two counts with styling removed, which is what a person reads. */
   changedTextRows: number;
   changedTextChars: number;
+  /**
+   * Changed rows whose text differs only in its numbers.
+   *
+   * A clock, a counter, a byte total. Counted apart because the comparison is
+   * positional: when the number changes width the rest of the line shifts, so
+   * "(1m 15s · timeout 10m)" becoming "(2m 9s · timeout 10m)" reads as
+   * forty-one changed characters rather than a tick.
+   */
+  digitOnlyTextRows: number;
   /** First row that differs, or null when the screens match. */
   firstChangedRow: number | null;
   before: string;
@@ -96,6 +105,7 @@ export function describeViewportChange(
   let changedChars = 0;
   let changedTextRows = 0;
   let changedTextChars = 0;
+  let digitOnlyTextRows = 0;
   let firstChangedRow: number | null = null;
   let before = "";
   let after = "";
@@ -114,6 +124,9 @@ export function describeViewportChange(
     if (previousText !== currentText) {
       changedTextRows += 1;
       changedTextChars += countDifferingChars(previousText, currentText);
+      if (maskDigits(previousText) === maskDigits(currentText)) {
+        digitOnlyTextRows += 1;
+      }
     }
 
     if (firstChangedRow === null) {
@@ -128,6 +141,7 @@ export function describeViewportChange(
     changedChars,
     changedTextRows,
     changedTextChars,
+    digitOnlyTextRows,
     firstChangedRow,
     before,
     after,
@@ -154,6 +168,11 @@ function countDifferingChars(previous: string, current: string): number {
  * becoming a green bullet beside a `sleep 240` that was still sleeping.
  * Nothing observed falls between the two.
  */
+/** Numbers stand in for each other, so a counter can be compared to itself. */
+function maskDigits(text: string): string {
+  return text.replace(/\d+/g, "#");
+}
+
 const DECORATION_MAX_TEXT_ROWS = 8;
 const DECORATION_MAX_TEXT_CHARS = 12;
 
@@ -169,6 +188,16 @@ const DECORATION_MAX_TEXT_CHARS = 12;
 export function isDecorationOnlyChange(change: ViewportChangeDescription): boolean {
   if (change.changedRows === 0) {
     return false;
+  }
+  // Every line that changed did so only in its numbers. Length is no guide
+  // here: a timer losing a digit shifts the rest of the line, so a tick counts
+  // as dozens of changed characters and passes for work.
+  if (
+    change.changedTextRows > 0
+    && change.digitOnlyTextRows === change.changedTextRows
+    && change.changedTextRows <= DECORATION_MAX_TEXT_ROWS
+  ) {
+    return true;
   }
   return (
     change.changedTextRows <= DECORATION_MAX_TEXT_ROWS
