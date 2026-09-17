@@ -53,6 +53,7 @@ import {
   reopenLastClosedTmuxTab,
   createTmuxWindowForTerminal,
   getActivePaneTerminalIdForWindowTerminal,
+  resolveBackgroundRefreshDelayMs,
   shouldPaintRacedVisibleRedraw,
   handleTmuxTerminalFocus,
   resizeTmuxPaneByTerminal,
@@ -4264,6 +4265,26 @@ describe("tmuxControl", () => {
     expect(getActiveStatusResizeSuppression([windowTerminalId])?.reason).toBe(
       "control-stream-recovered"
     );
+  });
+
+  it("stops a talkative pane deferring its own sample forever", () => {
+    // The debounce is reset by every chunk. That is right for a pane that
+    // pauses and starves the sample completely for one that does not: a pane
+    // emitting 28KB every five seconds managed eleven samples in a day. The
+    // sample is what decides whether the output meant anything, so until it
+    // runs the activity timestamp stands and the tab reads busy for as long as
+    // it keeps talking.
+    const requestedDelayMs = 350;
+
+    // Fresh request: the full debounce, as before.
+    expect(resolveBackgroundRefreshDelayMs({ requestedDelayMs, waitedMs: 0 })).toBe(350);
+    // Still inside the ceiling: still the full debounce.
+    expect(resolveBackgroundRefreshDelayMs({ requestedDelayMs, waitedMs: 3_000 })).toBe(350);
+    // Near it: only the remainder, so the ceiling is not overshot.
+    expect(resolveBackgroundRefreshDelayMs({ requestedDelayMs, waitedMs: 4_800 })).toBe(200);
+    // Past it: now, whatever else arrives.
+    expect(resolveBackgroundRefreshDelayMs({ requestedDelayMs, waitedMs: 5_000 })).toBe(0);
+    expect(resolveBackgroundRefreshDelayMs({ requestedDelayMs, waitedMs: 60_000 })).toBe(0);
   });
 
   it("kills a closed window once its grace period runs out", async () => {
