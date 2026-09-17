@@ -195,3 +195,30 @@ export function shouldTrustQuiet(args: {
 }): boolean {
   return !args.announces || args.hasPendingRequest;
 }
+
+/**
+ * How much later than a marker a change can be and still be part of it.
+ *
+ * The marker travels inside the same burst of output that draws the prompt, so
+ * the change it belongs to lands a beat after it rather than before.
+ */
+export const ATTENTION_SETTLE_TOLERANCE_MS = 2_000;
+
+/**
+ * Whether the program carried on after asking.
+ *
+ * A marker means "I paused", and a pause is not an ending: one pane announced
+ * itself and resumed ninety-five seconds later, then worked for the next five
+ * minutes. Left pending, that marker would pair with whatever quiet stretch
+ * came next and call it a finish.
+ */
+export function hasCarriedOnSince(args: {
+  askedAt: number;
+  lastChangedAt: number;
+  toleranceMs?: number;
+}): boolean {
+  return (
+    args.lastChangedAt
+    > args.askedAt + (args.toleranceMs ?? ATTENTION_SETTLE_TOLERANCE_MS)
+  );
+}

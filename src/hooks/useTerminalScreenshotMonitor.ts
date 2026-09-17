@@ -22,6 +22,7 @@ import { debugLog, previewDebugText } from "../lib/debugLog";
 import {
   announcesAttention,
   clearAttentionRequest,
+  hasCarriedOnSince,
   peekAttentionRequest,
   shouldTrustQuiet,
 } from "../lib/attentionMarker";
@@ -574,8 +575,18 @@ export function useTerminalScreenshotMonitor() {
       // exactly like finishing, which is how a tab still working came to be
       // announced as idle six times in one afternoon. A marker needs no
       // waiting period -- it is already the answer the timer was guessing at.
-      const askedAt = peekAttentionRequest(args.tabRootTerminalId, notifiedChangedAt);
+      let askedAt = peekAttentionRequest(args.tabRootTerminalId, notifiedChangedAt);
       const announces = announcesAttention(args.tabRootTerminalId);
+      // Asked, then carried on. The pause it announced has ended, so the
+      // request is spent -- keeping it would pair a stale marker with whatever
+      // quiet stretch came next and call that a finish.
+      if (
+        askedAt !== null
+        && hasCarriedOnSince({ askedAt, lastChangedAt: args.effectiveChangedAt })
+      ) {
+        clearAttentionRequest(args.tabRootTerminalId);
+        askedAt = null;
+      }
       if (announces || askedAt !== null) {
         // Only for tabs that have ever asked, so this is rare rather than a
         // line per tab per tick.
