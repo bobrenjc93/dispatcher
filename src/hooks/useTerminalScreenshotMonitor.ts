@@ -23,6 +23,7 @@ import {
   announcesAttention,
   clearAttentionRequest,
   peekAttentionRequest,
+  shouldTrustQuiet,
 } from "../lib/attentionMarker";
 import {
   notifyTerminalInaction,
@@ -593,19 +594,27 @@ export function useTerminalScreenshotMonitor() {
       if (askedAt === null && announces) {
         return;
       }
+      // Neither signal is enough on its own. Silence alone calls a thinking
+      // agent finished. The marker alone is just as wrong in the other
+      // direction: it means "I paused", not "I am done" -- every one of seven
+      // markers in half an hour was followed by the program carrying on within
+      // one to forty-nine seconds, and each produced a push.
+      //
+      // Together they are precise: it said it wanted you, and then it actually
+      // stopped. A tab that has never announced has only the quiet to go on,
+      // exactly as before.
+      const askedAndSettled = shouldTrustQuiet({
+        announces,
+        hasPendingRequest: askedAt !== null,
+      });
       const shouldChime =
         args.enabled
-        && (
-          askedAt !== null
-            ? !isAppFocused()
-            : shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAtDesktop: true })
-        );
+        && askedAndSettled
+        && shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAtDesktop: true });
       const shouldPush =
         args.pushEnabled
-        && (
-          askedAt !== null
-          || shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAtDesktop: false })
-        );
+        && askedAndSettled
+        && shouldNotifyOnInaction({ ...inactionArgs, suppressWhenAtDesktop: false });
 
       if (!shouldChime && !shouldPush) {
         return;

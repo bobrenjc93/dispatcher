@@ -175,3 +175,23 @@ export function resetAttentionRequests() {
   state.everAsked.clear();
   writeAnnouncers(state.everAsked);
 }
+
+/**
+ * Whether a quiet stretch is worth believing.
+ *
+ * Neither signal stands alone. Silence calls a thinking agent finished, which
+ * is how one tab pushed five times in eight minutes while working throughout.
+ * A marker on its own is wrong the other way: it means "I paused", and seven
+ * of them in half an hour were each followed by the program carrying on within
+ * one to forty-nine seconds.
+ *
+ * Together they are precise -- it said it wanted you, and then it stopped. A
+ * program that never announces has only the quiet, which is all there has ever
+ * been for a shell.
+ */
+export function shouldTrustQuiet(args: {
+  announces: boolean;
+  hasPendingRequest: boolean;
+}): boolean {
+  return !args.announces || args.hasPendingRequest;
+}
