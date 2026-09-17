@@ -173,6 +173,8 @@ vi.mock("../../lib/replication", async (importOriginal) => {
 
 import {
   captureTerminalScreenshot,
+  clearSolicitedResponsesForTests,
+  isSolicitedTerminalResponse,
   pasteTextIntoTerminalById,
   disposeTerminalInstance,
   ensureTerminalScreenshotTarget,
@@ -268,6 +270,36 @@ describe("useTerminalBridge synthetic input", () => {
     // as a second, hand-wrapped copy.
     expect(performActionMock).not.toHaveBeenCalled();
     disposeTerminalInstance("term-mounted-paste");
+  });
+
+  it("keeps an answer the pane's program actually asked for", async () => {
+    // Codex asks the background colour with OSC 11. Stripping the reply --
+    // correct for a capture replay making our passive renderer answer
+    // questions nobody asked -- left it assuming a light terminal and drawing
+    // its status line in 38;2;0;0;0: black on black. No TERM or NO_COLOR
+    // setting touches that, because it asked rather than guessed.
+    const terminalId = "tmux-solicited-response";
+    useTerminalStore.getState().addSession(terminalId, "A");
+    useTerminalStore.getState().patchSession(terminalId, {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+    useTerminalStore.setState({ activeTerminalId: terminalId });
+    ensureTerminalScreenshotTarget(terminalId);
+    const reply = "\u001b]11;rgb:0a0a/0a0a/0a0a\u001b\\";
+
+    // Unsolicited: still dropped, which is what keeps a replay quiet.
+    expect(isSolicitedTerminalResponse(terminalId)).toBe(false);
+    expect(stripGeneratedTerminalResponseSequences(reply).data).toBe("");
+
+    // The program asks, and now the reply is its reply.
+    queueTerminalOutput(terminalId, "\u001b]11;?\u001b\\", { allowParkedWrite: true });
+    expect(isSolicitedTerminalResponse(terminalId)).toBe(true);
+
+    clearSolicitedResponsesForTests();
+    disposeTerminalInstance(terminalId);
   });
 
   it("routes existing PTY channel output through the current tmux router", async () => {
