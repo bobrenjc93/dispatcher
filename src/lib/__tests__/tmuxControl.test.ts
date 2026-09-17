@@ -4232,6 +4232,40 @@ describe("tmuxControl", () => {
     expect(shouldPaintRacedVisibleRedraw(40)).toBe(true);
   });
 
+  it("does not let a recovered control stream read as activity", async () => {
+    // A stall lasting a single second turned every tab on one server green at
+    // once -- five of them, none of which had produced any output. Coming back
+    // repaints every pane from a fresh capture, and the status sampler cannot
+    // tell a repaint from news.
+    const transportTerminalId = "transport-stall-recovery";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId, windowTerminalId } = getHydratedTmuxIds();
+
+    // The far end stops speaking control mode: a shell answering one of our
+    // own commands is the unambiguous form of that.
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      "zsh: command not found: refresh-client\n"
+    );
+    await Promise.resolve();
+    // The stall is what puts the notice in the pane, so this is also the check
+    // that the setup did what it meant to.
+    expect(queueTerminalOutputMock).toHaveBeenCalled();
+    clearStatusResizeSuppressionsForTests();
+
+    // And then speaks it again.
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 back\n");
+    await Promise.resolve();
+
+    expect(getActiveStatusResizeSuppression([paneTerminalId])?.reason).toBe(
+      "control-stream-recovered"
+    );
+    expect(getActiveStatusResizeSuppression([windowTerminalId])?.reason).toBe(
+      "control-stream-recovered"
+    );
+  });
+
   it("kills a closed window once its grace period runs out", async () => {
     const transportTerminalId = "transport-closed-tab-reap";
     seedTransportTerminal(transportTerminalId);

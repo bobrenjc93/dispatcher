@@ -3272,8 +3272,22 @@ function noteControlStreamAlive(session: TmuxControlSession) {
     sessionId: session.id,
     transportTerminalId: session.transportTerminalId,
     stalledForMs: Date.now() - session.controlStreamStalledSince,
+    panes: session.panes.size,
   });
   session.controlStreamStalledSince = null;
+
+  // Coming back means every pane in the session is repainted from a fresh
+  // capture, and a repaint is a visual change whether or not anything in the
+  // pane changed. The status sampler cannot tell the two apart, so a stall
+  // lasting a single second turned every tab on the server green at once --
+  // five of them, in the same second, none of which had produced any output.
+  //
+  // The same suppression a resize uses, for the same reason: this is a repaint
+  // Dispatcher caused, not news from the program.
+  markStatusResizeSuppression(
+    getTmuxSessionStatusTerminalIds(session),
+    "control-stream-recovered"
+  );
 }
 
 async function sendCommand(
