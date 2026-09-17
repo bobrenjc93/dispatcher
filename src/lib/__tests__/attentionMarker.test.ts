@@ -7,6 +7,7 @@ import {
   noteAttentionRequested,
   peekAttentionRequest,
   resetAttentionRequests,
+  shouldTrustQuiet,
 } from "../attentionMarker";
 
 const ESC = "\u001b";
@@ -117,5 +118,24 @@ describe("the registry two modules share", () => {
 
     expect(announcesAttention("tab")).toBe(true);
     expect(announcesAttention("never-asked")).toBe(false);
+  });
+});
+
+describe("shouldTrustQuiet", () => {
+  it("believes a shell going quiet, because that is all a shell has", () => {
+    expect(shouldTrustQuiet({ announces: false, hasPendingRequest: false })).toBe(true);
+  });
+
+  it("does not believe an announcer's quiet on its own", () => {
+    // Pausing to think reads exactly like finishing. Five pushes in eight
+    // minutes for a tab that was working the whole time.
+    expect(shouldTrustQuiet({ announces: true, hasPendingRequest: false })).toBe(false);
+  });
+
+  it("believes it once the program has also said so", () => {
+    // Both halves: it asked, and then it actually stopped. The marker alone is
+    // not enough either -- seven in half an hour, each followed by the program
+    // carrying on within a minute.
+    expect(shouldTrustQuiet({ announces: true, hasPendingRequest: true })).toBe(true);
   });
 });
