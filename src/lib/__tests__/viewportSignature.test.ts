@@ -155,7 +155,11 @@ describe("a counter ticking", () => {
     const change = describeViewportChange(before, after);
     expect(change.changedTextRows).toBe(1);
     expect(change.digitOnlyTextRows).toBe(1);
-    expect(change.changedTextChars).toBeGreaterThan(12);
+    // Measured as a region, this is the five characters that actually moved.
+    // Counted column against column it was forty-one, because the shorter
+    // number slid the rest of the line along -- which is what made a clock
+    // tick look like work.
+    expect(change.changedTextChars).toBeLessThanOrEqual(6);
     expect(isDecorationOnlyChange(change)).toBe(true);
   });
 
@@ -181,5 +185,29 @@ describe("a counter ticking", () => {
     const change = describeViewportChange(before, after);
     expect(change.digitOnlyTextRows).toBe(12);
     expect(isDecorationOnlyChange(change)).toBe(false);
+  });
+});
+
+describe("counting a changed region rather than changed columns", () => {
+  it("does not let one inserted character rewrite the line", () => {
+    const change = describeViewportChange(["alpha bravo charlie"], ["alpha Xbravo charlie"]);
+    expect(change.changedTextChars).toBe(1);
+  });
+
+  it("still counts a genuine rewrite in full", () => {
+    const change = describeViewportChange(["alpha bravo charlie"], ["nothing like it now"]);
+    expect(change.changedTextChars).toBeGreaterThan(12);
+  });
+
+  it("spans separate edits rather than undercounting them", () => {
+    // Two edits are reported as one run from the first to the last. That
+    // overstates the change, and overstating means calling it work -- the
+    // side to be wrong on.
+    const change = describeViewportChange(["a1234567890b"], ["x1234567890y"]);
+    expect(change.changedTextChars).toBe(12);
+  });
+
+  it("says nothing changed for an identical line", () => {
+    expect(describeViewportChange(["same"], ["same"]).changedTextChars).toBe(0);
   });
 });
