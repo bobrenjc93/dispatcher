@@ -199,12 +199,23 @@ describe("counting a changed region rather than changed columns", () => {
     expect(change.changedTextChars).toBeGreaterThan(12);
   });
 
-  it("spans separate edits rather than undercounting them", () => {
-    // Two edits are reported as one run from the first to the last. That
-    // overstates the change, and overstating means calling it work -- the
-    // side to be wrong on.
+  it("counts separate edits as themselves, not the gap between them", () => {
+    // Reported as one span from the first edit to the last, this was twelve --
+    // over the threshold, so a clock ticking at one end of a status line and a
+    // counter at the other woke the tab. Trimming removes the shift; counting
+    // inside what is left keeps the precision.
     const change = describeViewportChange(["a1234567890b"], ["x1234567890y"]);
-    expect(change.changedTextChars).toBe(12);
+    expect(change.changedTextChars).toBe(2);
+  });
+
+  it("keeps a real timer line under the decoration threshold", () => {
+    // Verbatim shape from a tab that woke for this.
+    const change = describeViewportChange(
+      ["  \u23bf  Running\u2026 (3m 24s \u00b7 timeout 5m 30s)"],
+      ["  \u23bf  Running\u2026 (3m 25s \u00b7 timeout 5m 30s)"]
+    );
+    expect(change.changedTextChars).toBeLessThanOrEqual(3);
+    expect(isDecorationOnlyChange(change)).toBe(true);
   });
 
   it("says nothing changed for an identical line", () => {

@@ -182,10 +182,21 @@ function countDifferingChars(previous: string, current: string): number {
     suffix += 1;
   }
 
-  return Math.max(
-    previous.length - prefix - suffix,
-    current.length - prefix - suffix
-  );
+  // Trimming the ends removes the shift. Counting positionally inside what is
+  // left restores the precision that trimming alone threw away: two digits
+  // changing at opposite ends of a status line are two characters, not the
+  // whole span between them. Measured as a span they came to seventeen and
+  // twenty-five, over the threshold, and woke tabs for a ticking clock.
+  const previousRegion = previous.slice(prefix, previous.length - suffix);
+  const currentRegion = current.slice(prefix, current.length - suffix);
+  const width = Math.max(previousRegion.length, currentRegion.length);
+  let differing = 0;
+  for (let index = 0; index < width; index += 1) {
+    if (previousRegion[index] !== currentRegion[index]) {
+      differing += 1;
+    }
+  }
+  return differing;
 }
 
 /**
