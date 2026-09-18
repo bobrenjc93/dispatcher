@@ -865,7 +865,17 @@ function batchedWrite(
   data: string,
   options?: QueuedTerminalOutputOptions
 ): boolean {
-  if (!options?.allowParkedWrite) {
+  // A question the program asks the terminal has to reach the terminal, even
+  // for a pane nothing is looking at. Parking is about not painting output
+  // nobody can see; a query is not output, it is half of a conversation, and
+  // dropping it leaves the program waiting for an answer that never comes.
+  //
+  // Codex asks the background colour once, at startup. Started in a
+  // background tab, the question was parked, xterm never answered, and Codex
+  // fell back to assuming a light terminal -- so it drew its status line in
+  // 38;2;0;0;0, black on black, for the life of the process.
+  const carriesTerminalQuery = data.includes("\u001b") && containsTerminalResponseQuery(data);
+  if (!options?.allowParkedWrite && !carriesTerminalQuery) {
     const skippedTmuxWriteReason = getSkippedTmuxWriteReason(
       terminalId,
       instances.get(terminalId)

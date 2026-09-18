@@ -302,6 +302,36 @@ describe("useTerminalBridge synthetic input", () => {
     disposeTerminalInstance(terminalId);
   });
 
+  it("lets a background pane's question reach the terminal", async () => {
+    // Parking is about not painting output nobody can see. A query is not
+    // output -- it is half a conversation, and dropping it leaves the program
+    // waiting for an answer that never comes. Codex asks the background colour
+    // once at startup; started in a background tab the question was parked,
+    // xterm never answered, and it drew its status line black on black for the
+    // life of the process.
+    const terminalId = "tmux-parked-query";
+    useTerminalStore.getState().addSession(terminalId, "A");
+    useTerminalStore.getState().patchSession(terminalId, {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+    ensureTerminalScreenshotTarget(terminalId);
+    const written = createdTerminals[createdTerminals.length - 1].write;
+    written.mockClear();
+
+    // Ordinary output for a parked pane is still dropped.
+    expect(queueTerminalOutput(terminalId, "just some output\r\n")).toBe(false);
+
+    // The question is not.
+    expect(queueTerminalOutput(terminalId, "\u001b]11;?\u001b\\")).toBe(true);
+    expect(isSolicitedTerminalResponse(terminalId)).toBe(true);
+
+    clearSolicitedResponsesForTests();
+    disposeTerminalInstance(terminalId);
+  });
+
   it("routes existing PTY channel output through the current tmux router", async () => {
     ensureTerminalScreenshotTarget("term-query-test");
     expect(createdChannels).toHaveLength(1);
