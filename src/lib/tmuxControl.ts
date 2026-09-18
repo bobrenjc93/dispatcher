@@ -4,6 +4,7 @@ import type { TerminalSession } from "../types/terminal";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useProjectStore } from "../stores/useProjectStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
+import { useColorSchemeStore } from "../stores/useColorSchemeStore";
 import { buildLayoutFromTmuxPanes, type TmuxPaneLayoutRecord } from "./tmuxLayout";
 import {
   TMUX_CONTROL_END,
@@ -59,6 +60,11 @@ import {
 } from "./viewportSignature";
 import { recordSessionEvent } from "./sessionRecorder";
 import { debugLog, debugLogError, previewDebugText } from "./debugLog";
+import {
+  buildBackgroundColorReply,
+  hasBackgroundColorQuery,
+  stripBackgroundColorQuery,
+} from "./backgroundColorQuery";
 import {
   findAttentionMarkers,
   hasAttentionMarker,
@@ -5209,9 +5215,33 @@ function handleNotification(session: TmuxControlSession, line: string) {
       });
     }
 
-    const output = unescapeTmuxOutput(parsed.value);
+    let output = unescapeTmuxOutput(parsed.value);
     ensurePaneHistoryCaptureState(pane);
     const now = Date.now();
+
+    // Answered here rather than by the renderer. Letting xterm reply means the
+    // question crosses ssh, is parsed and painted, comes back out through
+    // onData and returns as a tmux command -- two hops and a paint, behind
+    // whatever the control stream already has queued. Codex waits a moment,
+    // gives up, assumes a light terminal and draws its status line in black.
+    // Dispatcher chose the colour, so it can just say.
+    if (hasBackgroundColorQuery(output)) {
+      const reply = buildBackgroundColorReply(
+        useColorSchemeStore.getState().getActiveScheme().terminal.background ?? "#000000"
+      );
+      // Taken out of the stream either way: left in, the renderer answers it
+      // too and the program reads the second reply as keystrokes.
+      output = stripBackgroundColorQuery(output);
+      debugLog("tmux.notify", "answered a background colour query", {
+        sessionId: session.id,
+        paneId: pane.paneId,
+        terminalId: pane.terminalId,
+        reply: reply === null ? null : previewDebugText(reply, 40),
+      });
+      if (reply !== null) {
+        void sendInputToTmuxTerminal(pane.terminalId, reply).catch(() => {});
+      }
+    }
 
     // A program asking for attention outright, rather than Dispatcher
     // inferring it from silence. Recorded even for a parked pane: the whole
