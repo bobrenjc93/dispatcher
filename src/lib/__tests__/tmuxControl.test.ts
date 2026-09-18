@@ -4287,6 +4287,28 @@ describe("tmuxControl", () => {
     expect(resolveBackgroundRefreshDelayMs({ requestedDelayMs, waitedMs: 60_000 })).toBe(0);
   });
 
+  it("refuses a window size taken from a pane mid-layout", async () => {
+    // A ResizeObserver measured a pane at 42 pixels while the layout settled,
+    // which is five columns. Two of the three paths into the resize did not
+    // check, so that went to tmux as a real size: it reflowed the pane to five
+    // columns and back forty times, and the tab's spinner sat frozen while it
+    // churned. The check belongs where it cannot be skipped.
+    const transportTerminalId = "transport-unusable-resize";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+
+    // 42px across a 7.8px cell: what the observer actually reported.
+    getTerminalViewportSizeMock.mockReturnValue({ width: 42.5625, height: 1018 });
+    syncTmuxWindowSizeFromPaneTerminal(paneTerminalId);
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(getWrittenTmuxCommands().some((command) => command.includes("refresh-client"))).toBe(
+      false
+    );
+  });
+
   it("kills a closed window once its grace period runs out", async () => {
     const transportTerminalId = "transport-closed-tab-reap";
     seedTransportTerminal(transportTerminalId);
