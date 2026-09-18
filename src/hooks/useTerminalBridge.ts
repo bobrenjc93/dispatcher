@@ -274,6 +274,8 @@ const TERMINAL_RESPONSE_QUERY_PATTERN =
 // until the renderer stopped answering its own heartbeat.
 const TERMINAL_RESPONSE_SEQUENCE_PATTERN =
   /\x1b(?:\](?:(?:1[0-2])|4;\d+);[^\x07\x1b]*(?:\x07|\x1b\\)|\[\??\d+;\d+R|\[\?\d+(?:;\d+)*c|\[>\d+(?:;\d+)*c)/g;
+/** Floor for foreground-against-background contrast; see the Terminal options. */
+const TERMINAL_MINIMUM_CONTRAST_RATIO = 3;
 const HIDDEN_WRITE_FALLBACK_MS = 50;
 /**
  * Ceiling on output waiting to be written into one terminal. Reached only when
@@ -1430,6 +1432,15 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
     lineHeight: fontState.lineHeight,
     letterSpacing: fontState.letterSpacing,
     theme: useColorSchemeStore.getState().getActiveScheme().terminal,
+    // Dim text has to stay readable. A TUI marks its secondary lines with SGR
+    // 2 and no colour of its own -- Codex draws its "Working" status that way
+    // -- and dimming the default foreground against a near-black background
+    // takes it to near-black too, which is a status line you cannot see.
+    //
+    // Deliberately well under AA: this is a floor for the unreadable, not a
+    // push toward high contrast. Anything already legible is left as the
+    // theme drew it.
+    minimumContrastRatio: TERMINAL_MINIMUM_CONTRAST_RATIO,
     macOptionIsMeta: true,
     macOptionClickForcesSelection: true,
     scrollback: DEFAULT_SCROLLBACK,
