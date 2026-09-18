@@ -148,15 +148,44 @@ export function describeViewportChange(
   };
 }
 
+/**
+ * How much of a line changed, measured as a region rather than by column.
+ *
+ * Comparing column against column makes any shift look like a rewrite. A timer
+ * going from `(1m 15s · timeout 10m)` to `(2m 9s · timeout 10m)` is one digit
+ * narrower, so everything after it slides left and forty-one characters read
+ * as different -- enough to pass for work three separate times, each patched
+ * with another rule.
+ *
+ * Trimming the shared prefix and suffix costs one pass and answers the
+ * question actually being asked: how much of this line is new. Several
+ * separate edits are counted as one span from the first to the last, which
+ * overstates them -- and overstating means treating it as real work, which is
+ * the side to be wrong on.
+ */
 function countDifferingChars(previous: string, current: string): number {
-  const width = Math.max(previous.length, current.length);
-  let differing = 0;
-  for (let index = 0; index < width; index += 1) {
-    if (previous[index] !== current[index]) {
-      differing += 1;
-    }
+  if (previous === current) {
+    return 0;
   }
-  return differing;
+
+  const shortest = Math.min(previous.length, current.length);
+  let prefix = 0;
+  while (prefix < shortest && previous[prefix] === current[prefix]) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < shortest - prefix
+    && previous[previous.length - 1 - suffix] === current[current.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  return Math.max(
+    previous.length - prefix - suffix,
+    current.length - prefix - suffix
+  );
 }
 
 /**
