@@ -6458,6 +6458,21 @@ function applyTmuxWindowSize(
     return false;
   }
 
+  // Checked here rather than at the call sites. One of the three checked it
+  // and two did not, so a ResizeObserver that measured a pane mid-layout --
+  // 42 pixels wide, five columns -- went straight to tmux as a real size.
+  // tmux reflowed the pane to five columns and back forty times, which is
+  // what left one tab's spinner frozen while it churned.
+  if (!isUsableTmuxWindowSize(nextCols, nextRows)) {
+    debugLog("tmux.size", "ignoring an unusable window measurement", {
+      sessionId: session.id,
+      windowId: windowState.windowId,
+      ...details,
+      size: `${nextCols}x${nextRows}`,
+    });
+    return false;
+  }
+
   const nextSize = `${nextCols}x${nextRows}`;
   ensureTmuxClientSizeState(session);
   const cachedWindowSize = session.windowSizes.get(windowState.windowId) ?? null;
