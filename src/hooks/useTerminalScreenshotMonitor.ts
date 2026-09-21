@@ -773,6 +773,12 @@ export function useTerminalScreenshotMonitor() {
         now: args.now,
         effectiveChangedAt,
         acknowledgedTime,
+        // The clock the decoration rollback does not touch, so a tab whose
+        // only output is a spinner reads as running rather than finished.
+        lastLivenessAt: latestSessions.reduce(
+          (latest, session) => Math.max(latest, session.lastLivenessAt ?? 0),
+          0
+        ),
         wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
         wasPossiblyDone: latestSessions.some((session) => session.isPossiblyDone),
         wasLongInactive: latestSessions.some((session) => session.isLongInactive),

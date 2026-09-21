@@ -126,6 +126,9 @@ export const useTerminalStore = create<TerminalStore>()(
                 ...session,
                 hasDetectedActivity: true,
                 lastOutputAt: Date.now(),
+                // Never rolled back: this is "it is still running", which a
+                // repaint proves just as well as real output does.
+                lastLivenessAt: Date.now(),
                 isLongInactive: false,
               },
             },

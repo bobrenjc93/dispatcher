@@ -12,6 +12,16 @@ export interface TerminalSession {
   hasDetectedActivity: boolean;
   lastUserInputAt: number;
   lastOutputAt: number;
+  /**
+   * Last time this terminal produced anything at all, decoration included.
+   *
+   * `lastOutputAt` is rolled back when a capture shows the bytes only
+   * repainted the frame, which is what stops a spinner turning a tab green.
+   * That rollback also made the tab look idle, so a working agent aged into
+   * "possibly done". Being alive and having something new to show are
+   * different claims and need different clocks.
+   */
+  lastLivenessAt?: number;
   isNeedsAttention: boolean;
   isPossiblyDone: boolean;
   isLongInactive: boolean;

@@ -12,6 +12,14 @@ export interface TerminalScreenshotStatusInput {
   effectiveChangedAt: number;
   /** Last time the user focused this tab after the current output generation existed. */
   acknowledgedTime: number;
+  /**
+   * Last time the tab produced anything at all, decoration included.
+   *
+   * Distinct from `effectiveChangedAt`, which only counts progress worth
+   * looking at. A spinner is not progress, but it is proof the thing is still
+   * running -- and a tab that is still running has not "possibly finished".
+   */
+  lastLivenessAt?: number;
   wasNeedsAttention: boolean;
   wasPossiblyDone: boolean;
   wasLongInactive: boolean;
@@ -69,7 +77,13 @@ export function resolveTerminalScreenshotStatus(
   const isStable = input.hasDetectedActivity && !changedForStatus;
   const idleStartedAt = input.effectiveChangedAt;
   const staleStartedAt = input.effectiveChangedAt + input.inactivityMs;
-  const hasReachedStaleThreshold = isStable && input.now >= staleStartedAt;
+  // Still making noise, even if none of it is worth reading. Going stale here
+  // is what turned a working agent brown: its output was all decoration, the
+  // progress clock stopped, and "no progress for a while" was read as "done".
+  const aliveRecently =
+    (input.lastLivenessAt ?? 0) > 0
+    && input.now < (input.lastLivenessAt ?? 0) + input.inactivityMs;
+  const hasReachedStaleThreshold = isStable && input.now >= staleStartedAt && !aliveRecently;
   const hasAcknowledgedCurrentOutput =
     input.hasDetectedActivity &&
     (input.isActiveTab || input.acknowledgedTime >= input.effectiveChangedAt);
