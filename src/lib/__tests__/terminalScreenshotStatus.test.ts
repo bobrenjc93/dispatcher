@@ -206,3 +206,52 @@ describe("terminalScreenshotStatus", () => {
     });
   });
 });
+
+describe("a tab that is running but has nothing new to show", () => {
+  it("is not possibly done while its spinner is still turning", () => {
+    // Its output is all decoration, so the progress clock is rolled back and
+    // never advances -- which used to age a working agent into brown. A
+    // spinner is not progress, but it is proof the thing is still running.
+    const state = status({
+      effectiveChangedAt: 0,
+      acknowledgedTime: 5_000,
+      now: 20_000,
+      lastLivenessAt: 19_000,
+    });
+    expect(state.isPossiblyDone).toBe(false);
+    expect(state.isNeedsAttention).toBe(false);
+  });
+
+  it("goes quiet once the noise actually stops", () => {
+    // Same tab, but nothing has been emitted for longer than the window.
+    // Brown now means what it says.
+    const state = status({
+      effectiveChangedAt: 0,
+      acknowledgedTime: 5_000,
+      now: 20_000,
+      lastLivenessAt: 2_000,
+    });
+    expect(state.isPossiblyDone).toBe(true);
+  });
+
+  it("does not let liveness alone demand attention", () => {
+    // Unacknowledged and still making noise: the tab is working, so there is
+    // nothing to call anybody back to. Liveness withholds staleness; it never
+    // manufactures it.
+    const state = status({
+      effectiveChangedAt: 0,
+      acknowledgedTime: 0,
+      now: 20_000,
+      lastLivenessAt: 19_000,
+    });
+    expect(state.isNeedsAttention).toBe(false);
+    expect(state.isPossiblyDone).toBe(false);
+  });
+
+  it("behaves as before when nothing reports liveness", () => {
+    // Absent the new signal the old reading stands, so terminals that never
+    // set it are unaffected.
+    const state = status({ effectiveChangedAt: 0, acknowledgedTime: 5_000, now: 20_000 });
+    expect(state.isPossiblyDone).toBe(true);
+  });
+});
