@@ -4120,20 +4120,25 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
 }
 
 /**
- * Decide whether output nobody saw was worth waking the tab for.
+ * Decide whether output was worth waking the tab for.
  *
- * A hidden pane's status runs on timestamps, because nothing is rendering it
- * and there is no screen to compare. This is the one place that does have a
- * screen: the capture taken right after the output. If it matches the last
+ * A tab's status runs on timestamps, which every byte advances whether or not
+ * anything visible changed. This is the one place with a screen to check
+ * against: the capture taken right after the output. If it matches the last
  * one, those bytes repainted the frame and changed nothing, and the tab goes
  * back to where it was.
+ *
+ * Run for every capture, not only a background one. Whether a capture was
+ * scheduled in the background says nothing about whether anybody is looking
+ * at the tab -- a pane can be the active one in its window while its tab sits
+ * quietly behind another.
  *
  * Only ever puts a tab back — it never withholds a wake. Every uncertain case,
  * from a missing baseline to a capture that never arrives, leaves the tab
  * green: a tab left green costs a glance, and a tab wrongly cleared costs the
  * one you were waiting on.
  */
-function settleBackgroundOutputActivity(
+function settleOutputActivity(
   pane: TmuxPaneState,
   signature: string,
   previousSignature: string | null,
@@ -4359,19 +4364,20 @@ async function redrawVisiblePaneContent(
   const signature = hashViewportLines(lines);
   const previousSignature = currentPane.viewportSignature;
   const previousLines = currentPane.viewportLines;
-  let adoptBaseline = true;
-  if (options?.backgroundRefresh) {
-    adoptBaseline = settleBackgroundOutputActivity(
-      currentPane,
-      signature,
-      previousSignature,
-      previousLines,
-      lines
-    ) === "adopt";
-  } else {
-    // Whatever is on screen has been seen; there is nothing to second-guess.
-    currentPane.outputActivityRevertPoint = null;
-  }
+  // Judged the same way whichever capture asked for it. This used to skip the
+  // comparison for a visible redraw, reasoning that what is on screen has been
+  // seen -- true of the chime, false of the tab's dot, and the two are decided
+  // from the same timestamp. "Visible" here means the active pane of its
+  // window, which a tab sitting quietly in the background still has: those
+  // panes took this branch, had their verdict thrown away, and went green for
+  // a spinner. One woke five times in a day with the filter running once.
+  const adoptBaseline = settleOutputActivity(
+    currentPane,
+    signature,
+    previousSignature,
+    previousLines,
+    lines
+  ) === "adopt";
   if (adoptBaseline) {
     currentPane.viewportSignature = signature;
     currentPane.viewportLines = lines;
@@ -5265,15 +5271,22 @@ function handleNotification(session: TmuxControlSession, line: string) {
     const paneWasVisible = isPaneVisibleInActiveWindow(session, pane);
     updatePaneAlternateScreenFromOutput(session, pane, output);
     markPaneOutputMissedByHistoryCapture(session, pane, parsed.value.length);
-    if (!paneWasVisible && pane.initialContentCaptured) {
-      // Nothing is rendering this pane, so "bytes arrived" is all the status
-      // has to go on — and a TUI repainting its frame on a timer looks exactly
-      // like the agent going back to work. Note where the clock stood; the
-      // capture this schedules is what decides whether to put it back.
+    if (pane.initialContentCaptured) {
+      // "Bytes arrived" is all a tab's status has to go on, and a TUI
+      // repainting its frame on a timer looks exactly like the agent going
+      // back to work. Note where the clock stood; the capture that follows is
+      // what decides whether to put it back.
+      //
+      // Noted for a visible pane too. Visible means the active pane of its
+      // window, which a tab quietly behind another still has -- and those are
+      // the tabs a green dot is for. Skipping them left the capture with
+      // nothing to restore, so they went green for a spinner.
       if (pane.outputActivityRevertPoint === null) {
         pane.outputActivityRevertPoint = getTerminalSession(pane.terminalId)?.lastOutputAt ?? null;
       }
-      scheduleBackgroundPaneViewportRefresh(session, pane, "hidden-output");
+      if (!paneWasVisible) {
+        scheduleBackgroundPaneViewportRefresh(session, pane, "hidden-output");
+      }
     }
     let queued: boolean;
     const suppressLiveOutput = paneWasVisible && shouldSuppressPaneOutputDuringLayoutRedraw(pane, now);
