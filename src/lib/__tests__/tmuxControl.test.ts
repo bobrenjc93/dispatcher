@@ -4267,6 +4267,39 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("does not let its own stall notice read as activity either", async () => {
+    // The other end of the same stall. Going away writes a notice into every
+    // pane on the server, and that write counted as output: one hiccup marked
+    // nine tabs as having just produced something in the same second, and
+    // twenty seconds later eight of them claimed attention together. None had
+    // run anything -- the only thing that had happened was Dispatcher saying
+    // the connection was gone.
+    //
+    // Worse than the repaint on the way back, which a capture can at least
+    // reconsider: a notice is not in any pane's grid, so no comparison ever
+    // takes it back.
+    const transportTerminalId = "transport-stall-notice";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    queueTerminalOutputMock.mockClear();
+
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      "zsh: command not found: refresh-client\n"
+    );
+    await Promise.resolve();
+
+    const noticeCalls = queueTerminalOutputMock.mock.calls.filter(
+      (call) =>
+        typeof call[1] === "string" && call[1].includes("control connection is gone")
+    );
+    // The pane still shows it -- that is the whole point of writing it.
+    expect(noticeCalls.length).toBeGreaterThan(0);
+    for (const [, , options] of noticeCalls) {
+      expect(options?.recordActivity).toBe(false);
+    }
+  });
+
   it("stops a talkative pane deferring its own sample forever", () => {
     // The debounce is reset by every chunk. That is right for a pane that
     // pauses and starves the sample completely for one that does not: a pane

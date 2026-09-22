@@ -3308,7 +3308,18 @@ function markControlStreamStalled(session: TmuxControlSession, reason: string) {
     `ssh ${session.transportTitle || "the host"} and run \`smux -CC a\` (or \`tmux -CC a\`)`
   );
   for (const pane of session.panes.values()) {
-    queueTerminalOutput(pane.terminalId, notice, { allowParkedWrite: true });
+    // Written, but not counted. This is Dispatcher talking, not the program:
+    // the same reason the recovery below suppresses the repaint, applied to
+    // the other end of the stall. Counted, one hiccup marked every pane on the
+    // server as having just produced output -- nine tabs in the same second,
+    // eight of which claimed attention together twenty seconds later, none of
+    // which had run anything. And it lands where nothing can take it back:
+    // there is no capture to compare a notice against, so the decoration
+    // filter never sees it.
+    queueTerminalOutput(pane.terminalId, notice, {
+      allowParkedWrite: true,
+      recordActivity: false,
+    });
   }
 }
 
