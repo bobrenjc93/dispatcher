@@ -221,4 +221,32 @@ describe("counting a changed region rather than changed columns", () => {
   it("says nothing changed for an identical line", () => {
     expect(describeViewportChange(["same"], ["same"]).changedTextChars).toBe(0);
   });
+
+  it("does not read a status bar padding itself out as news", () => {
+    // Verbatim from the two tabs that woke for it, fifteen minutes apart. The
+    // bar repaints to the right margin, so the same words gain forty-five
+    // trailing spaces in a black-on-black background -- a real grid change
+    // that reads exactly the same to a person.
+    const styled = "\u001b[0;30;40m  \u001b[0;38;5;246mFable\u001b[0;30;40m "
+      + "\u001b[0;38;5;246m5.1\u001b[0;30;40m \u001b[0;38;5;246m|\u001b[0;30;40m "
+      + "\u001b[0;38;5;246mpytorch";
+    const change = describeViewportChange(
+      [`${styled}\u001b[0m`],
+      [`${styled}\u001b[0;30;40m${" ".repeat(45)}\u001b[0m`]
+    );
+
+    expect(change.changedTextRows).toBe(0);
+    expect(change.changedTextChars).toBe(0);
+    // Still a change in the styled comparison -- the cells really did change,
+    // and the log should keep saying so.
+    expect(change.changedRows).toBe(1);
+    expect(isDecorationOnlyChange(change)).toBe(true);
+  });
+
+  it("still sees text the padding replaced", () => {
+    // Only blanks are forgiven. A line losing its tail is a line that changed.
+    const change = describeViewportChange(["build failed: 3 errors"], ["build failed:"]);
+    expect(change.changedTextRows).toBe(1);
+    expect(change.changedTextChars).toBeGreaterThan(0);
+  });
 });

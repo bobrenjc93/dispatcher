@@ -89,6 +89,26 @@ export function stripViewportStyling(line: string): string {
 }
 
 /**
+ * A row without the blanks a repaint pads it out with.
+ *
+ * `capture-pane` keeps a cell once something has been written to it, and a
+ * space is something. So a status bar redrawing itself out to the right margin
+ * turns `Fable 5.1 | pytorch` into the same words followed by forty-five
+ * spaces, and the comparison reads forty-five new characters -- past the
+ * decoration threshold, so the tab wakes for a line that says exactly what it
+ * said before. Two tabs did, quarter of an hour apart, off a bar that had not
+ * changed a word all night.
+ *
+ * Only the tail, and only for the text comparison. Blanks at the end of a row
+ * are nothing to read; leading ones position what follows, and a background
+ * colour painted across the padding is a styling difference, which is the
+ * other count's business.
+ */
+function withoutTrailingBlanks(text: string): string {
+  return text.replace(/\s+$/, "");
+}
+
+/**
  * What actually differs between two captures.
  *
  * For the log rather than for a decision. When a tab wakes after being quiet
@@ -119,8 +139,8 @@ export function describeViewportChange(
     changedRows += 1;
     changedChars += countDifferingChars(previousLine, currentLine);
 
-    const previousText = stripViewportStyling(previousLine);
-    const currentText = stripViewportStyling(currentLine);
+    const previousText = withoutTrailingBlanks(stripViewportStyling(previousLine));
+    const currentText = withoutTrailingBlanks(stripViewportStyling(currentLine));
     if (previousText !== currentText) {
       changedTextRows += 1;
       changedTextChars += countDifferingChars(previousText, currentText);
