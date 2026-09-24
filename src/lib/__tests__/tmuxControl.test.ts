@@ -3748,6 +3748,26 @@ describe("tmuxControl", () => {
     expect(writeTerminalMock).toHaveBeenCalled();
   });
 
+  it("renames every terminal the tab is made of, not just the window", async () => {
+    // A tmux tab is two sessions: the window, which the sidebar and the detail
+    // panel read, and the pane, which the mobile top bar reads because that is
+    // what is focused. Patching only the window renamed the tab in some places
+    // and not others -- the top bar sat on the old name for ten minutes, until
+    // something unrelated re-projected the window and the projection set the
+    // pane title as a side effect.
+    const transportTerminalId = "transport-rename-fanout";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+
+    routeTmuxTransportOutput(transportTerminalId, "%window-renamed @1 [006/d] pr review\n");
+    await flushMicrotasks();
+
+    const sessions = useTerminalStore.getState().sessions;
+    expect(sessions[windowTerminalId]?.title).toBe("[006/d] pr review");
+    expect(sessions[paneTerminalId]?.title).toBe("[006/d] pr review");
+  });
+
   it("keeps the tab when a targeted window query answers with nothing", async () => {
     // Seen in the wild: `display-message -p -t @42` returned zero lines while
     // that window's pane was printing three milliseconds later. Reading the
