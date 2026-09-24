@@ -5375,7 +5375,21 @@ function handleNotification(session: TmuxControlSession, line: string) {
       return;
     }
     window.title = title;
-    useTerminalStore.getState().patchSession(window.terminalId, { title });
+    const terminals = useTerminalStore.getState();
+    terminals.patchSession(window.terminalId, { title });
+    // The panes carry the window's name too -- every projection sets them from
+    // the same window snapshot, so this is the name they are meant to have.
+    // Leaving them out let the rename land in some places and not others: the
+    // sidebar and the detail panel read the window terminal and changed at
+    // once, while the mobile top bar reads whichever pane is focused and sat
+    // on the old name for ten minutes, until something happened to re-project
+    // that window. This is the moment the name changed; nothing should have to
+    // wait for a refresh to hear about it.
+    for (const pane of session.panes.values()) {
+      if (pane.windowId === windowId) {
+        terminals.patchSession(pane.terminalId, { title });
+      }
+    }
     useProjectStore.getState().patchNode(window.nodeId, { name: title });
     return;
   }
