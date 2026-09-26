@@ -51,6 +51,7 @@ import {
   buildControlStreamStalledNotice,
   hasControlStreamStalled,
   isShellRejectingControlCommand,
+  TMUX_OWED_REPLY_WINDOW_MS,
 } from "./tmuxControlStall";
 import {
   describeViewportChange,
@@ -267,6 +268,16 @@ interface TmuxControlSession {
   reopeningWindowIds: Set<string>;
   /** Reply blocks to swallow before matching pending commands. See transportUnmatchedBlocksOwed. */
   unmatchedBlocksOwed: number;
+  /**
+   * When to write off unclaimed reply blocks, or 0 for never.
+   *
+   * A debt only makes sense while the answers are still coming. If the far end
+   * died instead, they never will, and a debt left standing would swallow the
+   * first good replies after it -- which starves a command, which trips the
+   * stall detector sixty seconds later, which owes more. Backlogs arrive all
+   * at once, so a short window covers them and bounds that.
+   */
+  unmatchedBlocksOwedUntil: number;
   lineBuffer: string;
   pendingCommands: PendingCommand[];
   currentCommand: CommandCapture | null;
@@ -937,6 +948,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
   const recovered: TmuxControlSession = {
     id: sessionId,
     unmatchedBlocksOwed: takeUnmatchedBlocksOwed(sessionId),
+    unmatchedBlocksOwedUntil: 0,
     controlStreamStalledSince: null,
     reopeningWindowIds: new Set<string>(),
     transportTerminalId: sessionId,
@@ -3288,6 +3300,26 @@ function markControlStreamStalled(session: TmuxControlSession, reason: string) {
 
   const pending = session.pendingCommands;
   session.pendingCommands = [];
+  // Abandoned, but still owed an answer.
+  //
+  // Giving up on a command does not tell tmux to stop working on it. A laptop
+  // that slept for three and a half minutes came back to eighty-eight reply
+  // blocks in one breath -- tmux had gone on answering the whole time -- and
+  // the first four of them were handed to four commands queued seconds
+  // earlier, because the queue had been emptied and those were now at its
+  // head. Their `%begin` timestamps say it plainly: replies stamped 17:52:46
+  // paired with commands sent at 17:56:16.
+  //
+  // Everything after that is a reply answering the wrong question. One of
+  // them put eight windows' panes into one tab's layout.
+  //
+  // So owe them. This is the same debt the resume nudge already records, for
+  // the same reason: a block nobody is waiting for must be counted off rather
+  // than handed to whoever is next in line.
+  session.unmatchedBlocksOwed = (session.unmatchedBlocksOwed ?? 0) + pending.length;
+  if (pending.length > 0) {
+    session.unmatchedBlocksOwedUntil = Date.now() + TMUX_OWED_REPLY_WINDOW_MS;
+  }
   debugLog("tmux.session", "control stream is no longer answering", {
     sessionId: session.id,
     transportTerminalId: session.transportTerminalId,
@@ -5509,6 +5541,20 @@ function processControlLine(session: TmuxControlSession, line: string) {
   }
 
   if (line.startsWith("%begin ")) {
+    if (
+      (session.unmatchedBlocksOwed ?? 0) > 0
+      && (session.unmatchedBlocksOwedUntil ?? 0) > 0
+      && Date.now() > session.unmatchedBlocksOwedUntil
+    ) {
+      // The answers never came. Written off rather than carried, so this
+      // block goes to the command actually waiting for it.
+      debugLog("tmux.command", "writing off unclaimed reply blocks", {
+        sessionId: session.id,
+        owed: session.unmatchedBlocksOwed,
+      });
+      session.unmatchedBlocksOwed = 0;
+      session.unmatchedBlocksOwedUntil = 0;
+    }
     if ((session.unmatchedBlocksOwed ?? 0) > 0) {
       // The resume nudge's own reply. Taking a pending command for it would
       // shift every reply after it by one.
@@ -5621,6 +5667,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
   const session: TmuxControlSession = {
     id: transportTerminalId,
     unmatchedBlocksOwed: takeUnmatchedBlocksOwed(transportTerminalId),
+    unmatchedBlocksOwedUntil: 0,
     controlStreamStalledSince: null,
     reopeningWindowIds: new Set<string>(),
     transportTerminalId,
