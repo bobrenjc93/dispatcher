@@ -88,3 +88,17 @@ export function buildControlStreamStalledNotice(attachHint: string): string {
     `Re-attach with: ${attachHint}\r\n`,
   ].join("");
 }
+
+/**
+ * How long the answers to abandoned commands are still expected.
+ *
+ * tmux does not stop working on a command because Dispatcher stopped waiting,
+ * so those replies are still owed and must be counted off rather than handed
+ * to whatever is next in the queue. A machine asleep for three and a half
+ * minutes came back to eighty-eight of them delivered in a single breath,
+ * which is how backlogs arrive: all at once, the moment the pipe opens.
+ *
+ * Generous against that, and short enough that a debt from a connection that
+ * really died is written off long before it can starve a live command.
+ */
+export const TMUX_OWED_REPLY_WINDOW_MS = 30_000;

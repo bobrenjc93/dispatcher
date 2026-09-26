@@ -40,6 +40,7 @@ import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { findTerminalIds } from "../layoutUtils";
 import { CLOSED_TAB_TTL_MS, listClosedTabs } from "../closedTabs";
+import { TMUX_OWED_REPLY_WINDOW_MS } from "../tmuxControlStall";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
 import {
   clearStatusResizeSuppressionsForTests,
@@ -3766,6 +3767,95 @@ describe("tmuxControl", () => {
     const sessions = useTerminalStore.getState().sessions;
     expect(sessions[windowTerminalId]?.title).toBe("[006/d] pr review");
     expect(sessions[paneTerminalId]?.title).toBe("[006/d] pr review");
+  });
+
+  it("does not hand an abandoned command's reply to the next one in line", async () => {
+    // Giving up on a command does not tell tmux to stop working on it. A
+    // laptop asleep for three and a half minutes came back to eighty-eight
+    // reply blocks in one breath, and the first of them went to commands
+    // queued seconds earlier because the queue had been emptied and those
+    // were now at its head -- replies stamped 17:52:46 answering commands
+    // sent at 17:56:16. Everything after that answers the wrong question.
+    const transportTerminalId = "transport-stall-backlog";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateTwoWindows(transportTerminalId);
+    const secondWindowTerminalId = getWindowTerminalIdByWindowId("@2");
+
+    // A refresh of @1 goes out: two commands, neither answered.
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(
+      getWrittenTmuxCommands().some((command) => command.includes("list-panes -t @1"))
+    ).toBe(true);
+
+    // The far end stops speaking control mode, so both are abandoned.
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      "zsh: command not found: list-panes\n"
+    );
+    await flushMicrotasks();
+
+    // A refresh of @2 is queued after that. (The line above is control-mode
+    // traffic, so the stream counts as answering again.)
+    writeTerminalMock.mockClear();
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @2\n");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(
+      getWrittenTmuxCommands().some((command) => command.includes("list-panes -t @2"))
+    ).toBe(true);
+
+    // Now the backlog lands: the two answers to the abandoned @1 refresh.
+    // These must be counted off, not given to the @2 refresh waiting in line.
+    completeTmuxCommandWithLines(transportTerminalId, 90, ["@1\tstale\t1\t*"]);
+    completeTmuxCommandWithLines(transportTerminalId, 91, [
+      "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren/one\t4\t7\t0",
+    ]);
+    await flushMicrotasks();
+
+    // And then @2's own answers, which are the ones it should read.
+    completeTmuxCommandWithLines(transportTerminalId, 92, ["@2\ttwo-renamed\t0\t-"]);
+    completeTmuxCommandWithLines(transportTerminalId, 93, [
+      "@2\t%2\t0\t0\t80\t24\t1\t/Users/bobren/two\t1\t2\t0",
+    ]);
+    await flushMicrotasks();
+
+    // Fed the stale pair, the @2 refresh finds no @2 in it and gives up, and
+    // the tab keeps the name it had.
+    expect(useTerminalStore.getState().sessions[secondWindowTerminalId]?.title)
+      .toBe("two-renamed");
+  });
+
+  it("writes off answers that never came", async () => {
+    // The debt only makes sense while the answers are still on their way. If
+    // the far end died instead they never arrive, and a debt left standing
+    // would swallow the first good replies after it -- starving a command,
+    // which trips the stall detector a minute later, which owes more.
+    const transportTerminalId = "transport-stall-writeoff";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateTwoWindows(transportTerminalId);
+    const secondWindowTerminalId = getWindowTerminalIdByWindowId("@2");
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.advanceTimersByTimeAsync(50);
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      "zsh: command not found: list-panes\n"
+    );
+    await flushMicrotasks();
+
+    // Nothing answers them, and the window for expecting it runs out.
+    await vi.advanceTimersByTimeAsync(TMUX_OWED_REPLY_WINDOW_MS + 1_000);
+
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @2\n");
+    await vi.advanceTimersByTimeAsync(50);
+    completeTmuxCommandWithLines(transportTerminalId, 94, ["@2\ttwo-later\t0\t-"]);
+    completeTmuxCommandWithLines(transportTerminalId, 95, [
+      "@2\t%2\t0\t0\t80\t24\t1\t/Users/bobren/two\t1\t2\t0",
+    ]);
+    await flushMicrotasks();
+
+    expect(useTerminalStore.getState().sessions[secondWindowTerminalId]?.title)
+      .toBe("two-later");
   });
 
   it("refuses panes that belong to another window", async () => {
