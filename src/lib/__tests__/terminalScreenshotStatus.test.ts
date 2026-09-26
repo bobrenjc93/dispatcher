@@ -255,3 +255,76 @@ describe("a tab that is running but has nothing new to show", () => {
     expect(state.isPossiblyDone).toBe(true);
   });
 });
+
+describe("a change from before this run was watching", () => {
+  it("does not claim attention after a reload", () => {
+    // Acknowledgement lives in memory, so a reload zeroes it for every tab.
+    // Four tabs whose last output was from the previous day then went to
+    // attention together, twenty seconds after the monitor started: their
+    // output was old, nothing had happened since, and that reads exactly like
+    // a finish. Observed lastOutputAt values were a day and a half old.
+    const state = status({
+      effectiveChangedAt: 1_000,
+      acknowledgedTime: 0,
+      watchingSince: 15_000,
+      now: 20_000,
+    });
+    expect(state.isNeedsAttention).toBe(false);
+  });
+
+  it("calls it seen rather than merely unmentionable", () => {
+    // Withholding attention alone would leave a tab idle since yesterday
+    // sitting green, claiming to be at work. Stale-and-seen is what it is,
+    // and it ages on to grey from there.
+    const state = status({
+      effectiveChangedAt: 1_000,
+      acknowledgedTime: 0,
+      watchingSince: 15_000,
+      now: 20_000,
+    });
+    expect(state.hasAcknowledgedCurrentOutput).toBe(true);
+    expect(state.isPossiblyDone).toBe(true);
+  });
+
+  it("still wakes for a change this run did watch arrive", () => {
+    // The point is only to distrust what happened before the lights came on.
+    const state = status({
+      effectiveChangedAt: 5_000,
+      acknowledgedTime: 0,
+      watchingSince: 1_000,
+      now: 20_000,
+    });
+    expect(state.isNeedsAttention).toBe(true);
+  });
+
+  it("behaves as before when the start of watching is unknown", () => {
+    const state = status({ effectiveChangedAt: 1_000, acknowledgedTime: 0, now: 20_000 });
+    expect(state.isNeedsAttention).toBe(true);
+  });
+});
+
+describe("a tab whose only news is the user's own typing", () => {
+  it("does not interrupt the person who just typed into it", () => {
+    // Observed: input at 17:56:57 with no output after it, and the tab
+    // bounced at its user at 17:57:21 -- twenty-four seconds later, about the
+    // keystroke they had just sent.
+    const state = status({
+      effectiveChangedAt: 1_000,
+      acknowledgedTime: 0,
+      hasOutputSinceUserInput: false,
+      now: 20_000,
+    });
+    expect(state.isNeedsAttention).toBe(false);
+  });
+
+  it("wakes once the program answers", () => {
+    // A command that runs and finishes is the whole point of the feature.
+    const state = status({
+      effectiveChangedAt: 1_000,
+      acknowledgedTime: 0,
+      hasOutputSinceUserInput: true,
+      now: 20_000,
+    });
+    expect(state.isNeedsAttention).toBe(true);
+  });
+});

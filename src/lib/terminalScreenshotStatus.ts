@@ -20,6 +20,28 @@ export interface TerminalScreenshotStatusInput {
    * running -- and a tab that is still running has not "possibly finished".
    */
   lastLivenessAt?: number;
+  /**
+   * When this run started watching, or 0 if that is not known.
+   *
+   * Acknowledgement lives in memory, so a reload resets it to zero for every
+   * tab. A tab whose last output is days old then reads as "changed, and quiet
+   * ever since" -- the exact shape of a finish -- and claims attention the
+   * moment the monitor starts. Four tabs did that together twenty seconds
+   * after one reload, none of which had run anything since the day before.
+   *
+   * Attention means this run watched a tab stop working. A change from before
+   * it was watching was not witnessed and cannot be news.
+   */
+  watchingSince?: number;
+  /**
+   * Whether the tab has produced anything since the user last typed into it.
+   *
+   * Input counts as progress, which is right for keeping a tab green while you
+   * work in it and wrong as grounds for interrupting you: with nothing but
+   * your own keystroke to go on, a tab bounced at its user twenty-four seconds
+   * after they typed into it, about the thing they had just typed.
+   */
+  hasOutputSinceUserInput?: boolean;
   wasNeedsAttention: boolean;
   wasPossiblyDone: boolean;
   wasLongInactive: boolean;
@@ -84,9 +106,18 @@ export function resolveTerminalScreenshotStatus(
     (input.lastLivenessAt ?? 0) > 0
     && input.now < (input.lastLivenessAt ?? 0) + input.inactivityMs;
   const hasReachedStaleThreshold = isStable && input.now >= staleStartedAt && !aliveRecently;
+  // Older than this run's attention to it. Counted as already seen rather
+  // than merely barred from attention: barring it alone would leave a tab
+  // idle since yesterday sitting green, claiming to be at work. Seen-and-
+  // stale is what it is, and it ages on to grey from there, which is where
+  // the reload found it.
+  const changePredatesWatching =
+    (input.watchingSince ?? 0) > 0 && input.effectiveChangedAt < (input.watchingSince ?? 0);
   const hasAcknowledgedCurrentOutput =
     input.hasDetectedActivity &&
-    (input.isActiveTab || input.acknowledgedTime >= input.effectiveChangedAt);
+    (input.isActiveTab
+      || input.acknowledgedTime >= input.effectiveChangedAt
+      || changePredatesWatching);
   const acknowledgedCurrentOutputAt =
     input.acknowledgedTime >= input.effectiveChangedAt
       ? input.acknowledgedTime
@@ -98,7 +129,9 @@ export function resolveTerminalScreenshotStatus(
   const isNeedsAttention =
     hasReachedStaleThreshold &&
     !input.isActiveTab &&
-    !hasAcknowledgedCurrentOutput;
+    !hasAcknowledgedCurrentOutput &&
+    // Nothing has happened that the user did not do themselves.
+    (input.hasOutputSinceUserInput ?? true);
   const isLongInactive =
     brownStartedAt !== null &&
     input.now - brownStartedAt >= input.longInactivityMs;

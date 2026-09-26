@@ -50,6 +50,15 @@ import { useLayoutStore } from "../stores/useLayoutStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import type { TerminalSession } from "../types/terminal";
 
+/**
+ * When this run started watching tabs.
+ *
+ * Evaluated once when the module loads, which is once per page load -- the
+ * same lifetime as the acknowledgement map this stands in for. Anything that
+ * changed before it belongs to a run that is over.
+ */
+const WATCHING_SINCE = Date.now();
+
 const SCREENSHOT_INTERVAL_MS = 5_000;
 // A stable tab becomes stale after its inactivity threshold. Background stale
 // tabs require attention until the user looks at them; acknowledged stale tabs
@@ -779,6 +788,8 @@ export function useTerminalScreenshotMonitor() {
           (latest, session) => Math.max(latest, session.lastLivenessAt ?? 0),
           0
         ),
+        watchingSince: WATCHING_SINCE,
+        hasOutputSinceUserInput: lastOutputAt > lastUserInputAt,
         wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
         wasPossiblyDone: latestSessions.some((session) => session.isPossiblyDone),
         wasLongInactive: latestSessions.some((session) => session.isLongInactive),
@@ -1213,6 +1224,8 @@ export function useTerminalScreenshotMonitor() {
             now,
             effectiveChangedAt,
             acknowledgedTime,
+            watchingSince: WATCHING_SINCE,
+            hasOutputSinceUserInput: lastOutputAt > lastUserInputAt,
             wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
             wasPossiblyDone: latestSessions.some((session) => session.isPossiblyDone),
             wasLongInactive: latestSessions.some((session) => session.isLongInactive),
