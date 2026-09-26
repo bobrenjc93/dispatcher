@@ -3768,6 +3768,48 @@ describe("tmuxControl", () => {
     expect(sessions[paneTerminalId]?.title).toBe("[006/d] pr review");
   });
 
+  it("refuses panes that belong to another window", async () => {
+    // A stall abandons every queued command while their replies are still on
+    // the way, so the next command reads the previous one's answer. Observed
+    // on a resume: `list-panes -t @39` was handed the answer to the
+    // session-wide `list-panes -s`, and eight panes from eight windows went
+    // into one tab's layout -- "refresh window complete @39, panes: 8".
+    // Clicking that tab opened a different tab's pane, and its status dot
+    // answered to all eight windows at once.
+    //
+    // The window half of the same reply is already checked; this is the pane
+    // half. Every line names its own window, so nothing else is needed.
+    const transportTerminalId = "transport-foreign-panes";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateTwoWindows(transportTerminalId);
+    const firstWindowTerminalId = getWindowTerminalIdByWindowId("@1");
+    const firstPaneTerminalId = getPaneTerminalIdByPaneId("%1");
+    const secondPaneTerminalId = getPaneTerminalIdByPaneId("%2");
+
+    writeTerminalMock.mockClear();
+    routeTmuxTransportOutput(transportTerminalId, "%layout-change @1\n");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(
+      getWrittenTmuxCommands().some((command) => command.includes("list-panes -t @1"))
+    ).toBe(true);
+
+    // The window reply is for @1, as asked. The pane reply is the whole
+    // server's, as the mis-paired one was.
+    completeTmuxCommandWithLines(transportTerminalId, 40, ["@1\tone\t1\t*"]);
+    completeTmuxCommandWithLines(transportTerminalId, 41, [
+      "@1\t%1\t0\t0\t80\t24\t1\t/Users/bobren/one\t4\t7\t0",
+      "@2\t%2\t0\t0\t80\t24\t1\t/Users/bobren/two\t1\t2\t0",
+    ]);
+    await flushMicrotasks();
+
+    const layout = useLayoutStore.getState().layouts[firstWindowTerminalId];
+    expect(layout).toBeDefined();
+    expect(findTerminalIds(layout!)).toEqual([firstPaneTerminalId]);
+    // And the other window's tab still owns its own pane.
+    expect(findTerminalIds(layout!)).not.toContain(secondPaneTerminalId);
+  });
+
   it("keeps the tab when a targeted window query answers with nothing", async () => {
     // Seen in the wild: `display-message -p -t @42` returned zero lines while
     // that window's pane was printing three milliseconds later. Reading the
