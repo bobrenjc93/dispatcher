@@ -4593,9 +4593,41 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
     return;
   }
 
-  const rawPaneSnapshots = paneLines
+  const parsedPaneSnapshots = paneLines
     .map(parseTmuxPaneSnapshot)
     .filter((value): value is TmuxPaneSnapshot => Boolean(value));
+  // Only the panes of the window this actually asked about.
+  //
+  // The window side above already refuses a reply describing some other
+  // window; the pane side took whatever arrived. Replies can be paired with
+  // the wrong command -- a stall abandons everything queued while their
+  // replies are still on their way, so the next command reads the previous
+  // one's answer -- and on one resume `list-panes -t @39` was handed the
+  // answer to the session-wide `list-panes -s`. Eight panes from eight
+  // windows went into one tab's layout, so clicking that tab opened a
+  // different tab's pane, and its status dot answered to all eight.
+  //
+  // Every line names its own window, so this needs nothing the reply does not
+  // already carry. A wholly mismatched reply now leaves no panes and the
+  // "missing panes" check below keeps the tab as it was.
+  const rawPaneSnapshots = parsedPaneSnapshots.filter(
+    (pane) => pane.windowId === windowId
+  );
+  if (rawPaneSnapshots.length !== parsedPaneSnapshots.length) {
+    debugLog("tmux.refresh", "ignoring panes belonging to another window", {
+      sessionId: session.id,
+      windowId,
+      kept: rawPaneSnapshots.length,
+      ignored: parsedPaneSnapshots.length - rawPaneSnapshots.length,
+      ignoredWindowIds: [
+        ...new Set(
+          parsedPaneSnapshots
+            .filter((pane) => pane.windowId !== windowId)
+            .map((pane) => pane.windowId)
+        ),
+      ],
+    });
+  }
   reconcileOptimisticTmuxClosesFromSnapshot(
     session,
     [snapshot],
