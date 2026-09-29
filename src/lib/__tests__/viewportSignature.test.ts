@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   describeViewportChange,
+  isBlankViewport,
   isDecorationOnlyChange,
   hashViewportLines,
   resolveViewportChange,
@@ -248,5 +249,30 @@ describe("counting a changed region rather than changed columns", () => {
     const change = describeViewportChange(["build failed: 3 errors"], ["build failed:"]);
     expect(change.changedTextRows).toBe(1);
     expect(change.changedTextChars).toBeGreaterThan(0);
+  });
+});
+
+describe("isBlankViewport", () => {
+  it("knows a screen with nothing on it", () => {
+    // Observed: a pane quiet for five hours took 163 bytes and came back with
+    // all sixty-six rows empty. Four and a half thousand characters replaced
+    // by nothing is the largest change a screen can undergo by every measure
+    // of size, so it read as work and woke the tab.
+    expect(isBlankViewport(["", "", ""])).toBe(true);
+    expect(isBlankViewport(["   ", "\t", ""])).toBe(true);
+  });
+
+  it("does not count styling as something to read", () => {
+    // capture-pane keeps the colour codes of a cleared row.
+    expect(isBlankViewport(["\u001b[0;30;40m   \u001b[0m", ""])).toBe(true);
+  });
+
+  it("knows one that still says something", () => {
+    expect(isBlankViewport(["", "  build failed", ""])).toBe(false);
+    expect(isBlankViewport(["\u001b[32mok\u001b[0m"])).toBe(false);
+  });
+
+  it("treats a capture of nothing as nothing to read", () => {
+    expect(isBlankViewport([])).toBe(true);
   });
 });

@@ -56,6 +56,7 @@ import {
 import {
   describeViewportChange,
   hashViewportLines,
+  isBlankViewport,
   isDecorationOnlyChange,
   resolveViewportChange,
 } from "./viewportSignature";
@@ -4200,9 +4201,12 @@ function settleOutputActivity(
     ? describeViewportChange(previousLines, lines)
     : null;
   const decorationOnly = change !== null && isDecorationOnlyChange(change);
+  // Nothing left on screen to call anybody over to read.
+  const blankNow = isBlankViewport(lines);
+  const worthWaking = !decorationOnly && !blankNow;
   const quietForMs = revertPoint === null ? 0 : Date.now() - revertPoint;
 
-  if (verdict === "changed" && !decorationOnly) {
+  if (verdict === "changed" && worthWaking) {
     // Real work. Logged when it follows a quiet spell, because that is the
     // case somebody asks about later.
     const now = Date.now();
@@ -4236,7 +4240,7 @@ function settleOutputActivity(
       debugLog("tmux.activity", "background output was not worth waking for", {
         paneId: pane.paneId,
         terminalId: pane.terminalId,
-        kind: decorationOnly ? "decoration" : "identical",
+        kind: blankNow ? "blank" : decorationOnly ? "decoration" : "identical",
         changedRows: change?.changedRows ?? 0,
         changedChars: change?.changedChars ?? 0,
         changedTextRows: change?.changedTextRows ?? 0,
