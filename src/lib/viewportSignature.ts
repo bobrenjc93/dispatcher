@@ -237,6 +237,24 @@ const DECORATION_MAX_TEXT_ROWS = 8;
 const DECORATION_MAX_TEXT_CHARS = 12;
 
 /**
+ * Whether there is anything on this screen to read.
+ *
+ * A pane quiet for five hours took 163 bytes and came back with all
+ * sixty-six of its rows empty -- four and a half thousand characters of a
+ * conversation replaced by nothing. By every measure of size that is the
+ * largest change a screen can undergo, so it read as work and woke the tab.
+ *
+ * But a blank screen is the one change that cannot be news: there is nothing
+ * there to call anybody over to look at. Whatever produced it -- a clear, a
+ * program exiting, a capture caught mid-repaint -- waking for it is wrong,
+ * and whatever the pane draws next will be a change from this and can wake
+ * the tab then.
+ */
+export function isBlankViewport(lines: readonly string[]): boolean {
+  return lines.every((line) => stripViewportStyling(line).trim().length === 0);
+}
+
+/**
  * Whether a change is a TUI redrawing its own furniture.
  *
  * Judged on the text, because that is what a person reads: a recolour with

@@ -1988,6 +1988,50 @@ describe("tmuxControl", () => {
     expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
   });
 
+  it("does not wake a tab for a screen that went blank", async () => {
+    // A pane quiet for five hours took 163 bytes and came back with all
+    // sixty-six of its rows empty. Four and a half thousand characters of a
+    // conversation replaced by nothing is, by every measure of size, the
+    // largest change a screen can undergo -- so it read as real work and woke
+    // the tab. But an empty screen is the one change that cannot be news:
+    // there is nothing on it to call anybody over to read.
+    const transportTerminalId = "transport-hidden-blank";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+
+    // A screenful of conversation, to establish what the pane looked like.
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 real work\n");
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, [
+      "c/pytorch): only #198557 and #198558",
+      "the rest of a long conversation",
+    ]);
+    await flushMicrotasks();
+
+    const wentQuietAt = Date.now();
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: wentQuietAt });
+
+    // Five hours later, a short burst clears it.
+    vi.setSystemTime(Date.now() + 60_000);
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 \u001b[2J\n");
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: Date.now() });
+
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 6, ["", ""]);
+    await flushMicrotasks();
+
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
+  });
+
   it("does not wake a tab for a spinner turning beside a long tool call", async () => {
     // Measured from a real one: an idle pr-review tab lit up green every time
     // Claude Code recoloured the bullet next to a `sleep 240` that was still
