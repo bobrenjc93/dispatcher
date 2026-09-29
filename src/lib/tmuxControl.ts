@@ -7025,6 +7025,21 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
     sampleLive: [...liveTerminalIds].slice(0, 3).map((id) => id.slice(0, 8)),
     sampleTransports: transportIds.slice(0, 3).map((id) => id.slice(0, 8)),
   });
+  // Before a single channel is attached, because everything that arrives
+  // from here is this reconnection's own noise.
+  //
+  // Arming it per session as each one was recovered was too late: the store
+  // brings the terminals back before the control sessions are rebuilt, so
+  // output reached them first. Measured -- suppression armed at 15:15:45.8,
+  // the bytes that set the timestamps arrived at 15:15:41, and the tabs
+  // claimed attention anyway. There is no ordering to get right if every
+  // terminal is covered before the reconnect begins.
+  markStatusResizeSuppression(
+    Object.keys(sessions),
+    "reattached-after-reload",
+    Date.now(),
+    TMUX_REATTACH_SUPPRESSION_MS
+  );
   for (const [terminalId, terminal] of Object.entries(sessions)) {
     if (terminal.backendKind !== "tmux-transport" || !liveTerminalIds.has(terminalId)) {
       continue;
@@ -7045,23 +7060,6 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
       // this UI has never seen a single byte of their output — the xterms are
       // empty. Ask tmux what is on each screen, or a pane stays blank until it
       // happens to produce output, which for a finished agent is never.
-      // Coming back is bytes arriving, and bytes arriving is how a tab says
-      // it is working. Measured: a reload at 15:11:22 gave four sessions an
-      // output time of 15:11:23, and three of them claimed attention
-      // twenty-five seconds later. One tab took its stamp of 01:08:41 from a
-      // reload at 01:08:40, and because attention is held until the tab is
-      // focused, that single moment was still on screen fourteen hours later.
-      //
-      // The suppression a resize and a recovered stream already use, for the
-      // same reason: this is Dispatcher reconnecting, not the program saying
-      // anything. The transport is in the list because control-mode chatter
-      // is its output, and those were the loudest of them.
-      markStatusResizeSuppression(
-        [terminalId, ...getTmuxSessionStatusTerminalIds(existing)],
-        "reattached-after-reload",
-        Date.now(),
-        TMUX_REATTACH_SUPPRESSION_MS
-      );
       for (const pane of existing.panes.values()) {
         pane.initialContentCaptured = false;
         queueInitialPaneContentCapture(existing, pane, {
