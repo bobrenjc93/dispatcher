@@ -1988,6 +1988,29 @@ describe("tmuxControl", () => {
     expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
   });
 
+  it("does not let reattaching read as the tabs going back to work", async () => {
+    // Reconnecting repaints every pane, and a repaint is bytes arriving,
+    // which is how a tab says it is working. Measured: a reload at 15:11:22
+    // gave four sessions an output time of 15:11:23, and three claimed
+    // attention twenty-five seconds later. One tab took its stamp of 01:08:41
+    // from a reload at 01:08:40 and, because attention is held until the tab
+    // is focused, was still showing it fourteen hours later.
+    const transportTerminalId = "transport-reattach-quiet";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+    clearStatusResizeSuppressionsForTests();
+
+    resumeLiveControlSessions(new Set([transportTerminalId]));
+
+    // The pane, the tab it belongs to, and the transport whose control-mode
+    // chatter is its own output.
+    for (const terminalId of [paneTerminalId, windowTerminalId, transportTerminalId]) {
+      expect(getActiveStatusResizeSuppression([terminalId])?.reason)
+        .toBe("reattached-after-reload");
+    }
+  });
+
   it("does not wake a tab for a screen that went blank", async () => {
     // A pane quiet for five hours took 163 bytes and came back with all
     // sixty-six of its rows empty. Four and a half thousand characters of a

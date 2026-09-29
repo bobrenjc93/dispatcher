@@ -422,6 +422,21 @@ const TMUX_TRANSPORT_LOG_LIMIT = 25;
 const TMUX_TRANSPORT_SUMMARY_INTERVAL_MS = 5_000;
 const TMUX_BOOTSTRAP_FALLBACK_DELAY_MS = 100;
 const TMUX_USER_PANE_RESIZE_LOCK_MS = 4_000;
+/**
+ * How long a reattach's own repaint keeps arriving.
+ *
+ * Reconnecting re-captures every pane, one after another, so the bytes it
+ * causes are spread over the whole queue rather than landing at once. At one
+ * reload the first arrived a second in and another eleven seconds later, with
+ * twenty-odd panes to get through. The ordinary five-second window covers the
+ * first and not the rest.
+ *
+ * Long enough for the queue to drain, and nothing is lost if a program really
+ * does speak inside it: the tab holds its previous reading and the next thing
+ * it says counts as normal.
+ */
+const TMUX_REATTACH_SUPPRESSION_MS = 30_000;
+
 const TMUX_INITIAL_CAPTURE_BACKGROUND_DELAY_MS = 250;
 const TMUX_INITIAL_CAPTURE_RETRY_DELAY_MS = 50;
 const TMUX_INITIAL_CAPTURE_MAX_RACE_RETRIES = 3;
@@ -7030,6 +7045,23 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
       // this UI has never seen a single byte of their output — the xterms are
       // empty. Ask tmux what is on each screen, or a pane stays blank until it
       // happens to produce output, which for a finished agent is never.
+      // Coming back is bytes arriving, and bytes arriving is how a tab says
+      // it is working. Measured: a reload at 15:11:22 gave four sessions an
+      // output time of 15:11:23, and three of them claimed attention
+      // twenty-five seconds later. One tab took its stamp of 01:08:41 from a
+      // reload at 01:08:40, and because attention is held until the tab is
+      // focused, that single moment was still on screen fourteen hours later.
+      //
+      // The suppression a resize and a recovered stream already use, for the
+      // same reason: this is Dispatcher reconnecting, not the program saying
+      // anything. The transport is in the list because control-mode chatter
+      // is its output, and those were the loudest of them.
+      markStatusResizeSuppression(
+        [terminalId, ...getTmuxSessionStatusTerminalIds(existing)],
+        "reattached-after-reload",
+        Date.now(),
+        TMUX_REATTACH_SUPPRESSION_MS
+      );
       for (const pane of existing.panes.values()) {
         pane.initialContentCaptured = false;
         queueInitialPaneContentCapture(existing, pane, {
