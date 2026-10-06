@@ -28,6 +28,12 @@ import {
 import { findTerminalIds, findLayoutKeyForTerminal, findSiblingTerminalId } from "./lib/layoutUtils";
 import { closeTerminal, warmPool, refreshPool, getTerminalCwd, writeTerminal } from "./lib/tauriCommands";
 import {
+  detachClosedLocalTerminals,
+  reapExpiredClosedLocalTabs,
+  rememberClosedLocalTab,
+  reopenLastClosedTab,
+} from "./lib/localClosedTabs";
+import {
   disposeTerminalInstance,
   focusTerminalInstance,
   refitAllTerminalsToViewport,
@@ -61,7 +67,6 @@ import {
   isDisconnectedTmuxPlaceholderTerminal,
   isLiveTmuxTerminal,
   reapExpiredClosedTmuxTabs,
-  reopenLastClosedTmuxTab,
   resolvePreferredTerminalFocus,
   splitTmuxTerminal,
 } from "./lib/tmuxControl";
@@ -140,15 +145,19 @@ export default function App() {
   // Must be running before anything asks whether the app is frontmost.
   useEffect(() => startAppFocusTracking(), []);
 
-  // A closed tab's window is still running, so something has to end the grace
+  // A closed tab's window or shell is still running, so something has to end the grace
   // period. Hourly against a 24h deadline, plus once at startup for deadlines
   // that passed while the app was shut.
   useEffect(() => {
     if (!isPrimaryClient()) {
       return;
     }
-    reapExpiredClosedTmuxTabs();
-    const timer = window.setInterval(reapExpiredClosedTmuxTabs, 60 * 60 * 1000);
+    const reap = () => {
+      reapExpiredClosedTmuxTabs();
+      reapExpiredClosedLocalTabs();
+    };
+    reap();
+    const timer = window.setInterval(reap, 60 * 60 * 1000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -686,6 +695,10 @@ export default function App() {
       const project = projects[projectId];
       if (!project) return;
 
+      // Kept rather than killed, so ⇧⌘T can bring the shell back. Read before
+      // the row and layout go, since those are what reopening rebuilds.
+      const keptTerminalIds = rememberClosedLocalTab(terminalId, projectId);
+
       // Find and remove the tree node for this terminal
       const rootNode = nodes[project.rootGroupId];
       if (rootNode?.children) {
@@ -701,7 +714,9 @@ export default function App() {
 
       // Close all terminals in this tab (including split panes)
       const layout = useLayoutStore.getState().layouts[terminalId];
-      if (layout) {
+      if (keptTerminalIds) {
+        detachClosedLocalTerminals(keptTerminalIds);
+      } else if (layout) {
         for (const id of findTerminalIds(layout)) {
           closeTerminal(id).catch(() => {});
           disposeTerminalInstance(id);
@@ -789,11 +804,18 @@ export default function App() {
       if (isSolePane) {
         applyCloseFocusTarget(resolveCloseFocusTarget(terminalId));
 
+        // The shell is kept, not killed, so ⇧⌘T can reattach to it. Read
+        // before the layout goes: that is part of what reopening puts back.
+        const keptTerminalIds = rememberClosedLocalTab(layoutKey, project.id);
         removeLayout(layoutKey);
-        for (const id of new Set([layoutKey, ...findTerminalIds(layout ?? { type: "terminal", id: layoutKey, terminalId })])) {
-          closeTerminal(id).catch(() => {});
-          disposeTerminalInstance(id);
-          removeSession(id);
+        if (keptTerminalIds) {
+          detachClosedLocalTerminals(keptTerminalIds);
+        } else {
+          for (const id of new Set([layoutKey, ...findTerminalIds(layout ?? { type: "terminal", id: layoutKey, terminalId })])) {
+            closeTerminal(id).catch(() => {});
+            disposeTerminalInstance(id);
+            removeSession(id);
+          }
         }
 
         // Closing the only pane in a tab: remove the entire sidebar tab.
@@ -890,6 +912,12 @@ export default function App() {
   const handleDeleteTerminal = useReplicatedAction("deleteTerminal", handleDeleteTerminalLocal);
   const handleSplitPane = useReplicatedAction("splitPane", handleSplitPaneLocal);
   const handleClosePane = useReplicatedAction("closePane", handleClosePaneLocal);
+  const handleReopenClosedTabLocal = useCallback(() => {
+    void reopenLastClosedTab();
+  }, []);
+  // Relayed like closing is: the list of closed tabs, and the shells and
+  // windows behind it, live on the desktop.
+  const handleReopenClosedTab = useReplicatedAction("reopenClosedTab", handleReopenClosedTabLocal);
   // A tab's settings are changed here wherever the menu was opened. A phone
   // writing them into its own copy of the workspace loses them to the next
   // snapshot from this window.
@@ -1078,11 +1106,12 @@ export default function App() {
         handleClosePane(activeTermId);
       }
     }
-    // Reopen the most recently closed tab, as a browser does. The window was
-    // never killed, so this hands back the session rather than a fresh shell.
+    // Reopen the most recently closed tab, as a browser does. Neither a tmux
+    // window nor a local shell is killed on close, so this hands back the
+    // session rather than a fresh one.
     if (isReopenClosedTabShortcut(e)) {
       e.preventDefault();
-      void reopenLastClosedTmuxTab();
+      handleReopenClosedTab();
       return;
     }
     // Rename active tab: Cmd+R. Bare Ctrl+R remains terminal reverse search,

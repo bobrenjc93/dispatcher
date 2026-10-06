@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   CLOSED_TAB_TTL_MS,
   MAX_CLOSED_TABS,
+  closedTabId,
   expiredClosedTabs,
   forgetClosedTab,
   hiddenWindowIdsForConnection,
@@ -21,6 +22,9 @@ const tab = (windowId: string, closedAt: number, connectionKey: string | null = 
   closedAt,
 });
 
+const idOf = (entry: Parameters<typeof closedTabId>[0] | null) =>
+  entry ? closedTabId(entry) : undefined;
+
 describe("closed tabs", () => {
   beforeEach(() => window.localStorage.clear());
 
@@ -29,9 +33,9 @@ describe("closed tabs", () => {
     rememberClosedTab(tab("@2", 200));
     rememberClosedTab(tab("@3", 150));
 
-    expect(takeMostRecentlyClosed(300)?.windowId).toBe("@2");
-    expect(takeMostRecentlyClosed(300)?.windowId).toBe("@3");
-    expect(takeMostRecentlyClosed(300)?.windowId).toBe("@1");
+    expect(idOf(takeMostRecentlyClosed(300))).toBe("@2");
+    expect(idOf(takeMostRecentlyClosed(300))).toBe("@3");
+    expect(idOf(takeMostRecentlyClosed(300))).toBe("@1");
     expect(takeMostRecentlyClosed(300)).toBeNull();
   });
 
@@ -40,7 +44,7 @@ describe("closed tabs", () => {
     rememberClosedTab(tab("@old", 0));
     rememberClosedTab(tab("@new", CLOSED_TAB_TTL_MS));
 
-    expect(takeMostRecentlyClosed(CLOSED_TAB_TTL_MS + 1)?.windowId).toBe("@new");
+    expect(idOf(takeMostRecentlyClosed(CLOSED_TAB_TTL_MS + 1))).toBe("@new");
     expect(takeMostRecentlyClosed(CLOSED_TAB_TTL_MS + 1)).toBeNull();
   });
 
@@ -48,16 +52,16 @@ describe("closed tabs", () => {
     rememberClosedTab(tab("@a", 0));
     rememberClosedTab(tab("@b", CLOSED_TAB_TTL_MS));
 
-    expect(expiredClosedTabs(CLOSED_TAB_TTL_MS + 1).map((entry) => entry.windowId))
+    expect(expiredClosedTabs(CLOSED_TAB_TTL_MS + 1).map(closedTabId))
       .toEqual(["@a"]);
     // Still listed until the caller says it actually killed the window. A
     // window nothing is attached to yet cannot be killed, and forgetting it
     // there would let the closed tab come back at the next attach.
-    expect(listClosedTabs().map((entry) => entry.windowId)).toEqual(["@b", "@a"]);
+    expect(listClosedTabs().map(closedTabId)).toEqual(["@b", "@a"]);
 
     forgetClosedTab(tab("@a", 0));
     expect(expiredClosedTabs(CLOSED_TAB_TTL_MS + 1)).toEqual([]);
-    expect(listClosedTabs().map((entry) => entry.windowId)).toEqual(["@b"]);
+    expect(listClosedTabs().map(closedTabId)).toEqual(["@b"]);
   });
 
   it("evicts past the cap and says which, so nothing is left running unremembered", () => {
@@ -67,7 +71,7 @@ describe("closed tabs", () => {
       expect(rememberClosedTab(tab(`@${i}`, i))).toEqual([]);
     }
     const evicted = rememberClosedTab(tab("@newest", 9_999));
-    expect(evicted.map((entry) => entry.windowId)).toEqual(["@0"]);
+    expect(evicted.map(closedTabId)).toEqual(["@0"]);
     expect(listClosedTabs()).toHaveLength(MAX_CLOSED_TABS);
   });
 
@@ -96,8 +100,8 @@ describe("closed tabs", () => {
   it("forgets a specific window", () => {
     rememberClosedTab(tab("@1", 100));
     rememberClosedTab(tab("@2", 200));
-    forgetClosedTab({ connectionKey: "server-a", windowId: "@1" });
-    expect(listClosedTabs().map((e) => e.windowId)).toEqual(["@2"]);
+    forgetClosedTab(tab("@1", 0));
+    expect(listClosedTabs().map(closedTabId)).toEqual(["@2"]);
   });
 
   it("expires exactly at the deadline", () => {

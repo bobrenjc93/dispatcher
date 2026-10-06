@@ -39,7 +39,7 @@ import {
   findProjectIdForNode,
   type DisconnectedTmuxWindowPlaceholderRef,
 } from "./treeUtils";
-import { writeTerminal } from "./tauriCommands";
+import { closeTerminal, writeTerminal } from "./tauriCommands";
 import {
   isPrimaryClient,
   isReplicaClient,
@@ -72,13 +72,16 @@ import {
   hasAttentionMarker,
   noteAttentionRequested,
 } from "./attentionMarker";
-import type { ClosedTab } from "./closedTabs";
+import type { ClosedTab, ClosedTabSettings, ClosedTmuxTab } from "./closedTabs";
 import {
   expiredClosedTabs,
   forgetClosedTab,
+  isClosedLocalTab,
+  isClosedTmuxTab,
+  pickClosedTabSettings,
   hiddenWindowIdsForConnection,
   rememberClosedTab,
-  peekMostRecentlyClosed,
+  peekMostRecentlyClosedTmux,
 } from "./closedTabs";
 import {
   disposeTerminalInstance,
@@ -6364,7 +6367,7 @@ function controlSessionMatchesClosedTab(
  * session claims it.
  */
 function findControlSessionForClosedTab(
-  tab: Pick<ClosedTab, "connectionKey" | "sessionId">
+  tab: Pick<ClosedTmuxTab, "connectionKey" | "sessionId">
 ): TmuxControlSession | null {
   const remembered = controlSessions.get(tab.sessionId);
   if (remembered && controlSessionMatchesClosedTab(remembered, tab.connectionKey)) {
@@ -6420,6 +6423,28 @@ function windowIdAbove(session: TmuxControlSession, windowId: string): string | 
 }
 
 /**
+ * What the user put on each of a window's panes, read before they go.
+ *
+ * The projection is torn down on close, and with it the terminals holding the
+ * notes. Reopening builds new ones.
+ */
+function collectPaneSettings(
+  session: TmuxControlSession,
+  paneIds: readonly string[]
+): Record<string, ClosedTabSettings> {
+  const sessions = useTerminalStore.getState().sessions;
+  const settings: Record<string, ClosedTabSettings> = {};
+  for (const paneId of paneIds) {
+    const terminalId = session.panes.get(paneId)?.terminalId;
+    const picked = pickClosedTabSettings(terminalId ? sessions[terminalId] : undefined);
+    if (Object.keys(picked).length > 0) {
+      settings[paneId] = picked;
+    }
+  }
+  return settings;
+}
+
+/**
  * Stop projecting a window but leave it running, so the tab can come back.
  *
  * `kill-window` is irreversible — the pane and everything in it are gone the
@@ -6436,17 +6461,33 @@ function tombstoneTmuxWindow(options: {
   title: string;
   connectionKey: string | null;
   anchorWindowId: string | null;
+  settings: ClosedTabSettings;
+  paneSettings: Record<string, ClosedTabSettings>;
 }) {
   const evicted = rememberClosedTab({
+    kind: "tmux",
     connectionKey: options.connectionKey,
     sessionId: options.session.id,
     windowId: options.windowId,
     paneIds: [...options.paneIds],
     anchorWindowId: options.anchorWindowId,
+    settings: options.settings,
+    paneSettings: options.paneSettings,
     title: options.title,
     closedAt: Date.now(),
   });
-  for (const stale of evicted) {
+  endEvictedClosedTmuxTabs(evicted);
+  // A local tab pushed out by this one is a shell nothing will reopen now.
+  for (const stale of evicted.filter(isClosedLocalTab)) {
+    for (const terminalId of stale.terminalIds) {
+      closeTerminal(terminalId).catch(() => {});
+    }
+  }
+}
+
+/** Kill the tmux windows behind tabs that fell off the end of the list. */
+export function endEvictedClosedTmuxTabs(evicted: readonly ClosedTab[]) {
+  for (const stale of evicted.filter(isClosedTmuxTab)) {
     // An evicted entry can belong to another server entirely, so it is not
     // safe to kill it through the session doing the closing.
     const owner = findControlSessionForClosedTab(stale);
@@ -6479,6 +6520,8 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
       session.optimisticallyClosedPaneIds.add(paneId);
     }
     const anchorWindowId = windowIdAbove(session, windowId);
+    const settings = pickClosedTabSettings(terminal);
+    const paneSettings = collectPaneSettings(session, paneIds);
     removeWindowProjection(session, windowId);
     syncWindowNodeOrder(session);
     tombstoneTmuxWindow({
@@ -6488,6 +6531,8 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
       title: terminal.title,
       connectionKey: terminal.tmuxConnectionKey ?? null,
       anchorWindowId,
+      settings,
+      paneSettings,
     });
     return true;
   }
@@ -6517,6 +6562,8 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
         session.optimisticallyClosedPaneIds.add(closedPaneId);
       }
       const anchorWindowId = windowIdAbove(session, windowId);
+      const settings = pickClosedTabSettings(windowTerminal ?? undefined);
+      const paneSettings = collectPaneSettings(session, paneIds);
       removeWindowProjection(session, windowId);
       syncWindowNodeOrder(session);
       tombstoneTmuxWindow({
@@ -6526,6 +6573,8 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
         title: windowTerminal?.title ?? terminal.title,
         connectionKey: windowState?.connectionKey ?? terminal.tmuxConnectionKey ?? null,
         anchorWindowId,
+        settings,
+        paneSettings,
       });
     } else {
       session.optimisticallyClosedPaneIds.add(paneId);
@@ -7106,6 +7155,45 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
 }
 
 /**
+ * Put back what the user had written on a reopened tab.
+ *
+ * The window returns as a new terminal, so its notes would otherwise be blank:
+ * the program is back and everything said about it is gone. Only into a
+ * terminal that has nothing of its own, in case it was somehow written to on
+ * the way back.
+ */
+function restoreClosedTabSettings(
+  session: TmuxControlSession,
+  windowTerminalId: string,
+  closed: ClosedTmuxTab
+) {
+  const store = useTerminalStore.getState();
+  const apply = (terminalId: string | undefined, settings: ClosedTabSettings | undefined) => {
+    if (!terminalId || !settings || Object.keys(settings).length === 0) {
+      return;
+    }
+    const current = store.sessions[terminalId];
+    if (!current) {
+      return;
+    }
+    const patch: ClosedTabSettings = { ...settings };
+    if (current.notes) {
+      delete patch.notes;
+    }
+    store.patchSession(terminalId, patch);
+  };
+  apply(windowTerminalId, closed.settings);
+  for (const [paneId, settings] of Object.entries(closed.paneSettings ?? {})) {
+    apply(session.panes.get(paneId)?.terminalId, settings);
+  }
+  debugLog("tmux.action", "restored a reopened tab's settings", {
+    windowId: closed.windowId,
+    notesLength: closed.settings?.notes?.length ?? 0,
+    panes: Object.keys(closed.paneSettings ?? {}).length,
+  });
+}
+
+/**
  * Bring back the most recently closed tab, Chrome-style.
  *
  * The window was never killed, so this is only a matter of letting it be
@@ -7114,12 +7202,16 @@ export function resumeLiveControlSessions(liveTerminalIds: ReadonlySet<string>) 
  * have done something.
  */
 export async function reopenLastClosedTmuxTab(): Promise<boolean> {
-  const closed = peekMostRecentlyClosed(Date.now());
+  const closed = peekMostRecentlyClosedTmux(Date.now());
   if (!closed) {
     debugLog("tmux.action", "nothing left to reopen", {});
     return false;
   }
+  return reopenClosedTmuxTab(closed);
+}
 
+/** Bring back one particular closed tmux tab. */
+export async function reopenClosedTmuxTab(closed: ClosedTmuxTab): Promise<boolean> {
   const session = findControlSessionForClosedTab(closed);
   if (!session) {
     // Kept, not dropped: the server may be reachable again later, and this is
@@ -7187,6 +7279,7 @@ export async function reopenLastClosedTmuxTab(): Promise<boolean> {
   }
 
   forgetClosedTab(closed);
+  restoreClosedTabSettings(session, restored.terminalId, closed);
 
   // Land in the tab, the way a browser does. Without this the reopen is
   // invisible: the window returns to its own place among twenty others and
@@ -7216,7 +7309,7 @@ export async function reopenLastClosedTmuxTab(): Promise<boolean> {
  * that the deadline falls long after anyone was interacting with the tab.
  */
 export function reapExpiredClosedTmuxTabs(): void {
-  for (const tab of expiredClosedTabs(Date.now())) {
+  for (const tab of expiredClosedTabs(Date.now()).filter(isClosedTmuxTab)) {
     const session = findControlSessionForClosedTab(tab);
     if (!session || !session.controlModeActive) {
       // Nothing can reach it right now: the transport has not attached yet,
