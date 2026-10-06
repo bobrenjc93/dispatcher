@@ -449,6 +449,8 @@ export interface ReplicatedActions {
   deleteTerminal: (terminalId: string, projectId: string) => void;
   splitPane: (targetTerminalId: string, direction: "horizontal" | "vertical") => void;
   closePane: (terminalId: string) => void;
+  /** ⇧⌘T: bring back the most recently closed tab. */
+  reopenClosedTab: () => void;
   deleteProject: (projectId: string) => void;
   renameTerminal: (terminalId: string, name: string) => void;
   /**
