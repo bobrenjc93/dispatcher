@@ -203,8 +203,8 @@ export default function App() {
   }, [isCompact]);
 
   useFileDrop();
-  useStartupStoreNormalization();
   const appStateBootstrapComplete = useAppStateBackup();
+  useStartupStoreNormalization(appStateBootstrapComplete);
   useRecoveryBootstrap();
   useTerminalScreenshotMonitor();
   useWakeRecovery();

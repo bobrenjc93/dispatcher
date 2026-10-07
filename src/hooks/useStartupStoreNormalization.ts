@@ -8,12 +8,19 @@ import { useLayoutStore } from "../stores/useLayoutStore";
 import { useProjectStore } from "../stores/useProjectStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 
-export function useStartupStoreNormalization() {
+/**
+ * @param appStateReady Whether the stores hold the workspace yet. Usually they
+ *   do from the first render, hydrated from localStorage. When localStorage
+ *   comes up empty they are filled from the backend's backup instead, which is
+ *   asynchronous -- and a scan run before that sees no transports at all, so
+ *   every tmux connection stays dark until its tab happens to be clicked.
+ */
+export function useStartupStoreNormalization(appStateReady: boolean) {
   useEffect(() => {
     // Downgrading tmux tabs to placeholders after a restart is the desktop
     // window's call. A replica doing it would rewrite the shared workspace and
     // tear down tmux tabs that are perfectly alive on the desktop.
-    if (!isPrimaryClient()) {
+    if (!appStateReady || !isPrimaryClient()) {
       return;
     }
 
@@ -83,5 +90,5 @@ export function useStartupStoreNormalization() {
     return () => {
       disposed = true;
     };
-  }, []);
+  }, [appStateReady]);
 }
