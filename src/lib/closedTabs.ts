@@ -170,12 +170,47 @@ export function closedTabId(tab: ClosedTab): string {
 
 const STORAGE_KEY = getScopedStorageKey("dispatcher.closedTabs");
 
+/**
+ * The list as this session last wrote it.
+ *
+ * localStorage is only how the list outlives a restart; within a session this
+ * is the record. WebKit can stop keeping writes without throwing — the value
+ * even reads back straight after `setItem`, then is gone a moment later — and
+ * trusting storage then made a tab closed a second ago unreopenable.
+ */
+let written: ClosedTab[] | null = null;
+let warnedStorageLost = false;
+
+/** Forgets the in-memory list, as a restart would. For tests. */
+export function resetClosedTabsMemory() {
+  written = null;
+  warnedStorageLost = false;
+}
+
+function readStorage(): string | null {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 function read(): ClosedTab[] {
   if (typeof window === "undefined") {
     return [];
   }
+  const raw = readStorage();
+  if (written) {
+    if (raw !== JSON.stringify(written) && !warnedStorageLost) {
+      warnedStorageLost = true;
+      debugLog("tmux.action", "localStorage lost the closed tabs; using the list in memory", {
+        count: written.length,
+        stored: raw === null ? "missing" : "different",
+      });
+    }
+    return written;
+  }
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? (parsed as ClosedTab[]) : [];
   } catch {
@@ -187,11 +222,11 @@ function write(entries: readonly ClosedTab[]) {
   if (typeof window === "undefined") {
     return;
   }
+  written = [...entries];
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
   } catch {
-    // Losing the list costs the ability to reopen, not correctness — the
-    // windows themselves are still reaped by their own deadline.
+    // Still held in memory for this session.
   }
 }
 

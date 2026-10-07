@@ -260,11 +260,28 @@ export function writeAppStateSnapshotToLocalStorage(snapshot: AppStateSnapshot):
   }
 
   try {
+    const dropped: string[] = [];
     for (const key of APP_STATE_STORAGE_KEYS) {
       const value = snapshot[key];
       if (value) {
-        window.localStorage.setItem(getScopedAppStateStorageKey(key), JSON.stringify(value));
+        const storageKey = getScopedAppStateStorageKey(key);
+        const serialized = JSON.stringify(value);
+        window.localStorage.setItem(storageKey, serialized);
+        if (window.localStorage.getItem(storageKey) !== serialized) {
+          dropped.push(storageKey);
+        }
       }
+    }
+    if (dropped.length > 0) {
+      // WebKit does this without throwing when it cannot open the origin's
+      // storage file -- seen when a dead instance's networking process still
+      // holds it. Nothing saved to localStorage survives until that process
+      // is gone, so say so rather than report a mirror that did not happen.
+      debugLog("app.persistence", "localStorage is dropping writes", {
+        storageNamespace: getStorageNamespaceLabel(),
+        dropped,
+      });
+      return false;
     }
     return true;
   } catch (error) {

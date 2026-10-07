@@ -59,6 +59,7 @@ import { useProjectStore } from "../stores/useProjectStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 import { useLayoutStore } from "../stores/useLayoutStore";
 import { useFontStore } from "../stores/useFontStore";
+import { resetClosedTabsMemory } from "../lib/closedTabs";
 
 // ---------------------------------------------------------------------------
 // Reset stores + localStorage before each test
@@ -69,6 +70,7 @@ beforeEach(() => {
   if (storage && typeof storage.clear === "function") {
     storage.clear();
   }
+  resetClosedTabsMemory();
 
   const persistStorage = createJSONStorage(() => globalThis.localStorage) as any;
   useProjectStore.persist.setOptions({ storage: persistStorage });
