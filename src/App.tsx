@@ -53,6 +53,7 @@ import { queueTerminalOutput } from "./hooks/useTerminalBridge";
 import { useCompactViewport } from "./hooks/useCompactViewport";
 import { useSoftKeyboardViewport } from "./hooks/useSoftKeyboardViewport";
 import { isPrimaryClient } from "./lib/replication";
+import { listen } from "@tauri-apps/api/event";
 import { debugLog } from "./lib/debugLog";
 import {
   resolveTerminalCloseFocusTarget,
@@ -1028,6 +1029,31 @@ export default function App() {
     });
   }, []);
 
+  // ⌘W, from the keyboard or from the menu. The menu only sees a ⌘W the page
+  // did not consume, and used to close the window -- and the app with it.
+  const closeActiveTabRef = useRef<(source: "shortcut" | "menu") => void>(() => {});
+  closeActiveTabRef.current = (source) => {
+    if (dialog) return;
+    const activeTermId = useTerminalStore.getState().activeTerminalId;
+    if (activeTermId) {
+      debugLog("app.shortcut", "closing active terminal", { terminalId: activeTermId, source });
+      handleClosePane(activeTermId);
+    }
+  };
+  useEffect(() => {
+    if (!isPrimaryClient()) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen("menu-close-tab", () => closeActiveTabRef.current("menu")).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   // prevents keydown events from being lost during effect re-registration
   // (particularly noticeable when cycling wraps across projects).
   const keyDownRef = useRef<(e: KeyboardEvent) => void>(() => {});
@@ -1094,17 +1120,7 @@ export default function App() {
     }
     if (isCloseTabShortcut(e, isMac)) {
       e.preventDefault();
-      const activeTermId = useTerminalStore.getState().activeTerminalId;
-      if (activeTermId) {
-        debugLog("app.shortcut", "closing active terminal from shortcut", {
-          terminalId: activeTermId,
-          key: e.key,
-          code: e.code,
-          repeat: e.repeat,
-          platform: navigator.platform,
-        });
-        handleClosePane(activeTermId);
-      }
+      closeActiveTabRef.current("shortcut");
     }
     // Reopen the most recently closed tab, as a browser does. Neither a tmux
     // window nor a local shell is killed on close, so this hands back the

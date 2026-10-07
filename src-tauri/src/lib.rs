@@ -25,7 +25,7 @@ use web_server::DEFAULT_WEB_PORT;
 use std::panic;
 use std::sync::Once;
 use std::time::Instant;
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, Runtime, WindowEvent};
 
 static PANIC_HOOK: Once = Once::new();
 
@@ -69,6 +69,45 @@ fn install_panic_hook() {
             default_hook(panic_info);
         }));
     });
+}
+
+/// The menu item that stands in for Close Window, and what it tells the page.
+const CLOSE_TAB_MENU_ID: &str = "close-tab";
+const CLOSE_TAB_EVENT: &str = "menu-close-tab";
+
+/// Tauri's default macOS menu, with Close Window swapped for Close Tab.
+///
+/// The default binds ⌘W to closing the window. The page takes ⌘W first and
+/// closes a tab, but a keystroke it did not consume -- a dialog open, the web
+/// view not first responder -- went on to the menu, which closed the only
+/// window and with it the app. Now that path closes a tab too.
+#[cfg(target_os = "macos")]
+fn build_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{Menu, MenuItem, MenuItemKind};
+
+    let menu = Menu::default(app)?;
+    for item in menu.items()? {
+        let MenuItemKind::Submenu(submenu) = item else {
+            continue;
+        };
+        for child in submenu.items()? {
+            if let MenuItemKind::Predefined(predefined) = &child {
+                if predefined.text()? == "Close Window" {
+                    submenu.remove(&child)?;
+                }
+            }
+        }
+        if submenu.text()? == "File" {
+            submenu.append(&MenuItem::with_id(
+                app,
+                CLOSE_TAB_MENU_ID,
+                "Close Tab",
+                true,
+                Some("CmdOrCtrl+W"),
+            )?)?;
+        }
+    }
+    Ok(menu)
 }
 
 fn log_window_event(label: &str, event: &WindowEvent) {
@@ -133,6 +172,12 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             log_window_event(window.label(), event);
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == CLOSE_TAB_MENU_ID {
+                let _ = debug_log::append_debug_log("[backend:menu] close tab");
+                let _ = app.emit(CLOSE_TAB_EVENT, ());
+            }
         })
         .setup(move |app| {
             let _ = debug_log::init_debug_log();
@@ -224,6 +269,8 @@ pub fn run() {
             commands::show_font_panel,
             commands::hide_font_panel,
         ]);
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(build_app_menu);
 
     let app = match builder.build(tauri::generate_context!()) {
         Ok(app) => app,
