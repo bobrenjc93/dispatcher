@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CLOSED_TAB_TTL_MS,
   MAX_CLOSED_TABS,
@@ -8,6 +8,7 @@ import {
   hiddenWindowIdsForConnection,
   isClosedTabExpired,
   listClosedTabs,
+  resetClosedTabsMemory,
   rememberClosedTab,
   takeMostRecentlyClosed,
 } from "../closedTabs";
@@ -107,5 +108,43 @@ describe("closed tabs", () => {
   it("expires exactly at the deadline", () => {
     expect(isClosedTabExpired(tab("@1", 0), CLOSED_TAB_TTL_MS - 1)).toBe(false);
     expect(isClosedTabExpired(tab("@1", 0), CLOSED_TAB_TTL_MS)).toBe(true);
+  });
+
+  it("still reopens when localStorage silently drops the write", () => {
+    // What WebKit does when a dead instance's networking process still holds
+    // the storage file: setItem returns, and nothing is there to read back.
+    // The tab closed a second ago used to be gone already.
+    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {});
+    try {
+      rememberClosedTab(tab("@1", 100));
+      rememberClosedTab(tab("@2", 200));
+
+      expect(idOf(takeMostRecentlyClosed(300))).toBe("@2");
+      expect(idOf(takeMostRecentlyClosed(300))).toBe("@1");
+      expect(takeMostRecentlyClosed(300)).toBeNull();
+    } finally {
+      setItem.mockRestore();
+    }
+
+    // Storage working again gets the list back for the next launch.
+    rememberClosedTab(tab("@3", 300));
+    expect(window.localStorage.getItem("dispatcher-dev:dispatcher.closedTabs")).toContain("@3");
+    expect(listClosedTabs().map(closedTabId)).toEqual(["@3"]);
+  });
+
+  it("still reopens when the write reads back and then vanishes", () => {
+    // What the 2026-10-06 log showed: "remembered a closed tab" with the entry
+    // read back, then "nothing left to reopen" a moment later.
+    rememberClosedTab(tab("@1", 100));
+    window.localStorage.removeItem("dispatcher-dev:dispatcher.closedTabs");
+
+    expect(idOf(takeMostRecentlyClosed(200))).toBe("@1");
+  });
+
+  it("picks the list back up from storage after a restart", () => {
+    rememberClosedTab(tab("@1", 100));
+    resetClosedTabsMemory();
+
+    expect(idOf(takeMostRecentlyClosed(200))).toBe("@1");
   });
 });
