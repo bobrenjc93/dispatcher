@@ -66,6 +66,7 @@ import {
   getCurrentTmuxTransportOutputRouter,
   sendInputToTmuxTerminal,
   sendPasteToTmuxTerminal,
+  TmuxPasteCancelledError,
   syncTmuxWindowSizeFromPaneTerminal,
   type TmuxPasteProgress,
 } from "../lib/tmuxControl";
@@ -370,6 +371,25 @@ function setTerminalPasteProgress(
   emitPasteProgressChange(terminalId);
 }
 
+const pasteCancellersByTerminal = new Map<string, Set<AbortController>>();
+
+/**
+ * Give up on the pastes waiting on this terminal's tmux and let typing through.
+ *
+ * Whatever tmux already took stays there; the paste itself is only applied by
+ * its last command, so a paste cancelled before that never appears.
+ */
+export function cancelTerminalPaste(terminalId: string) {
+  const cancellers = pasteCancellersByTerminal.get(terminalId);
+  if (!cancellers) {
+    return;
+  }
+  pasteCancellersByTerminal.delete(terminalId);
+  for (const canceller of cancellers) {
+    canceller.abort();
+  }
+}
+
 export function getTerminalPasteProgress(terminalId: string): TerminalPasteProgress | null {
   return pasteProgressByTerminal.get(terminalId) ?? null;
 }
@@ -428,6 +448,13 @@ async function pasteTextIntoTerminal(terminalId: string, xterm: Terminal | null,
       totalBytes: text.length,
       startedAt,
     });
+    const canceller = new AbortController();
+    let cancellers = pasteCancellersByTerminal.get(terminalId);
+    if (!cancellers) {
+      cancellers = new Set();
+      pasteCancellersByTerminal.set(terminalId, cancellers);
+    }
+    cancellers.add(canceller);
     try {
       await sendPasteToTmuxTerminal(terminalId, text, {
         onProgress: (progress) => {
@@ -436,8 +463,23 @@ async function pasteTextIntoTerminal(terminalId: string, xterm: Terminal | null,
             startedAt,
           });
         },
+        signal: canceller.signal,
+      });
+    } catch (error) {
+      if (!(error instanceof TmuxPasteCancelledError)) {
+        throw error;
+      }
+      debugLog("tmux.paste", "cancelled", {
+        terminalId,
+        chars: text.length,
+        waitedMs: Date.now() - startedAt,
       });
     } finally {
+      const remaining = pasteCancellersByTerminal.get(terminalId);
+      remaining?.delete(canceller);
+      if (remaining?.size === 0) {
+        pasteCancellersByTerminal.delete(terminalId);
+      }
       setTerminalPasteProgress(terminalId, null);
     }
     return;

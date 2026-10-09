@@ -246,6 +246,54 @@ export interface TmuxPasteProgress {
 
 interface TmuxPasteOptions {
   onProgress?: (progress: TmuxPasteProgress) => void;
+  /** Stop waiting on tmux and give the pane back; whatever was sent stays sent. */
+  signal?: AbortSignal;
+}
+
+export class TmuxPasteCancelledError extends Error {
+  constructor() {
+    super("paste cancelled");
+    this.name = "TmuxPasteCancelledError";
+  }
+}
+
+/**
+ * Send a command and wait for its reply, or for the cancellation, whichever
+ * comes first. Nothing is sent once the paste has been cancelled.
+ *
+ * Cancelling does not take a sent command back out of the queue. It has been
+ * written, tmux will answer it, and that answer has to be matched to it rather
+ * than to whatever is queued next.
+ */
+function sendCommandUnlessCancelled(
+  session: TmuxControlSession,
+  command: string,
+  signal: AbortSignal | undefined
+): Promise<string[]> {
+  if (!signal) {
+    return sendCommand(session, command);
+  }
+  if (signal.aborted) {
+    return Promise.reject(new TmuxPasteCancelledError());
+  }
+  const reply = sendCommand(session, command);
+  return new Promise<string[]>((resolve, reject) => {
+    const onAbort = () => {
+      void reply.catch(() => {});
+      reject(new TmuxPasteCancelledError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    reply.then(
+      (lines) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(lines);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
 }
 
 interface WindowProjectionResult {
@@ -3401,6 +3449,50 @@ function noteControlStreamAlive(session: TmuxControlSession) {
   );
 }
 
+const controlStreamStallChecks = new Map<TmuxControlSession, ReturnType<typeof setTimeout>>();
+
+/**
+ * How often to look at a queue that is waiting on replies. A look is cheap and
+ * the limit itself is a minute; this only bounds how late past that minute the
+ * stall is noticed.
+ */
+const CONTROL_STREAM_STALL_CHECK_MS = 5_000;
+
+/**
+ * Keep looking while anything is waiting on a reply.
+ *
+ * The check in `sendCommand` only runs when something new is queued. A paste
+ * waits on its own reply and holds the pane's typing until it gets one, so
+ * nothing new is queued for that pane: one sat on "Preparing paste" for a
+ * minute and a half, unable to type, until a background redraw on another
+ * pane happened to queue a command and trip the detector.
+ */
+function scheduleControlStreamStallCheck(session: TmuxControlSession) {
+  if (session.pendingCommands.length === 0 || controlStreamStallChecks.has(session)) {
+    return;
+  }
+  controlStreamStallChecks.set(session, setTimeout(() => {
+    controlStreamStallChecks.delete(session);
+    if (
+      controlSessions.get(session.id) !== session
+      || session.controlStreamStalledSince !== null
+    ) {
+      return;
+    }
+    if (
+      hasControlStreamStalled({
+        pendingCommandCount: session.pendingCommands.length,
+        oldestPendingSentAt: session.pendingCommands[0]?.sentAt ?? null,
+        now: Date.now(),
+      })
+    ) {
+      markControlStreamStalled(session, "no reply to a queued command");
+      return;
+    }
+    scheduleControlStreamStallCheck(session);
+  }, CONTROL_STREAM_STALL_CHECK_MS));
+}
+
 async function sendCommand(
   session: TmuxControlSession,
   command: string,
@@ -3450,6 +3542,7 @@ async function sendCommand(
       onSettle: options?.onSettle,
     };
     session.pendingCommands.push(pending);
+    scheduleControlStreamStallCheck(session);
     writeTerminal(session.transportTerminalId, `${command}\n`).catch((error) => {
       session.pendingCommands = session.pendingCommands.filter((entry) => entry !== pending);
       debugLog("tmux.command", "write failed", {
@@ -6085,11 +6178,13 @@ async function performTmuxPaste(
     preview: previewDebugText(normalized, 120),
   });
 
+  const signal = options?.signal;
   for (const [index, chunk] of chunks.entries()) {
     const appendFlag = index === 0 ? "" : " -a";
-    await sendCommand(
+    await sendCommandUnlessCancelled(
       session,
-      `set-buffer${appendFlag} -b ${bufferName} -- ${quoteTmuxCommandArgument(chunk)}`
+      `set-buffer${appendFlag} -b ${bufferName} -- ${quoteTmuxCommandArgument(chunk)}`,
+      signal
     );
     options?.onProgress?.({
       phase: "buffering",
@@ -6104,7 +6199,11 @@ async function performTmuxPaste(
     totalChunks: chunks.length,
     totalBytes: normalized.length,
   });
-  await sendCommand(session, `paste-buffer -p -d -b ${bufferName} -t ${pane.paneId}`);
+  await sendCommandUnlessCancelled(
+    session,
+    `paste-buffer -p -d -b ${bufferName} -t ${pane.paneId}`,
+    signal
+  );
 
   return true;
 }
