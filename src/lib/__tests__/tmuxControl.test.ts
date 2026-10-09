@@ -41,7 +41,7 @@ import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { findTerminalIds } from "../layoutUtils";
 import { CLOSED_TAB_TTL_MS, closedTabId, listClosedTabs } from "../closedTabs";
-import { TMUX_OWED_REPLY_WINDOW_MS } from "../tmuxControlStall";
+import { TMUX_CONTROL_STALL_MS, TMUX_OWED_REPLY_WINDOW_MS } from "../tmuxControlStall";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
 import {
   clearStatusResizeSuppressionsForTests,
@@ -63,6 +63,7 @@ import {
   routeTmuxTransportOutput,
   sendInputToTmuxTerminal,
   sendPasteToTmuxTerminal,
+  TmuxPasteCancelledError,
   syncTmuxWindowSize,
   syncTmuxWindowSizeFromPaneTerminal,
 } from "../tmuxControl";
@@ -627,6 +628,70 @@ describe("tmuxControl", () => {
 
     completeTmuxCommand(transportTerminalId, 11);
     await expect(pastePromise).resolves.toBe(true);
+  });
+
+  it("gives up on a paste tmux never answers, with nothing else queued behind it", async () => {
+    // The stall check used to run only when a new command was queued. A paste
+    // holds its pane's typing until its own reply comes back, so nothing new
+    // was queued: one sat on "Preparing paste" for a minute and a half.
+    const transportTerminalId = "transport-paste-stall";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId, { captureInitialContent: false });
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+
+    const pastePromise = sendPasteToTmuxTerminal(paneTerminalId, "one\r\ntwo");
+    const settled = vi.fn();
+    pastePromise.catch(() => {}).finally(settled);
+
+    await vi.advanceTimersByTimeAsync(TMUX_CONTROL_STALL_MS - 1_000);
+    expect(settled).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(pastePromise).rejects.toThrow();
+    expect(getWrittenTmuxCommands().some((command) => command.startsWith("paste-buffer"))).toBe(false);
+  });
+
+  it("lets typing through once a waiting paste is cancelled", async () => {
+    const transportTerminalId = "transport-paste-cancel";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId, { captureInitialContent: false });
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+
+    const canceller = new AbortController();
+    const pastePromise = sendPasteToTmuxTerminal(paneTerminalId, "one\r\ntwo", {
+      signal: canceller.signal,
+    });
+    await Promise.resolve();
+    expect(getWrittenTmuxCommand(0)).toMatch(/^set-buffer /);
+
+    // Typed while the paste waits: held behind it.
+    const inputPromise = sendInputToTmuxTerminal(paneTerminalId, "x");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getWrittenTmuxCommands()).toHaveLength(1);
+
+    canceller.abort();
+    await expect(pastePromise).rejects.toBeInstanceOf(TmuxPasteCancelledError);
+    await vi.advanceTimersByTimeAsync(0);
+
+    const commands = getWrittenTmuxCommands();
+    expect(commands).toHaveLength(2);
+    expect(commands[1]).toBe("send-keys -t %1 -H 78\n");
+
+    // The set-buffer's late reply is still its own, not the keystroke's.
+    const inputSettled = vi.fn();
+    void inputPromise.finally(inputSettled);
+    completeTmuxCommand(transportTerminalId, 10);
+    await flushMicrotasks();
+    expect(inputSettled).not.toHaveBeenCalled();
+
+    completeTmuxCommand(transportTerminalId, 11);
+    await flushMicrotasks();
+    expect(inputSettled).toHaveBeenCalled();
+    expect(getWrittenTmuxCommands().some((command) => command.startsWith("paste-buffer"))).toBe(false);
   });
 
   it("keeps one input's chunks together when another follows immediately", async () => {

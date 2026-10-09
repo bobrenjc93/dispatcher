@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
+  cancelTerminalPaste,
   sendSyntheticTerminalInput,
   suppressTransientFocusSequences,
   type TerminalPasteProgress,
@@ -45,7 +46,16 @@ function formatPasteSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function getPasteProgressLabel(progress: TerminalPasteProgress): string {
+/**
+ * How long a paste can go without tmux answering a step before the banner says
+ * so. A healthy connection answers each step in well under a second.
+ */
+const PASTE_UNANSWERED_MS = 5_000;
+
+function getPasteProgressLabel(progress: TerminalPasteProgress, unanswered: boolean): string {
+  if (unanswered) {
+    return "tmux isn't answering";
+  }
   if (progress.phase === "pasting") {
     return "Applying paste";
   }
@@ -65,6 +75,25 @@ function getPasteProgressPercent(progress: TerminalPasteProgress): number {
   return Math.max(8, Math.min(96, (progress.completedChunks / progress.totalChunks) * 100));
 }
 
+function usePasteUnanswered(progress: TerminalPasteProgress | null): boolean {
+  const [unansweredSince, setUnansweredSince] = useState<number | null>(null);
+  const updatedAt = progress?.updatedAt ?? null;
+
+  useEffect(() => {
+    setUnansweredSince(null);
+    if (updatedAt === null) {
+      return;
+    }
+    const timer = setTimeout(
+      () => setUnansweredSince(updatedAt),
+      Math.max(0, updatedAt + PASTE_UNANSWERED_MS - Date.now())
+    );
+    return () => clearTimeout(timer);
+  }, [updatedAt]);
+
+  return updatedAt !== null && unansweredSince === updatedAt;
+}
+
 export function TerminalPane({
   terminalId,
   layoutId,
@@ -74,6 +103,7 @@ export function TerminalPane({
   const cwd = useTerminalStore((s) => s.sessions[terminalId]?.cwd);
   const { containerRef, searchAddonRef, xtermRef, fit } = useTerminalBridge({ terminalId, cwd });
   const pasteProgress = useTerminalPasteProgress(terminalId);
+  const pasteUnanswered = usePasteUnanswered(pasteProgress);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -376,8 +406,24 @@ export function TerminalPane({
       {pasteProgress && (
         <div className="terminal-paste-progress" role="status" aria-live="polite">
           <div className="terminal-paste-progress-row">
-            <span>{getPasteProgressLabel(pasteProgress)}</span>
-            <span>{formatPasteSize(pasteProgress.totalBytes)}</span>
+            <span className="terminal-paste-progress-label">
+              {getPasteProgressLabel(pasteProgress, pasteUnanswered)}
+            </span>
+            <span className="terminal-paste-progress-size">
+              {formatPasteSize(pasteProgress.totalBytes)}
+            </span>
+            <button
+              type="button"
+              className="terminal-paste-progress-cancel"
+              title="Stop waiting on this paste and let typing through"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                cancelTerminalPaste(terminalId);
+                xtermRef.current?.focus();
+              }}
+            >
+              Cancel
+            </button>
           </div>
           <div className="terminal-paste-progress-track">
             <div

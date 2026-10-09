@@ -995,15 +995,34 @@ body.sidebar-resizing .terminal-pane {
   white-space: nowrap;
 }
 
-.terminal-paste-progress-row span:first-child {
+.terminal-paste-progress-label {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.terminal-paste-progress-row span:last-child {
+.terminal-paste-progress-size {
   color: var(--text-muted);
   flex-shrink: 0;
+}
+
+/* The banner lets clicks through to the terminal; this is the one exception. */
+.terminal-paste-progress-cancel {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  line-height: 16px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.terminal-paste-progress-cancel:hover {
+  background: color-mix(in srgb, var(--text-primary) 10%, transparent);
 }
 
 .terminal-paste-progress-track {
