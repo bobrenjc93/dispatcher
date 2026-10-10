@@ -7,6 +7,41 @@ import { useTerminalStore } from "../stores/useTerminalStore";
 
 const HEARTBEAT_INTERVAL_MS = 5_000;
 const HEARTBEAT_FAILURE_LOG_INTERVAL_MS = 30_000;
+/**
+ * How often a heartbeat carries page stats. The backend writes them next to the
+ * web process's memory footprint, so a leak shows up as whichever count climbs
+ * along with it.
+ */
+const PAGE_STATS_INTERVAL_MS = 60_000;
+
+type PageStatsSource = () => Record<string, number>;
+const pageStatsSources = new Map<string, PageStatsSource>();
+let lastPageStatsAt = 0;
+
+/**
+ * Add counts to the page stats under `name.`. A source that throws is left
+ * out of that sample rather than losing the heartbeat.
+ */
+export function registerRendererPageStatsSource(name: string, source: PageStatsSource) {
+  pageStatsSources.set(name, source);
+}
+
+export function collectRendererPageStats(): Record<string, number> {
+  const stats: Record<string, number> = {};
+  if (typeof document !== "undefined") {
+    stats.domNodes = document.getElementsByTagName("*").length;
+  }
+  for (const [name, source] of pageStatsSources) {
+    try {
+      for (const [key, value] of Object.entries(source())) {
+        stats[`${name}.${key}`] = Math.round(value);
+      }
+    } catch {
+      // Stats are diagnostic; a broken source must not cost the heartbeat.
+    }
+  }
+  return stats;
+}
 
 let started = false;
 let sequence = 0;
@@ -72,6 +107,11 @@ function sendRendererHeartbeat(reason: string) {
   );
   sequence = details.sequence;
   skippedHeartbeatCount = 0;
+  const now = Date.now();
+  if (now - lastPageStatsAt >= PAGE_STATS_INTERVAL_MS) {
+    lastPageStatsAt = now;
+    details.pageStats = collectRendererPageStats();
+  }
 
   void rendererHeartbeat(details)
     .catch((error) => {

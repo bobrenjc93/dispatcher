@@ -1,5 +1,6 @@
 use crate::errors::PtyError;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -15,6 +16,8 @@ const HEARTBEAT_RECOVER_AFTER_MS: u128 = 60_000;
 /// Long enough for a reload to finish and heartbeats to resume before another
 /// attempt, so a window that cannot come back is not reloaded in a loop.
 const RECOVERY_COOLDOWN_MS: u128 = 120_000;
+/// How often the web process's footprint goes into the memory log.
+const MEMORY_LOG_INTERVAL_MS: u128 = 5 * 60_000;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +34,9 @@ pub struct RendererHeartbeatDetails {
     pub tmux_window_count: usize,
     pub tmux_pane_count: usize,
     pub skipped_heartbeat_count: usize,
+    /// Counts that might grow with a leak; only some heartbeats carry them.
+    #[serde(default)]
+    pub page_stats: Option<BTreeMap<String, f64>>,
 }
 
 #[derive(Clone)]
@@ -49,6 +55,17 @@ struct RendererWatchdogState {
     no_heartbeat_logged: bool,
     last_recovery_at: Option<SystemTime>,
     recovery_count: usize,
+    web_content_pid: Option<i32>,
+    last_footprint_bytes: Option<u64>,
+    last_page_stats: Option<(SystemTime, BTreeMap<String, f64>)>,
+    last_memory_log_at: Option<SystemTime>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct WebContentObservation {
+    log: Option<String>,
+    memory_log: Option<String>,
+    reload: bool,
 }
 
 impl RendererHeartbeatDetails {
@@ -84,6 +101,10 @@ impl RendererWatchdog {
                 no_heartbeat_logged: false,
                 last_recovery_at: None,
                 recovery_count: 0,
+                web_content_pid: None,
+                last_footprint_bytes: None,
+                last_page_stats: None,
+                last_memory_log_at: None,
             })),
         }
     }
@@ -111,12 +132,33 @@ impl RendererWatchdog {
                     }
                 }
 
+                let reported_pid = crate::web_content::current_pid(&app_handle);
+                let observation = match state.lock() {
+                    Ok(mut guard) => guard.observe_web_content(
+                        SystemTime::now(),
+                        reported_pid,
+                        crate::web_content::is_alive,
+                        crate::web_content::footprint_bytes,
+                    ),
+                    Err(_) => WebContentObservation::default(),
+                };
+                if let Some(message) = &observation.log {
+                    let _ = crate::debug_log::append_debug_log(message);
+                }
+                if let Some(line) = &observation.memory_log {
+                    let _ = crate::debug_log::append_renderer_memory_log(line);
+                }
+                if observation.reload {
+                    reload_window(&app_handle, "web content process gone");
+                    continue;
+                }
+
                 let recover = match state.lock() {
                     Ok(mut guard) => guard.should_recover(SystemTime::now()),
                     Err(_) => false,
                 };
                 if recover {
-                    reload_window(&app_handle);
+                    reload_window(&app_handle, "renderer unresponsive");
                 }
             });
 
@@ -187,6 +229,10 @@ impl RendererWatchdogState {
 
         self.last_heartbeat_at = Some(now);
         self.last_sequence = Some(sequence);
+        let mut details = details;
+        if let Some(stats) = details.page_stats.take() {
+            self.last_page_stats = Some((now, stats));
+        }
         self.last_details = Some(details);
         if log_message.is_some() {
             self.last_alive_log_at = Some(now);
@@ -277,6 +323,93 @@ impl RendererWatchdogState {
         self.take_recovery_slot(now)
     }
 
+    /// Follow the web process, and reload as soon as it is gone.
+    ///
+    /// `reported_pid` is what WebKit says the page runs in now, or `None` when
+    /// it could not be asked this tick. A different live process is a swap,
+    /// not a death: WebKit may move a page to a fresh process on navigation.
+    fn observe_web_content(
+        &mut self,
+        now: SystemTime,
+        reported_pid: Option<i32>,
+        is_alive: impl Fn(i32) -> bool,
+        footprint_bytes: impl Fn(i32) -> Option<u64>,
+    ) -> WebContentObservation {
+        let mut observation = WebContentObservation::default();
+        let reported_live = reported_pid.filter(|pid| *pid > 0 && is_alive(*pid));
+
+        match (self.web_content_pid, reported_live) {
+            (Some(tracked), Some(next)) if next != tracked => {
+                observation.log = Some(format!(
+                    "[backend:renderer_watchdog] web content process changed from {} to {} pid={}",
+                    tracked,
+                    next,
+                    std::process::id()
+                ));
+                self.web_content_pid = Some(next);
+                self.last_footprint_bytes = None;
+            }
+            (Some(tracked), _) if !is_alive(tracked) => {
+                let last_footprint = format_megabytes(self.last_footprint_bytes);
+                self.web_content_pid = None;
+                self.last_footprint_bytes = None;
+                observation.reload = self.take_recovery_slot(now);
+                observation.log = Some(format!(
+                    "[backend:renderer_watchdog] web content process {} is gone last_footprint_mb={} {} pid={}",
+                    tracked,
+                    last_footprint,
+                    if observation.reload {
+                        "reloading"
+                    } else {
+                        "reloaded too recently to try again"
+                    },
+                    std::process::id()
+                ));
+                observation.memory_log = Some(format!(
+                    "web_content={} gone last_footprint_mb={}",
+                    tracked, last_footprint
+                ));
+                return observation;
+            }
+            (None, Some(next)) => {
+                self.web_content_pid = Some(next);
+            }
+            _ => {}
+        }
+
+        let Some(pid) = self.web_content_pid else {
+            return observation;
+        };
+        if let Some(footprint) = footprint_bytes(pid) {
+            self.last_footprint_bytes = Some(footprint);
+        }
+        let due = self
+            .last_memory_log_at
+            .map(|last| elapsed_millis_since(now, last) >= MEMORY_LOG_INTERVAL_MS)
+            .unwrap_or(true);
+        if due && self.last_footprint_bytes.is_some() {
+            self.last_memory_log_at = Some(now);
+            observation.memory_log = Some(format!(
+                "web_content={} footprint_mb={} {}",
+                pid,
+                format_megabytes(self.last_footprint_bytes),
+                self.page_stats_summary(now)
+            ));
+        }
+        observation
+    }
+
+    fn page_stats_summary(&self, now: SystemTime) -> String {
+        let Some((at, stats)) = &self.last_page_stats else {
+            return "page_stats=none".to_string();
+        };
+        let mut summary = format!("page_stats_age_s={}", elapsed_millis_since(now, *at) / 1000);
+        for (key, value) in stats {
+            summary.push_str(&format!(" {}={}", sanitize_log_value(key, 60), value.round()));
+        }
+        summary
+    }
+
     fn take_recovery_slot(&mut self, now: SystemTime) -> bool {
         if let Some(last) = self.last_recovery_at {
             if elapsed_millis_since(now, last) < RECOVERY_COOLDOWN_MS {
@@ -289,12 +422,18 @@ impl RendererWatchdogState {
     }
 }
 
-/// Reload the window a wedged renderer is running in.
+fn format_megabytes(bytes: Option<u64>) -> String {
+    bytes
+        .map(|bytes| (bytes / (1024 * 1024)).to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Reload the window a wedged or dead renderer was running in.
 ///
 /// A native reload rather than evaluating `location.reload()`: if the renderer
 /// has stopped answering, its JavaScript is exactly what cannot be relied on to
 /// run. Terminals are unaffected — they live in the daemon.
-fn reload_window(app_handle: &tauri::AppHandle) {
+fn reload_window(app_handle: &tauri::AppHandle, reason: &str) {
     use tauri::Manager;
     let Some(window) = app_handle.get_webview_window("main") else {
         let _ = crate::debug_log::append_debug_log(
@@ -308,8 +447,8 @@ fn reload_window(app_handle: &tauri::AppHandle) {
         Err(err) => format!("reload failed: {}", err),
     };
     let _ = crate::debug_log::append_debug_log(&format!(
-        "[backend:renderer_watchdog] renderer unresponsive, {}",
-        outcome
+        "[backend:renderer_watchdog] {}, {}",
+        reason, outcome
     ));
 }
 
@@ -359,6 +498,7 @@ mod tests {
             tmux_window_count: 1,
             tmux_pane_count: 1,
             skipped_heartbeat_count: 0,
+            page_stats: None,
         }
     }
 
@@ -375,6 +515,10 @@ mod tests {
             no_heartbeat_logged: false,
             last_recovery_at: None,
             recovery_count: 0,
+            web_content_pid: None,
+            last_footprint_bytes: None,
+            last_page_stats: None,
+            last_memory_log_at: None,
         }
     }
 
@@ -443,4 +587,80 @@ mod tests {
         assert!(message.contains("last_sequence=42"));
         assert!(message.contains("active=terminal-1"));
     }
+
+    fn healthy_state() -> RendererWatchdogState {
+        watchdog_state(Duration::from_millis(0))
+    }
+
+    #[test]
+    fn reloads_as_soon_as_the_web_process_is_gone() {
+        // WebKit kills the web process past its memory limit. The heartbeat
+        // watchdog only noticed a minute later; this is the next tick.
+        let mut state = healthy_state();
+        let now = SystemTime::now();
+        state.observe_web_content(now, Some(100), |_| true, |_| Some(16 * 1024 * 1024 * 1024));
+
+        let observation = state.observe_web_content(now, Some(0), |_| false, |_| None);
+        assert!(observation.reload);
+        assert!(observation.log.unwrap().contains("last_footprint_mb=16384"));
+        assert_eq!(state.web_content_pid, None);
+        // The heartbeat watchdog must not reload it a second time.
+        state.last_heartbeat_at = Some(now - Duration::from_millis((HEARTBEAT_RECOVER_AFTER_MS + 1) as u64));
+        assert!(!state.should_recover(now));
+    }
+
+    #[test]
+    fn reloads_when_webkit_cannot_be_asked() {
+        // A busy main thread leaves the question unanswered; the tracked
+        // process being gone is enough.
+        let mut state = healthy_state();
+        let now = SystemTime::now();
+        state.observe_web_content(now, Some(100), |_| true, |_| Some(1));
+        assert!(state.observe_web_content(now, None, |_| false, |_| None).reload);
+    }
+
+    #[test]
+    fn follows_a_page_that_moved_to_another_process() {
+        let mut state = healthy_state();
+        let now = SystemTime::now();
+        state.observe_web_content(now, Some(100), |_| true, |_| Some(1));
+
+        let observation = state.observe_web_content(now, Some(200), |pid| pid == 200, |_| Some(1));
+        assert!(!observation.reload);
+        assert_eq!(state.web_content_pid, Some(200));
+    }
+
+    #[test]
+    fn writes_footprint_and_page_stats_every_few_minutes() {
+        let mut state = healthy_state();
+        let start = SystemTime::now();
+        let mut stats = BTreeMap::new();
+        stats.insert("domNodes".to_string(), 1234.0);
+        state.last_page_stats = Some((start, stats));
+
+        let first = state.observe_web_content(start, Some(100), |_| true, |_| Some(512 * 1024 * 1024));
+        let line = first.memory_log.unwrap();
+        assert!(line.contains("web_content=100 footprint_mb=512"));
+        assert!(line.contains("domNodes=1234"));
+
+        let soon = start + Duration::from_secs(60);
+        assert_eq!(state.observe_web_content(soon, Some(100), |_| true, |_| Some(1)).memory_log, None);
+
+        let later = start + Duration::from_millis(MEMORY_LOG_INTERVAL_MS as u64);
+        assert!(state.observe_web_content(later, Some(100), |_| true, |_| Some(1)).memory_log.is_some());
+    }
+
+    #[test]
+    fn keeps_page_stats_from_the_heartbeat_that_carried_them() {
+        let mut state = healthy_state();
+        let mut details = heartbeat_details(43);
+        details.page_stats = Some(BTreeMap::from([("terminals.instances".to_string(), 56.0)]));
+        state.record_heartbeat(details);
+        state.record_heartbeat(heartbeat_details(44));
+        assert_eq!(
+            state.last_page_stats.as_ref().unwrap().1.get("terminals.instances"),
+            Some(&56.0)
+        );
+    }
+
 }

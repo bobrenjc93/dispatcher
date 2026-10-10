@@ -14,6 +14,7 @@ mod replication;
 mod run_diagnostics;
 mod session_recorder;
 mod tailscale;
+mod web_content;
 mod web_push;
 mod web_server;
 

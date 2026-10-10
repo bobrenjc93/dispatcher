@@ -105,6 +105,7 @@ import {
   markStatusResizeSuppression,
   STATUS_RESIZE_SUPPRESSION_MS,
 } from "./statusResizeSuppression";
+import { registerRendererPageStatsSource } from "./rendererHeartbeat";
 
 interface PendingCommand {
   command: string;
@@ -433,6 +434,35 @@ const controlSessions = tmuxRuntime.controlSessions;
 const paneTerminalToSessionId = tmuxRuntime.paneTerminalToSessionId;
 const windowTerminalToSessionId = tmuxRuntime.windowTerminalToSessionId;
 const transportTerminalToSessionId = tmuxRuntime.transportTerminalToSessionId;
+
+registerRendererPageStatsSource("tmux", () => {
+  let panes = 0;
+  let pendingCommands = 0;
+  let lineBufferChars = 0;
+  let pendingPaneOutputChars = 0;
+  let viewportLines = 0;
+  for (const session of controlSessions.values()) {
+    panes += session.panes.size;
+    pendingCommands += session.pendingCommands.length;
+    lineBufferChars += session.lineBuffer.length;
+    for (const chunks of session.pendingPaneOutput.values()) {
+      for (const chunk of chunks) {
+        pendingPaneOutputChars += chunk.length;
+      }
+    }
+    for (const pane of session.panes.values()) {
+      viewportLines += pane.viewportLines?.length ?? 0;
+    }
+  }
+  return {
+    sessions: controlSessions.size,
+    panes,
+    pendingCommands,
+    lineBufferChars,
+    pendingPaneOutputChars,
+    viewportLines,
+  };
+});
 /**
  * Reply blocks a transport owes that no command is waiting for.
  *

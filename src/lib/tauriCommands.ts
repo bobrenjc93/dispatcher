@@ -28,6 +28,8 @@ export interface RendererHeartbeatDetails {
   tmuxWindowCount: number;
   tmuxPaneCount: number;
   skippedHeartbeatCount: number;
+  /** Counts that might grow with a leak; sent about once a minute. */
+  pageStats?: Record<string, number>;
 }
 
 /**
