@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 static DEBUG_LOG_LOCK: Mutex<()> = Mutex::new(());
 
 const DEBUG_LOG_MAX_BYTES: u64 = 20 * 1024 * 1024;
+/// A line every few minutes; this keeps weeks of it.
+const RENDERER_MEMORY_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 pub fn debug_log_path() -> PathBuf {
     #[cfg(target_os = "macos")]
@@ -66,12 +68,16 @@ fn rotated_debug_log_path(path: &Path) -> PathBuf {
 }
 
 fn rotate_debug_log_if_needed(path: &Path) -> Result<(), PtyError> {
+    rotate_log_if_larger_than(path, DEBUG_LOG_MAX_BYTES)
+}
+
+fn rotate_log_if_larger_than(path: &Path, max_bytes: u64) -> Result<(), PtyError> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(PtyError::from(err)),
     };
-    if metadata.len() <= DEBUG_LOG_MAX_BYTES {
+    if metadata.len() <= max_bytes {
         return Ok(());
     }
 
@@ -112,6 +118,33 @@ pub fn init_debug_log() -> Result<(), PtyError> {
     )
     .map_err(PtyError::from)?;
 
+    Ok(())
+}
+
+/// The web process's memory over time, next to the page's own counts.
+///
+/// Separate from the debug log because that one rotates within the hour, and a
+/// leak that takes a day or two to kill the web process needs the whole day.
+pub fn renderer_memory_log_path() -> PathBuf {
+    debug_log_path().with_file_name("renderer-memory.log")
+}
+
+pub fn append_renderer_memory_log(message: &str) -> Result<(), PtyError> {
+    let _guard = DEBUG_LOG_LOCK
+        .lock()
+        .map_err(|_| PtyError::from(String::from("debug log lock poisoned")))?;
+    let path = renderer_memory_log_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(PtyError::from)?;
+    }
+    rotate_log_if_larger_than(&path, RENDERER_MEMORY_LOG_MAX_BYTES)?;
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(PtyError::from)?;
+    writeln!(file, "{} {}", timestamp_prefix(), message).map_err(PtyError::from)?;
     Ok(())
 }
 

@@ -71,6 +71,7 @@ import {
   type TmuxPasteProgress,
 } from "../lib/tmuxControl";
 import { wrapBracketedPaste } from "../lib/tmuxControlProtocol";
+import { registerRendererPageStatsSource } from "../lib/rendererHeartbeat";
 
 // ---------------------------------------------------------------------------
 // Persistent terminal instances — survive React remounts caused by layout
@@ -238,6 +239,39 @@ const PARKED_TERMINAL_WIDTH = 1200;
 const PARKED_TERMINAL_HEIGHT = 720;
 const PARKING_ROOT_ID = "dispatcher-terminal-parking-root";
 const MAX_SCREENSHOT_CAPTURE_DEVICE_PIXELS = 1_500_000;
+
+registerRendererPageStatsSource("terminals", () => {
+  // xterm keeps three uint32s per cell.
+  let bufferLines = 0;
+  let bufferCells = 0;
+  for (const { xterm } of instances.values()) {
+    const lines = xterm.buffer.normal.length + xterm.buffer.alternate.length;
+    bufferLines += lines;
+    bufferCells += lines * xterm.cols;
+  }
+  let writeBufferChars = 0;
+  for (const chunks of terminalBridgeRuntime.writeBuffers.values()) {
+    for (const chunk of chunks) {
+      writeBufferChars += chunk.length;
+    }
+  }
+  const stats: Record<string, number> = {
+    instances: instances.size,
+    parked: typeof document === "undefined"
+      ? 0
+      : document.getElementById(PARKING_ROOT_ID)?.childElementCount ?? 0,
+    bufferLines,
+    bufferMB: (bufferCells * 12) / (1024 * 1024),
+    writeBufferChars,
+  };
+  // Every runtime map and set, so one that only ever grows stands out.
+  for (const [name, value] of Object.entries(terminalBridgeRuntime)) {
+    if (value instanceof Map || value instanceof Set) {
+      stats[`runtime.${name}`] = value.size;
+    }
+  }
+  return stats;
+});
 const SLOW_SCREENSHOT_CAPTURE_MS = 80;
 
 // ---------------------------------------------------------------------------
