@@ -14,15 +14,19 @@ import {
   BRACKETED_PASTE_END,
   BRACKETED_PASTE_START,
   buildTmuxPaneCursorCommand,
+  buildReplicaPaneReplay,
   buildTmuxPaneSnapshotCommand,
+  buildTmuxReplicaPaneStateCommand,
   buildTmuxWindowSnapshotCommand,
   computeCaptureRetryDelayMs,
   encodeTmuxSendKeysHex,
   normalizeTmuxPasteBufferText,
   parseTmuxPaneSnapshot,
+  parseTmuxReplicaPaneState,
   parseTmuxWindowSnapshot,
   quoteTmuxCommandArgument,
   type TmuxPaneSnapshot,
+  type TmuxReplicaPaneState,
   type TmuxWindowSnapshot,
   unescapeTmuxOutput,
 } from "./tmuxControlProtocol";
@@ -45,6 +49,7 @@ import {
   isReplicaClient,
   performAction,
   registerActionHandler,
+  setTerminalSnapshotSource,
 } from "./replication";
 import { noteControlModeStarted } from "./tmuxAttachWatchdog";
 import {
@@ -118,7 +123,7 @@ interface PendingCommand {
   // the only point where a caller can sample pane state that is guaranteed to
   // describe exactly what the reply describes — by the time an `await`
   // resumes, later %output in the same chunk has already been applied.
-  onSettle?: () => void;
+  onSettle?: (lines: string[]) => void;
 }
 
 class TmuxCommandResponseError extends Error {}
@@ -521,6 +526,10 @@ const TMUX_REATTACH_SUPPRESSION_MS = 30_000;
 const TMUX_INITIAL_CAPTURE_BACKGROUND_DELAY_MS = 250;
 const TMUX_INITIAL_CAPTURE_RETRY_DELAY_MS = 50;
 const TMUX_INITIAL_CAPTURE_MAX_RACE_RETRIES = 3;
+// How far back a replica's snapshot of a tmux pane reaches. The byte limit
+// the replica sets usually binds first; this only stops tmux formatting
+// thousands of lines that would be thrown away.
+const TMUX_REPLICA_HISTORY_LINES = 5_000;
 const TMUX_PENDING_PANE_OUTPUT_MAX_CHUNKS = 512;
 const TMUX_PENDING_PANE_OUTPUT_MAX_CHARS = 2_000_000;
 const TMUX_CLIENT_RESIZE_LAYOUT_SUPPRESSION_MS = 1_000;
@@ -3526,7 +3535,7 @@ function scheduleControlStreamStallCheck(session: TmuxControlSession) {
 async function sendCommand(
   session: TmuxControlSession,
   command: string,
-  options?: { onSettle?: () => void }
+  options?: { onSettle?: (lines: string[]) => void }
 ): Promise<string[]> {
   if (
     !session.controlModeActive
@@ -4023,6 +4032,15 @@ async function capturePaneFullContent(
     return;
   }
 
+  // Replicas are fed the pane's raw output whether or not this desktop is
+  // showing it, so a replay that only repairs what this desktop skipped is
+  // nothing they need. They do need telling when their copy may be wrong in a
+  // way more output will not fix: a fresh attach (whatever they hold predates
+  // it) or history tmux has dropped (a clear-history they still show).
+  const replicaMayDiffer =
+    options.initial === true
+    || getPaneHistoryStaleReason(pane, { ignoreCaptureInFlight: true }) === "history-shrank";
+
   if (options.initial) {
     if (pane.initialContentCaptured) {
       return;
@@ -4229,6 +4247,7 @@ async function capturePaneFullContent(
         allowParkedWrite: true,
         replaceBufferedOutput: true,
         clearScrollbackBeforeWrite: true,
+        replicaUpdate: replicaMayDiffer ? "invalidate" : "skip",
       }
     );
     if (queued) {
@@ -4627,6 +4646,9 @@ async function redrawVisiblePaneContent(
       recordActivity: false,
       allowParkedWrite: options?.allowParkedWrite,
       replaceBufferedOutput: true,
+      // A hidden pane is redrawn to make up for output this desktop parked;
+      // replicas were sent that output as it arrived.
+      replicaUpdate: options?.backgroundRefresh ? "skip" : undefined,
     }
   );
   if (queued) {
@@ -5660,7 +5682,7 @@ function processControlLine(session: TmuxControlSession, line: string) {
         command: current.pending?.command ?? null,
         responseLines: current.lines.length,
       });
-      current.pending?.onSettle?.();
+      current.pending?.onSettle?.(current.lines);
       current.pending?.resolve(current.lines);
       return;
     }
@@ -7175,6 +7197,82 @@ registerActionHandler("focusTerminal", (terminalId) => {
 registerActionHandler("renameTerminal", (terminalId, name) => {
   void renameTmuxTerminal(terminalId, name);
 });
+
+/**
+ * Answer a replica's snapshot request for a tmux pane straight from tmux.
+ *
+ * This desktop's own copy of a pane is no use for it: a pane that is not on
+ * screen here has its output parked rather than rendered, and only gets its
+ * history back when someone looks at it, so a phone opening a tab the desktop
+ * had hidden used to get one screenful and nothing to scroll. tmux has the
+ * whole thing regardless.
+ *
+ * The replay is handed over from the capture's `%end`, synchronously. tmux
+ * answers a command only after the output it had already queued, so the
+ * capture describes the pane exactly as of that point in the stream; output
+ * after it is broadcast as it is parsed, which is after this returns, so it
+ * lands behind the snapshot rather than being lost or applied twice.
+ */
+function captureTmuxPaneForReplica(
+  terminalId: string,
+  maxBytes: number,
+  deliver: (replay: string | null) => void
+): boolean {
+  const session = getControlSessionForTerminal(terminalId);
+  const pane = getTmuxPaneStateByTerminal(terminalId);
+  if (!session || !pane) {
+    return false;
+  }
+
+  let delivered = false;
+  const finish = (replay: string | null) => {
+    if (delivered) {
+      return;
+    }
+    delivered = true;
+    deliver(replay);
+  };
+
+  let state: TmuxReplicaPaneState | null = null;
+  // Queued together so tmux runs them in the same drain, with no pane output
+  // in between to make the cursor disagree with the text.
+  sendCommand(session, buildTmuxReplicaPaneStateCommand(pane.paneId), {
+    onSettle: (lines) => {
+      state = parseTmuxReplicaPaneState(lines[0]);
+    },
+  }).catch(() => {});
+  sendCommand(
+    session,
+    buildTmuxPaneCaptureCommand({
+      paneId: pane.paneId,
+      // The alternate screen has no scrollback to send, and asking for history
+      // there would return the normal screen's lines above it instead.
+      includeHistory: !pane.alternateOn,
+      historySize: TMUX_REPLICA_HISTORY_LINES,
+    }),
+    {
+      onSettle: (lines) => {
+        finish(buildReplicaPaneReplay({
+          lines,
+          state,
+          fallbackHeight: pane.height,
+          maxBytes,
+        }));
+      },
+    }
+  ).catch((error) => {
+    debugLog("tmux.capture", "replica pane capture failed", {
+      sessionId: session.id,
+      paneId: pane.paneId,
+      terminalId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    finish(null);
+  });
+  return true;
+}
+
+setTerminalSnapshotSource(captureTmuxPaneForReplica);
 
 /**
  * Re-establish control sessions for transports that outlived the UI.

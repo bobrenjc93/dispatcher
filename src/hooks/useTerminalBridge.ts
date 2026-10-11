@@ -36,6 +36,7 @@ import { debugLog } from "../lib/debugLog";
 import { getScopedStorageKey } from "../lib/storageNamespace";
 import {
   forgetMirroredTerminal,
+  invalidateMirroredTerminal,
   isPrimaryClient,
   isReplicaClient,
   mirrorTerminalOutput,
@@ -119,6 +120,19 @@ interface QueuedTerminalOutputOptions {
    * clearing scrollback is intentional.
    */
   clearScrollbackBeforeWrite?: boolean;
+  /**
+   * What replicas get in place of these bytes. Unset, they are mirrored like
+   * any other output.
+   *
+   * - `skip`: a repaint the desktop needs only because it chose not to paint
+   *   output it was sent. Replicas were sent that output, so they are already
+   *   current — and for a history replay, mirroring would push the pane's
+   *   entire scrollback down a phone's connection to tell it nothing new.
+   * - `invalidate`: a rebuild from the backend that may cover output that
+   *   never passed through here, such as a tmux pane reattached after its
+   *   control stream dropped. Replicas are told to ask for a fresh snapshot.
+   */
+  replicaUpdate?: "skip" | "invalidate";
 }
 
 type SkippedTmuxWriteReason = "parked" | "missing-frontend";
@@ -943,6 +957,27 @@ function batchedWrite(
   data: string,
   options?: QueuedTerminalOutputOptions
 ): boolean {
+  const backendKind = getTerminalBackendKind(terminalId);
+  const isTmuxBackend = backendKind === "tmux-pane" || backendKind === "tmux-window";
+
+  // Every terminal's output converges here — local PTYs and tmux panes alike,
+  // the latter already decoded out of the control protocol. Mirroring at this
+  // point is what lets a replica render tmux exactly like the desktop does.
+  //
+  // Before the parking check, not after it. Parking is the desktop deciding
+  // not to paint a tab it is not showing, which says nothing about what a
+  // phone is showing. Mirrored after it, a phone got only the desktop's
+  // occasional repaints of a hidden pane — whole screens drawn over each
+  // other, none of which ever scrolled — so the tab had no history and Scroll
+  // had nothing to move.
+  if (options?.replicaUpdate === "invalidate") {
+    invalidateMirroredTerminal(terminalId);
+  } else if (options?.replicaUpdate !== "skip") {
+    // tmux keeps a pane's history and a snapshot asks it directly, so only a
+    // local shell's output has to be held on to for replicas that join later.
+    mirrorTerminalOutput(terminalId, data, { retain: !isTmuxBackend });
+  }
+
   // A question the program asks the terminal has to reach the terminal, even
   // for a pane nothing is looking at. Parking is about not painting output
   // nobody can see; a query is not output, it is half of a conversation, and
@@ -965,17 +1000,11 @@ function batchedWrite(
     }
   }
 
-  // Every terminal's output converges here — local PTYs and tmux panes alike,
-  // the latter already decoded out of the control protocol. Mirroring at this
-  // point is what lets a replica render tmux exactly like the desktop does.
-  mirrorTerminalOutput(terminalId, data);
-
   noteTerminalOutput(terminalId, data.length);
 
   // Record the decoded stream for tmux panes. A local shell's bytes are the
   // PTY's bytes, which the backend already captured at the transport.
-  const recordedBackendKind = getTerminalBackendKind(terminalId);
-  if (recordedBackendKind === "tmux-pane" || recordedBackendKind === "tmux-window") {
+  if (isTmuxBackend) {
     recordPaneOutput(terminalId, data);
   }
 
@@ -1340,6 +1369,12 @@ export async function clearTerminalById(terminalId: string): Promise<void> {
   }
 
   instances.get(terminalId)?.xterm.clear();
+  // A replica's scrollback goes too. For tmux the screen follows on its own
+  // when the pane redraws after C-l; the history is only ever dropped here.
+  const backendKind = getTerminalBackendKind(terminalId);
+  mirrorTerminalOutput(terminalId, "\u001b[3J", {
+    retain: backendKind !== "tmux-pane" && backendKind !== "tmux-window",
+  });
   try {
     await clearTmuxTerminal(terminalId);
   } catch (error) {
@@ -2716,12 +2751,22 @@ export function findScrollContainer(element: HTMLElement | null): HTMLElement | 
   return null;
 }
 
-/** Clear a replica's terminal before the desktop replays its current screen. */
+/**
+ * Clear a replica's terminal before the desktop replays its current screen.
+ *
+ * Written as a reset sequence rather than done with `xterm.reset()`, so it
+ * lands in order with the writes around it. Calling reset directly cleared the
+ * terminal at once while output from before the snapshot was still waiting to
+ * be written — that output then landed on the fresh terminal, ahead of a
+ * snapshot that already contains it, and scrolled into its history twice.
+ */
 export function resetMirroredTerminal(terminalId: string) {
-  const instance = instances.get(terminalId);
-  if (instance) {
-    instance.xterm.reset();
-  }
+  batchedWrite(terminalId, "\u001bc", {
+    allowParkedWrite: true,
+    recordActivity: false,
+    // Everything still waiting is older than the snapshot that follows.
+    replaceBufferedOutput: true,
+  });
 }
 
 /**

@@ -15,7 +15,7 @@ import {
 import { getTerminalCellSize } from "../../hooks/useTerminalBridge";
 import { getScopedStorageKey } from "../../lib/storageNamespace";
 import { findTerminalIds } from "../../lib/layoutUtils";
-import { isReplicaClient, requestMirrorSnapshot } from "../../lib/replication";
+import { isReplicaClient, showMirroredTerminals } from "../../lib/replication";
 import { useMirrorHydrationStore } from "../../stores/useMirrorHydrationStore";
 
 const DETAIL_PANEL_WIDTH_KEY = getScopedStorageKey("dispatcher.detailPanelWidth");
@@ -87,9 +87,8 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
     if (!isReplicaClient() || !snapshotRequestKey) {
       return;
     }
-    for (const terminalId of snapshotRequestKey.split(",")) {
-      requestMirrorSnapshot(terminalId);
-    }
+    showMirroredTerminals(snapshotRequestKey.split(","));
+    return () => showMirroredTerminals([]);
   }, [snapshotRequestKey]);
 
   if (!layout) {

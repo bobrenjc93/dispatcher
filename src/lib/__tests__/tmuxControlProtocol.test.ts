@@ -2,15 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   TMUX_CAPTURE_RETRY_MAX_MS,
   TMUX_VISIBLE_CAPTURE_RETRY_MAX_MS,
+  buildReplicaPaneReplay,
   buildTmuxNewWindowCommand,
   buildTmuxPaneCaptureCommand,
   buildTmuxPaneCursorCommand,
   buildTmuxPaneSnapshotCommand,
+  buildTmuxReplicaPaneStateCommand,
   buildTmuxWindowSnapshotCommand,
   computeCaptureRetryDelayMs,
   encodeTmuxSendKeysHex,
   normalizeTmuxPasteBufferText,
   parseTmuxPaneSnapshot,
+  parseTmuxReplicaPaneState,
   parseTmuxWindowSnapshot,
   quoteTmuxCommandArgument,
   selectTmuxWindowSnapshot,
@@ -234,5 +237,98 @@ describe("computeCaptureRetryDelayMs", () => {
 
   it("treats a nonsense attempt count as the first try", () => {
     expect(computeCaptureRetryDelayMs({ attempts: -3, paneIsVisible: false })).toBe(300);
+  });
+});
+
+describe("replica pane snapshots", () => {
+  const normalState = {
+    cursorX: 4,
+    cursorY: 1,
+    height: 2,
+    alternateOn: false,
+    cursorVisible: true,
+    applicationCursorKeys: false,
+    applicationKeypad: false,
+  };
+
+  it("asks tmux for the cursor, screen and modes in one reply", () => {
+    expect(buildTmuxReplicaPaneStateCommand("%3")).toBe(
+      'display-message -p -t %3 "#{cursor_x}\\t#{cursor_y}\\t#{pane_height}\\t#{alternate_on}\\t#{cursor_flag}\\t#{keypad_cursor_flag}\\t#{keypad_flag}"'
+    );
+    expect(parseTmuxReplicaPaneState("7\t3\t40\t1\t0\t1\t1")).toEqual({
+      cursorX: 7,
+      cursorY: 3,
+      height: 40,
+      alternateOn: true,
+      cursorVisible: false,
+      applicationCursorKeys: true,
+      applicationKeypad: true,
+    });
+  });
+
+  it("rejects a reply it cannot place a cursor from", () => {
+    expect(parseTmuxReplicaPaneState(undefined)).toBeNull();
+    expect(parseTmuxReplicaPaneState("not a reply")).toBeNull();
+    expect(parseTmuxReplicaPaneState("1\t2\t0\t0\t1\t0\t0")).toBeNull();
+  });
+
+  it("draws history then screen from blank and puts the cursor back", () => {
+    const replay = buildReplicaPaneReplay({
+      lines: ["history", "\\033[31mred\\033[0m", "prompt $"],
+      state: normalState,
+      fallbackHeight: 24,
+      maxBytes: 1024,
+    });
+
+    expect(replay).toBe(
+      "\u001b[0m\u001b[?7l\u001b[H\u001b[2Jhistory\r\n\u001b[31mred\u001b[0m\r\nprompt $\u001b[?7h\u001b[0m\u001b[2;5H"
+    );
+  });
+
+  it("drops the oldest history to fit, but never the screen", () => {
+    // The phone came for the screen; a long line in it is still sent whole.
+    const lines = ["old ".repeat(20), "newer", "screen one", "screen two ".repeat(20)];
+    const replay = buildReplicaPaneReplay({
+      lines,
+      state: normalState,
+      fallbackHeight: 24,
+      maxBytes: 20,
+    });
+
+    expect(replay).not.toContain("old");
+    expect(replay).not.toContain("newer");
+    expect(replay).toContain(`screen one\r\n${lines[3]}`);
+  });
+
+  it("restores the alternate screen and the modes a full-screen program set", () => {
+    const replay = buildReplicaPaneReplay({
+      lines: ["menu"],
+      state: {
+        ...normalState,
+        cursorX: 0,
+        cursorY: 0,
+        height: 1,
+        alternateOn: true,
+        cursorVisible: false,
+        applicationCursorKeys: true,
+        applicationKeypad: true,
+      },
+      fallbackHeight: 24,
+      maxBytes: 1024,
+    });
+
+    expect(replay.startsWith("\u001b[?1049h")).toBe(true);
+    expect(replay.endsWith("\u001b[1;1H\u001b[?25l\u001b[?1h\u001b=")).toBe(true);
+  });
+
+  it("parks the cursor on the last row when tmux did not say where it is", () => {
+    const replay = buildReplicaPaneReplay({
+      lines: ["one", "two", "three"],
+      state: null,
+      fallbackHeight: 2,
+      maxBytes: 1024,
+    });
+
+    expect(replay.endsWith("\u001b[2;1H")).toBe(true);
   });
 });

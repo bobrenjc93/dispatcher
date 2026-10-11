@@ -43,6 +43,14 @@ import { findTerminalIds } from "../layoutUtils";
 import { CLOSED_TAB_TTL_MS, closedTabId, listClosedTabs } from "../closedTabs";
 import { TMUX_CONTROL_STALL_MS, TMUX_OWED_REPLY_WINDOW_MS } from "../tmuxControlStall";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import {
+  invalidateMirroredTerminal,
+  mirrorTerminalOutput,
+  setReplicaCount,
+  startActionListener,
+} from "../replication";
 import {
   clearStatusResizeSuppressionsForTests,
   getActiveStatusResizeSuppression,
@@ -1751,6 +1759,7 @@ describe("tmuxControl", () => {
         allowParkedWrite: true,
         replaceBufferedOutput: true,
         clearScrollbackBeforeWrite: true,
+        replicaUpdate: "invalidate",
       }
     );
   });
@@ -1841,6 +1850,7 @@ describe("tmuxControl", () => {
         allowParkedWrite: true,
         replaceBufferedOutput: true,
         clearScrollbackBeforeWrite: true,
+        replicaUpdate: "skip",
       }
     );
   });
@@ -2009,6 +2019,7 @@ describe("tmuxControl", () => {
         recordActivity: false,
         allowParkedWrite: true,
         replaceBufferedOutput: true,
+        replicaUpdate: "skip",
       }
     );
   });
@@ -2417,6 +2428,7 @@ describe("tmuxControl", () => {
         allowParkedWrite: true,
         replaceBufferedOutput: true,
         clearScrollbackBeforeWrite: true,
+        replicaUpdate: "skip",
       }
     );
     expect(queueTerminalOutputMock).not.toHaveBeenCalledWith(
@@ -2563,6 +2575,7 @@ describe("tmuxControl", () => {
         allowParkedWrite: true,
         replaceBufferedOutput: true,
         clearScrollbackBeforeWrite: true,
+        replicaUpdate: "invalidate",
       }
     );
   });
@@ -2643,6 +2656,7 @@ describe("tmuxControl", () => {
         allowParkedWrite: true,
         replaceBufferedOutput: true,
         clearScrollbackBeforeWrite: true,
+        replicaUpdate: "invalidate",
       }
     );
   });
@@ -2750,6 +2764,7 @@ describe("tmuxControl", () => {
         allowParkedWrite: true,
         replaceBufferedOutput: true,
         clearScrollbackBeforeWrite: true,
+        replicaUpdate: "skip",
       }
     );
   });
@@ -4975,5 +4990,111 @@ describe("tmuxControl", () => {
 
     expect(useTerminalStore.getState().activeTerminalId).toBe(secondPaneTerminalId);
     expect(focusTerminalInstanceMock).toHaveBeenCalledWith(secondPaneTerminalId);
+  });
+
+  describe("snapshots for replicas", () => {
+    type Frame = { kind: string; terminalId: string; data?: string; targetClientId?: string };
+
+    function publishedFrames(): Frame[] {
+      return vi.mocked(invoke).mock.calls
+        .filter(([cmd]) => cmd === "publish_mirror")
+        .flatMap(([, args]) => (args as { payload: { frames: Frame[] } }).payload.frames);
+    }
+
+    async function requestSnapshotFromPhone(terminalId: string) {
+      await startActionListener();
+      const call = [...vi.mocked(listen).mock.calls]
+        .reverse()
+        .find(([name]) => name === "dispatcher-action");
+      (call![1] as unknown as (event: { payload: unknown }) => void)({
+        payload: {
+          action: { name: "requestSnapshot", args: ["phone", terminalId] },
+          originClientId: "phone",
+        },
+      });
+    }
+
+    beforeEach(() => {
+      setReplicaCount(1);
+      vi.mocked(invoke).mockClear();
+      // Stand in for the real bridge's side of mirroring.
+      queueTerminalOutputMock.mockImplementation(
+        (terminalId: string, data: string, options?: { replicaUpdate?: string }) => {
+          if (options?.replicaUpdate === "invalidate") {
+            invalidateMirroredTerminal(terminalId);
+          } else if (options?.replicaUpdate !== "skip") {
+            mirrorTerminalOutput(terminalId, data, { retain: false });
+          }
+          return true;
+        }
+      );
+    });
+
+    afterEach(() => {
+      setReplicaCount(0);
+    });
+
+    it("sends a hidden pane's history straight from tmux, with output after it in order", async () => {
+      // The desktop's own copy of a pane it is not showing is one screen at
+      // best; replaying that left the phone with nothing to scroll.
+      const transportTerminalId = "transport-replica-snapshot";
+      seedTransportTerminal(transportTerminalId);
+      await hydrateSingleWindow(transportTerminalId);
+      const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+      await vi.runOnlyPendingTimersAsync();
+      writeTerminalMock.mockClear();
+
+      await requestSnapshotFromPhone(paneTerminalId);
+
+      expect(getWrittenTmuxCommands()).toEqual([
+        'display-message -p -t %1 "#{cursor_x}\\t#{cursor_y}\\t#{pane_height}\\t#{alternate_on}\\t#{cursor_flag}\\t#{keypad_cursor_flag}\\t#{keypad_flag}"\n',
+        "capture-pane -p -e -C -S -5000 -t %1\n",
+      ]);
+
+      vi.mocked(invoke).mockClear();
+      const screen = Array.from({ length: 24 }, (_, row) => `screen ${row}`);
+      routeTmuxTransportOutput(
+        transportTerminalId,
+        [
+          "%output %1 inside the capture",
+          "%begin 10 0",
+          "2\t23\t24\t0\t1\t0\t0",
+          "%end 10 0",
+          "%begin 11 0",
+          "scrolled away",
+          ...screen,
+          "%end 11 0",
+          // Same chunk, after the reply: this is not in the capture.
+          "%output %1 after the capture",
+          "",
+        ].join("\n")
+      );
+      await vi.advanceTimersByTimeAsync(20);
+
+      const frames = publishedFrames().filter((frame) => frame.terminalId === paneTerminalId);
+      expect(frames.map((frame) => [frame.kind, frame.targetClientId ?? null])).toEqual([
+        ["output", null],
+        ["reset", "phone"],
+        ["output", "phone"],
+        ["output", null],
+      ]);
+      expect(frames[0].data).toBe("inside the capture");
+      expect(frames[2].data).toBe(
+        `\u001b[0m\u001b[?7l\u001b[H\u001b[2Jscrolled away\r\n${screen.join("\r\n")}\u001b[?7h\u001b[0m\u001b[24;3H`
+      );
+      expect(frames[3].data).toBe("after the capture");
+    });
+
+    it("tells replicas to ask again when a pane is reattached, instead of mirroring its history", async () => {
+      const transportTerminalId = "transport-replica-invalidate";
+      seedTransportTerminal(transportTerminalId);
+      await hydrateSingleWindow(transportTerminalId);
+      const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+      await vi.advanceTimersByTimeAsync(20);
+
+      const frames = publishedFrames().filter((frame) => frame.terminalId === paneTerminalId);
+      expect(frames.map((frame) => frame.kind)).toContain("invalidate");
+      expect(frames.some((frame) => frame.data?.includes("initial screen"))).toBe(false);
+    });
   });
 });
