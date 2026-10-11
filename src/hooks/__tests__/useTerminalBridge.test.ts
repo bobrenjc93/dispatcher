@@ -188,6 +188,8 @@ import {
 } from "../useTerminalBridge";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
+import { invoke } from "@tauri-apps/api/core";
+import { setReplicaCount } from "../../lib/replication";
 import {
   clearStatusResizeSuppressionsForTests,
   markStatusResizeSuppression,
@@ -581,6 +583,46 @@ describe("useTerminalBridge synthetic input", () => {
     } finally {
       requestAnimationFrameSpy.mockRestore();
       disposeTerminalInstance("tmux-pane-no-frontend");
+    }
+  });
+
+  it("mirrors a parked tmux pane's output even though it does not render it", async () => {
+    // Parking is this desktop not painting a tab it is not showing. A phone
+    // may be showing it; mirroring only what got painted left the phone with
+    // the desktop's occasional whole-screen repaints and no history at all.
+    useTerminalStore.getState().addSession("tmux-pane-test", "A");
+    useTerminalStore.getState().patchSession("tmux-pane-test", {
+      backendKind: "tmux-pane",
+      tmuxControlSessionId: "session-1",
+      tmuxWindowId: "@1",
+      tmuxPaneId: "%1",
+    });
+    ensureTerminalScreenshotTarget("tmux-pane-test");
+    vi.mocked(invoke).mockClear();
+    setReplicaCount(1);
+
+    try {
+      queueTerminalOutput("tmux-pane-test", "streamed line\n");
+      // Repaints of output this desktop skipped tell a replica nothing new.
+      queueTerminalOutput("tmux-pane-test", "repaint", { allowParkedWrite: true, replicaUpdate: "skip" });
+      queueTerminalOutput("tmux-pane-test", "rebuilt", {
+        allowParkedWrite: true,
+        replicaUpdate: "invalidate",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+
+      expect(createdTerminals[0].write).not.toHaveBeenCalledWith("streamed line\n");
+      const frames = vi.mocked(invoke).mock.calls
+        .filter(([cmd]) => cmd === "publish_mirror")
+        .flatMap(([, args]) => (args as { payload: { frames: Array<Record<string, unknown>> } }).payload.frames)
+        .filter((frame) => frame.kind !== "size");
+      expect(frames).toEqual([
+        { kind: "output", terminalId: "tmux-pane-test", data: "streamed line\n" },
+        { kind: "invalidate", terminalId: "tmux-pane-test" },
+      ]);
+    } finally {
+      setReplicaCount(0);
+      disposeTerminalInstance("tmux-pane-test");
     }
   });
 

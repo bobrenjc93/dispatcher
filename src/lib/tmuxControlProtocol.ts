@@ -21,6 +21,8 @@ const TMUX_WINDOW_SNAPSHOT_FORMAT =
 const TMUX_PANE_SNAPSHOT_FORMAT =
   '"#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"';
 const TMUX_PANE_CURSOR_FORMAT = '"#{cursor_x}\\t#{cursor_y}"';
+const TMUX_REPLICA_PANE_STATE_FORMAT =
+  '"#{cursor_x}\\t#{cursor_y}\\t#{pane_height}\\t#{alternate_on}\\t#{cursor_flag}\\t#{keypad_cursor_flag}\\t#{keypad_flag}"';
 const TMUX_CAPTURE_HISTORY_FALLBACK_LINES = 50_000;
 
 export interface TmuxWindowSnapshot {
@@ -90,6 +92,96 @@ export function buildTmuxPaneCaptureCommand(options: {
     }
   }
   return `capture-pane ${flags.join(" ")} -t ${options.paneId}`;
+}
+
+/**
+ * What a replica needs besides the pane's text to draw it from blank: where
+ * the cursor is, which screen it is on, and the modes a program set on its
+ * way in. A replica's terminal is reset before a snapshot, so anything not
+ * restored here is lost until the program happens to set it again — which
+ * for a hidden cursor can be never.
+ */
+export interface TmuxReplicaPaneState {
+  cursorX: number;
+  cursorY: number;
+  height: number;
+  alternateOn: boolean;
+  cursorVisible: boolean;
+  applicationCursorKeys: boolean;
+  applicationKeypad: boolean;
+}
+
+export function buildTmuxReplicaPaneStateCommand(paneId: string): string {
+  return `display-message -p -t ${paneId} ${TMUX_REPLICA_PANE_STATE_FORMAT}`;
+}
+
+export function parseTmuxReplicaPaneState(line: string | undefined): TmuxReplicaPaneState | null {
+  if (!line) {
+    return null;
+  }
+  const [cursorX, cursorY, height, alternateOn, cursorFlag, keypadCursorFlag, keypadFlag] =
+    line.split("\t");
+  const parsedCursorX = Number.parseInt(cursorX ?? "", 10);
+  const parsedCursorY = Number.parseInt(cursorY ?? "", 10);
+  const parsedHeight = Number.parseInt(height ?? "", 10);
+  if (![parsedCursorX, parsedCursorY, parsedHeight].every(Number.isFinite) || parsedHeight <= 0) {
+    return null;
+  }
+  return {
+    cursorX: Math.max(0, parsedCursorX),
+    cursorY: Math.max(0, parsedCursorY),
+    height: parsedHeight,
+    alternateOn: alternateOn === "1",
+    // An older tmux that does not know the flag expands it to nothing; a
+    // visible cursor is the terminal's own default, so assume that.
+    cursorVisible: cursorFlag !== "0",
+    applicationCursorKeys: keypadCursorFlag === "1",
+    applicationKeypad: keypadFlag === "1",
+  };
+}
+
+/**
+ * Draw a tmux pane from blank: its scrollback, then its screen, then the
+ * cursor and modes.
+ *
+ * `lines` is a `capture-pane -p -e -C` reply whose last `height` lines are the
+ * screen. When the whole thing will not fit in `maxBytes`, the oldest history
+ * goes first; the screen is never cut, because it is the part the reader came
+ * for.
+ */
+export function buildReplicaPaneReplay(options: {
+  lines: readonly string[];
+  state: TmuxReplicaPaneState | null;
+  fallbackHeight: number;
+  maxBytes: number;
+}): string {
+  const { lines, state } = options;
+  const height = Math.min(lines.length, state?.height ?? options.fallbackHeight);
+  const screenStart = lines.length - height;
+
+  let historyStart = 0;
+  let bytes = 0;
+  for (const line of lines) {
+    bytes += line.length + 2;
+  }
+  while (bytes > options.maxBytes && historyStart < screenStart) {
+    bytes -= lines[historyStart].length + 2;
+    historyStart += 1;
+  }
+
+  const content = unescapeTmuxOutput(lines.slice(historyStart).join("\r\n"));
+  const cursorRow = (state?.cursorY ?? Math.max(0, height - 1)) + 1;
+  const cursorCol = (state?.cursorX ?? 0) + 1;
+  const screen = state?.alternateOn ? "\u001b[?1049h" : "";
+  const modes = [
+    state && !state.cursorVisible ? "\u001b[?25l" : "",
+    state?.applicationCursorKeys ? "\u001b[?1h" : "",
+    state?.applicationKeypad ? "\u001b=" : "",
+  ].join("");
+  // Autowrap is off while the lines go in, as for every tmux replay: each one
+  // is already exactly as wide as the pane, and a wrap at the last column
+  // would add a row that is not there.
+  return `${screen}\u001b[0m\u001b[?7l\u001b[H\u001b[2J${content}\u001b[?7h\u001b[0m\u001b[${cursorRow};${cursorCol}H${modes}`;
 }
 
 export function buildTmuxNewWindowCommand(options: {

@@ -32,40 +32,26 @@ const MIRROR_EVENT = "dispatcher-mirror";
 const ACTION_EVENT = "dispatcher-action";
 
 /**
- * How much of each terminal the master remembers for replicas that join late.
+ * How much of a terminal a joining replica is sent.
  *
- * This is the only history a replica can ever have: the desktop keeps 50k lines
- * of xterm scrollback, but a replica starts empty and sees exactly what was
- * mirrored to it.
- *
- * The number has to clear one full-history replay in a single piece. Restoring
- * a tmux pane's scrollback arrives here as one write, and those run to 722KB on
- * a real agent pane — so the old 256KB budget cut a replay down to its last
- * third and the replica's history began partway through a frame. Sized well
- * clear of that, because a pane that has been running longer produces a larger
- * one, and the cost of being short is losing history rather than wasting bytes.
- *
- * Snapshots are sent per terminal, so this bounds one message rather than being
- * multiplied by the number of terminals in the workspace.
- */
-const SNAPSHOT_LIMIT_BYTES = 4 * 1024 * 1024;
-
-/**
- * How much of that a joining replica is actually sent.
- *
- * The retained buffer is sized so a tmux full-history replay survives intact,
- * which is about the desktop's needs. What a replica needs is to be usable,
- * and the two diverge badly once a terminal has been running for days: a pane
- * at the full 4MB took 21 seconds to arrive on a phone, against 27ms to parse
- * once it did. Pure transfer, and the whole app waits on it — snapshots for
- * other terminals queue behind it on the same socket, so a tab with no output
- * at all was also 21 seconds late.
+ * Sized for the phone rather than the desktop: a pane at 4MB took 21 seconds
+ * to arrive on a phone, against 27ms to parse once it did. Pure transfer, and
+ * the whole app waits on it — snapshots for other terminals queue behind it on
+ * the same socket, so a tab with no output at all was also 21 seconds late.
  *
  * Sized from that measurement rather than picked: the link ran at roughly
  * 200KB/s, so this is a few seconds. It is still thousands of lines of
  * scrollback, which is what the number is really trading against.
  */
-const REPLICA_SNAPSHOT_LIMIT_BYTES = 512 * 1024;
+export const REPLICA_SNAPSHOT_LIMIT_BYTES = 512 * 1024;
+/**
+ * How far past its budget a retained buffer may grow before it is cut back.
+ *
+ * Cutting on every chunk copied the whole buffer every time a busy terminal
+ * printed anything. Letting it run over and cutting in one go keeps the cost
+ * proportional to the output instead.
+ */
+const RETAINED_OUTPUT_SLACK_BYTES = 128 * 1024;
 /** Mirror frames are coalesced over this window to keep the IPC chatter down. */
 const MIRROR_FLUSH_MS = 16;
 
@@ -81,19 +67,45 @@ export function isPrimaryClient(): boolean {
 // Mirror channel: master → replicas
 // ---------------------------------------------------------------------------
 
-export type MirrorFrame =
+export type MirrorFrame = (
   | { kind: "output"; terminalId: string; data: string }
   | { kind: "size"; terminalId: string; cols: number; rows: number }
-  | { kind: "reset"; terminalId: string };
+  /** Starts a snapshot: everything this replica had for the terminal is replaced. */
+  | { kind: "reset"; terminalId: string }
+  /**
+   * The desktop rebuilt this terminal from its backend, so a replica's copy
+   * may no longer match. Cheaper than sending the rebuild itself, which for a
+   * tmux pane is its entire history — a replica that cares asks for a
+   * snapshot sized for it instead.
+   */
+  | { kind: "invalidate"; terminalId: string }
+) & {
+  /** Set on a snapshot reply; every other replica ignores the frame. */
+  targetClientId?: string;
+};
 
 interface MirrorPayload {
+  /**
+   * In the order the master produced them. Snapshot replies travel in the
+   * same stream as live output rather than beside it, because their meaning
+   * depends on where they fall: output queued before a snapshot is already in
+   * it, and output queued after is not.
+   */
   frames: MirrorFrame[];
-  /** Set when replaying a snapshot to one replica; others ignore it. */
-  targetClientId?: string;
 }
 
-/** Recent output per terminal, replayed to replicas that connect later. */
-const snapshotBuffers = new Map<string, string>();
+/**
+ * Recent output for terminals whose backend cannot be asked for it again.
+ *
+ * A local shell's history exists nowhere but in the stream, so this is all a
+ * late replica can be given. A tmux pane is not kept here: tmux holds its
+ * history, and a snapshot asks tmux for it directly.
+ */
+interface RetainedOutput {
+  chunks: string[];
+  length: number;
+}
+const retainedOutput = new Map<string, RetainedOutput>();
 const lastPublishedSize = new Map<string, { cols: number; rows: number }>();
 
 type TerminalGrid = { cols: number; rows: number };
@@ -116,6 +128,7 @@ function resolveGrid(terminalId: string): TerminalGrid | null {
 
 let pendingFrames: MirrorFrame[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let publishInFlight = false;
 let replicaCount = 0;
 let sawReplicaEvent = false;
 
@@ -173,7 +186,10 @@ function noteReplicaPresent() {
  * of its scrollback. Escape sequences never span a newline, so a newline is
  * always a safe place to start.
  */
-export function trimSnapshotBuffer(buffer: string, limit = SNAPSHOT_LIMIT_BYTES): string {
+export function trimSnapshotBuffer(
+  buffer: string,
+  limit = REPLICA_SNAPSHOT_LIMIT_BYTES
+): string {
   if (buffer.length <= limit) {
     return buffer;
   }
@@ -183,26 +199,65 @@ export function trimSnapshotBuffer(buffer: string, limit = SNAPSHOT_LIMIT_BYTES)
   return newline === -1 ? buffer.slice(overflow) : buffer.slice(newline + 1);
 }
 
-function appendSnapshot(terminalId: string, data: string) {
-  snapshotBuffers.set(
-    terminalId,
-    trimSnapshotBuffer((snapshotBuffers.get(terminalId) ?? "") + data)
-  );
+function retainOutput(terminalId: string, data: string) {
+  let retained = retainedOutput.get(terminalId);
+  if (!retained) {
+    retained = { chunks: [], length: 0 };
+    retainedOutput.set(terminalId, retained);
+  }
+  retained.chunks.push(data);
+  retained.length += data.length;
+  if (retained.length > REPLICA_SNAPSHOT_LIMIT_BYTES + RETAINED_OUTPUT_SLACK_BYTES) {
+    readRetainedOutput(terminalId);
+  }
+}
+
+function readRetainedOutput(terminalId: string): string {
+  const retained = retainedOutput.get(terminalId);
+  if (!retained) {
+    return "";
+  }
+  const data = trimSnapshotBuffer(retained.chunks.join(""));
+  retained.chunks = data ? [data] : [];
+  retained.length = data.length;
+  return data;
 }
 
 function queueFrame(frame: MirrorFrame) {
   pendingFrames.push(frame);
-  if (flushTimer !== null) {
+  scheduleFlush();
+}
+
+function scheduleFlush() {
+  if (flushTimer !== null || publishInFlight) {
     return;
   }
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    const frames = pendingFrames;
-    pendingFrames = [];
-    if (frames.length > 0) {
-      void publishMirror({ frames });
-    }
+    void flushFrames();
   }, MIRROR_FLUSH_MS);
+}
+
+/**
+ * One publish at a time. Two invokes in flight are not guaranteed to arrive in
+ * the order they were made, and a snapshot overtaking the output before it
+ * would replay that output on top of a screen that already contains it.
+ */
+async function flushFrames() {
+  if (pendingFrames.length === 0) {
+    return;
+  }
+  const frames = pendingFrames;
+  pendingFrames = [];
+  publishInFlight = true;
+  try {
+    await publishMirror({ frames });
+  } finally {
+    publishInFlight = false;
+    if (pendingFrames.length > 0) {
+      scheduleFlush();
+    }
+  }
 }
 
 async function publishMirror(payload: MirrorPayload) {
@@ -215,12 +270,6 @@ async function publishMirror(payload: MirrorPayload) {
   }
 }
 
-/**
- * Record output the master just wrote into a terminal. Called for every
- * terminal regardless of backend, so tmux panes mirror exactly like local
- * shells — by the time output reaches here the control protocol has already
- * been decoded into plain pane data.
- */
 /**
  * Master-side mirroring counters.
  *
@@ -263,14 +312,29 @@ function noteMirrorActivity(terminalId: string, bytes: number, published: boolea
   suppressedMirrorBytes = 0;
 }
 
-export function mirrorTerminalOutput(terminalId: string, data: string) {
+/**
+ * Record output for a terminal. Called for every terminal regardless of
+ * backend, so tmux panes mirror exactly like local shells — by the time output
+ * reaches here the control protocol has already been decoded into plain pane
+ * data.
+ *
+ * `retain` is for output nothing else can reproduce. Leave it off for a
+ * terminal whose backend can be asked for its history when a replica joins.
+ */
+export function mirrorTerminalOutput(
+  terminalId: string,
+  data: string,
+  options?: { retain?: boolean }
+) {
   if (!isPrimaryClient() || !data) {
     return;
   }
 
-  // Keep the snapshot current even with no replicas attached, so one that
-  // connects a moment from now still sees the screen it missed.
-  appendSnapshot(terminalId, data);
+  // Kept even with no replicas attached, so one that connects a moment from
+  // now still sees the screen it missed.
+  if (options?.retain !== false) {
+    retainOutput(terminalId, data);
+  }
 
   // First output from a terminal nobody has mounted yet: publish its grid now,
   // or the replica would render it at the wrong size.
@@ -304,47 +368,102 @@ export function mirrorTerminalSize(terminalId: string, cols: number, rows: numbe
   }
 }
 
+/**
+ * Tell replicas their copy of a terminal may be out of date.
+ *
+ * For when the desktop rebuilds a terminal from its backend — a tmux pane
+ * reattached after the control stream dropped — and whatever happened in the
+ * gap never passed through here.
+ */
+export function invalidateMirroredTerminal(terminalId: string) {
+  if (!shouldMirror()) {
+    return;
+  }
+  queueFrame({ kind: "invalidate", terminalId });
+}
+
 export function forgetMirroredTerminal(terminalId: string) {
-  snapshotBuffers.delete(terminalId);
+  retainedOutput.delete(terminalId);
   lastPublishedSize.delete(terminalId);
 }
 
 /**
- * Replay one terminal's current screen to a replica that asked for it.
+ * Captures a terminal's history from its backend for a replica.
+ *
+ * Returns false when it does not own the terminal. Otherwise `deliver` is
+ * called exactly once, with a replay that draws the terminal from blank — or
+ * null if the capture failed — and it has to be called at the point in the
+ * output stream the capture describes, before any output after it is
+ * mirrored. That ordering is what lets the replica apply live output on top
+ * without gaps or repeats.
+ */
+export type TerminalSnapshotSource = (
+  terminalId: string,
+  maxBytes: number,
+  deliver: (replay: string | null) => void
+) => boolean;
+
+let terminalSnapshotSource: TerminalSnapshotSource | null = null;
+
+export function setTerminalSnapshotSource(source: TerminalSnapshotSource | null) {
+  terminalSnapshotSource = source;
+}
+
+/**
+ * Replay one terminal's screen and history to a replica that asked for it.
  *
  * Deliberately one terminal at a time rather than the whole workspace. Every
  * snapshot a replica receives gets an xterm instance built for it and the whole
- * buffer parsed into it, mounted or not — so replaying twenty terminals at once
- * meant tens of megabytes over the wire and twenty parsers running flat out on
- * the phone's main thread, which is why a freshly loaded page painted and then
- * ignored typing for another ten seconds. Replicas ask per terminal as each one
- * comes on screen, so the cost tracks what is actually being looked at.
+ * buffer parsed into it — so replaying twenty terminals at once meant tens of
+ * megabytes over the wire and twenty parsers running flat out on the phone's
+ * main thread. Replicas ask per terminal as each one comes on screen, so the
+ * cost tracks what is actually being looked at.
  */
-function sendSnapshotTo(targetClientId: string, terminalId: string) {
-  const retained = snapshotBuffers.get(terminalId) ?? "";
-  // Cut at a line boundary, or the replica renders the tail of a half-sent
-  // escape sequence as literal text at the top of its scrollback.
-  const data = trimSnapshotBuffer(retained, REPLICA_SNAPSHOT_LIMIT_BYTES);
-  const frames: MirrorFrame[] = [{ kind: "reset", terminalId }];
+function answerSnapshotRequest(targetClientId: string, terminalId: string) {
+  const requestedAt = performance.now();
+  const captured = terminalSnapshotSource?.(
+    terminalId,
+    REPLICA_SNAPSHOT_LIMIT_BYTES,
+    (replay) => {
+      sendSnapshotTo(targetClientId, terminalId, replay ?? "", {
+        source: replay === null ? "capture-failed" : "capture",
+        captureMs: Math.round(performance.now() - requestedAt),
+      });
+    }
+  );
+  if (!captured) {
+    sendSnapshotTo(targetClientId, terminalId, readRetainedOutput(terminalId), {
+      source: "retained",
+    });
+  }
+}
+
+function sendSnapshotTo(
+  targetClientId: string,
+  terminalId: string,
+  data: string,
+  details: { source: "capture" | "capture-failed" | "retained"; captureMs?: number }
+) {
+  queueFrame({ kind: "reset", terminalId, targetClientId });
   const size = resolveGrid(terminalId);
   if (size) {
-    frames.push({ kind: "size", terminalId, cols: size.cols, rows: size.rows });
+    queueFrame({ kind: "size", terminalId, cols: size.cols, rows: size.rows, targetClientId });
   }
   if (data) {
-    frames.push({ kind: "output", terminalId, data });
+    queueFrame({ kind: "output", terminalId, data, targetClientId });
   }
-  void publishMirror({ frames, targetClientId });
 
   debugLog("replication", "sending snapshot to replica", {
     targetClientId,
     terminalId,
     bytes: data.length,
-    // Visible when a terminal has outgrown what is worth sending.
-    retainedBytes: retained.length,
+    ...details,
   });
 }
 
-type MirrorFrameHandler = (frame: MirrorFrame) => void;
+/** What a replica's UI applies; invalidation is handled here, by asking again. */
+export type AppliedMirrorFrame = Exclude<MirrorFrame, { kind: "invalidate" }>;
+type MirrorFrameHandler = (frame: AppliedMirrorFrame) => void;
 
 /**
  * Replica load timing.
@@ -365,6 +484,34 @@ function sincePageLoadMs(): number {
   return Math.round(performance.now());
 }
 
+/**
+ * Whether this replica should apply a frame.
+ *
+ * Live output is broadcast for every terminal, but a replica only keeps a copy
+ * of the ones it has asked for. Anything before the ask is covered by the
+ * snapshot that answers it, so applying it would only build xterms for tabs
+ * nobody on this device has opened.
+ */
+function isFrameForThisReplica(frame: MirrorFrame, clientId: string): boolean {
+  if (frame.targetClientId) {
+    return frame.targetClientId === clientId;
+  }
+  return requestedSnapshotTerminalIds.has(frame.terminalId);
+}
+
+function handleInvalidation(terminalId: string) {
+  requestedSnapshotTerminalIds.delete(terminalId);
+  debugLog("replication", "replica copy invalidated", {
+    terminalId,
+    shown: shownTerminalIds.has(terminalId),
+  });
+  // A tab off screen asks again when it next comes on screen; until then
+  // there is nobody to fetch it for.
+  if (shownTerminalIds.has(terminalId)) {
+    requestMirrorSnapshot(terminalId);
+  }
+}
+
 /** Replica side: apply frames the master sends. */
 export async function startMirrorConsumer(
   onFrame: MirrorFrameHandler
@@ -375,49 +522,53 @@ export async function startMirrorConsumer(
   let lastLoggedAt = 0;
 
   return listen<MirrorPayload>(MIRROR_EVENT, (event) => {
-    const payload = event.payload;
-    const frames = payload.frames ?? [];
+    const frames = event.payload.frames ?? [];
     receivedFrames += frames.length;
 
-    const forOtherReplica = Boolean(payload.targetClientId) && payload.targetClientId !== clientId;
-    if (!forOtherReplica) {
-      const applyStartedAt = performance.now();
-      // Only a snapshot reply resets, so a reset marks this batch as one and
-      // names the terminal it answers for.
-      let snapshotTerminalId: string | null = null;
-      let snapshotBytes = 0;
-
-      for (const frame of frames) {
-        appliedFrames += 1;
-        if (frame.kind === "reset") {
-          snapshotTerminalId = frame.terminalId;
-        } else if (frame.kind === "output") {
-          snapshotBytes += frame.data.length;
-        }
-        onFrame(frame);
+    const applyStartedAt = performance.now();
+    // A reset starts a snapshot reply, so it names a terminal this batch
+    // answers for; the targeted output after it is that snapshot's content.
+    const snapshotBytes = new Map<string, number>();
+    for (const frame of frames) {
+      if (!isFrameForThisReplica(frame, clientId)) {
+        continue;
       }
+      if (frame.kind === "invalidate") {
+        handleInvalidation(frame.terminalId);
+        continue;
+      }
+      appliedFrames += 1;
+      if (frame.kind === "reset") {
+        snapshotBytes.set(frame.terminalId, 0);
+      } else if (frame.kind === "output" && frame.targetClientId) {
+        snapshotBytes.set(
+          frame.terminalId,
+          (snapshotBytes.get(frame.terminalId) ?? 0) + frame.data.length
+        );
+      }
+      onFrame(frame);
+    }
 
-      if (snapshotTerminalId) {
-        const requestedAt = snapshotRequestedAt.get(snapshotTerminalId);
-        snapshotRequestedAt.delete(snapshotTerminalId);
-        debugLog("replication", "replica snapshot applied", {
-          terminalId: snapshotTerminalId,
-          bytes: snapshotBytes,
-          // Request to arrival: the desktop's own work plus the wire.
-          waitMs: requestedAt === undefined ? null : Math.round(performance.now() - requestedAt),
-          // Time inside xterm's parser, which is what freezes the phone.
-          applyMs: Math.round(performance.now() - applyStartedAt),
+    for (const [terminalId, bytes] of snapshotBytes) {
+      const requestedAt = snapshotRequestedAt.get(terminalId);
+      snapshotRequestedAt.delete(terminalId);
+      debugLog("replication", "replica snapshot applied", {
+        terminalId,
+        bytes,
+        // Request to arrival: the desktop's own work plus the wire.
+        waitMs: requestedAt === undefined ? null : Math.round(performance.now() - requestedAt),
+        // Time handing it to the terminal, which is what freezes the phone.
+        applyMs: Math.round(performance.now() - applyStartedAt),
+        atMs: sincePageLoadMs(),
+      });
+
+      if (!hasLoggedFirstTerminalReady) {
+        hasLoggedFirstTerminalReady = true;
+        debugLog("replication", "replica first terminal ready", {
+          terminalId,
+          bytes,
           atMs: sincePageLoadMs(),
         });
-
-        if (!hasLoggedFirstTerminalReady) {
-          hasLoggedFirstTerminalReady = true;
-          debugLog("replication", "replica first terminal ready", {
-            terminalId: snapshotTerminalId,
-            bytes: snapshotBytes,
-            atMs: sincePageLoadMs(),
-          });
-        }
       }
     }
 
@@ -428,7 +579,6 @@ export async function startMirrorConsumer(
         receivedFrames,
         appliedFrames,
         batch: frames.length,
-        targeted: payload.targetClientId ?? null,
       });
     }
   });
@@ -562,7 +712,7 @@ export async function startActionListener(): Promise<UnlistenFn> {
       noteReplicaPresent();
       const [targetClientId, terminalId] = (action.args ?? []) as [string, string];
       if (targetClientId && terminalId) {
-        sendSnapshotTo(targetClientId, terminalId);
+        answerSnapshotRequest(targetClientId, terminalId);
       }
       return;
     }
@@ -595,6 +745,9 @@ const REQUEST_SNAPSHOT = "requestSnapshot" as ActionName;
  */
 const requestedSnapshotTerminalIds = new Set<string>();
 
+/** The terminals this replica has on screen right now. */
+const shownTerminalIds = new Set<string>();
+
 /**
  * Forget what has been asked for, because the connection it was asked on is
  * gone.
@@ -609,6 +762,21 @@ const requestedSnapshotTerminalIds = new Set<string>();
 export function forgetRequestedSnapshots() {
   requestedSnapshotTerminalIds.clear();
   snapshotRequestedAt.clear();
+}
+
+/**
+ * Replica side: these terminals are on screen now, and want content.
+ *
+ * Each is asked for once per connection; live output keeps it current from
+ * there. One that the desktop invalidates while it is still here is asked for
+ * again straight away.
+ */
+export function showMirroredTerminals(terminalIds: readonly string[]) {
+  shownTerminalIds.clear();
+  for (const terminalId of terminalIds) {
+    shownTerminalIds.add(terminalId);
+    requestMirrorSnapshot(terminalId);
+  }
 }
 
 /** Replica side: ask the master to replay one terminal's screen and history. */
