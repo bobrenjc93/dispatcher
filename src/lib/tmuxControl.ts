@@ -6362,6 +6362,22 @@ export function getActivePaneTerminalIdForWindowTerminal(
   return anyPane?.terminalId ?? null;
 }
 
+/**
+ * How many cells a tab's screen has: its active pane, columns by rows.
+ *
+ * What a change percentage is measured against, so the threshold dialog can
+ * say where the built-in rule falls on this particular screen.
+ */
+export function getTmuxWindowScreenCells(windowTerminalId: string): number | null {
+  const paneTerminalId = getActivePaneTerminalIdForWindowTerminal(windowTerminalId);
+  const sessionId = windowTerminalToSessionId.get(windowTerminalId);
+  const session = sessionId ? controlSessions.get(sessionId) : null;
+  const pane = session
+    ? [...session.panes.values()].find((candidate) => candidate.terminalId === paneTerminalId)
+    : null;
+  return pane && pane.width > 0 && pane.height > 0 ? pane.width * pane.height : null;
+}
+
 export async function sendInputToTmuxTerminal(terminalId: string, data: string): Promise<boolean> {
   const bracketedPastePayload = getBracketedPastePayload(data);
   if (bracketedPastePayload !== null) {

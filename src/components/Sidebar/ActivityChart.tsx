@@ -150,7 +150,9 @@ export function ActivityChart(props: {
   const thresholdPercent = changePercent ?? (latestCells > 0 ? builtInChangePercent(latestCells) : null);
   const thresholdLabel = changePercent !== undefined
     ? formatInactivityChangePercent(changePercent)
-    : "built-in";
+    : thresholdPercent !== null
+      ? `default ${formatInactivityChangePercent(thresholdPercent)}`
+      : "default";
   const thresholdPhrase = changePercent !== undefined
     ? `at least ${formatInactivityChangePercent(changePercent)} of the screen changes`
     : "more than a spinner or clock changes";

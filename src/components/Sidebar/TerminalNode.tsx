@@ -24,7 +24,7 @@ import {
 } from "../../lib/dragState";
 import { findNodeByTerminalId } from "../../lib/treeUtils";
 import { focusTerminalInstance } from "../../hooks/useTerminalBridge";
-import { renameTmuxTerminal } from "../../lib/tmuxControl";
+import { getTmuxWindowScreenCells, renameTmuxTerminal } from "../../lib/tmuxControl";
 import { isTouchPointer } from "../../lib/terminalMouse";
 import { prepareInactionNotificationSound } from "../../lib/inactionNotification";
 import {
@@ -42,6 +42,7 @@ import {
   resolveInactivityThresholdMs,
 } from "../../lib/inactivityThreshold";
 import { useActivityHistory } from "../../lib/activityHistory";
+import { builtInChangePercent } from "../../lib/viewportSignature";
 import { isReplicaClient } from "../../lib/replication";
 import { ActivityChart } from "./ActivityChart";
 
@@ -551,6 +552,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
             )
           }
           historyTerminalId={thresholdTargets.length === 1 ? thresholdTargets[0] : null}
+          screenCells={getTmuxWindowScreenCells(thresholdTargets[0])}
           count={thresholdTargets.length}
           onCancel={() => setThresholdTargets(null)}
           onSubmit={({ thresholdMs, changePercent }) => {
@@ -668,6 +670,7 @@ function InactivityThresholdDialog(props: {
   currentMs: number | undefined;
   currentChangePercent: number | undefined;
   historyTerminalId: string | null;
+  screenCells: number | null;
   count: number;
   onSubmit: (value: { thresholdMs: number | undefined; changePercent: number | undefined }) => void;
   onCancel: () => void;
@@ -705,6 +708,13 @@ function InactivityThresholdDialog(props: {
     parsedSeconds.ok ? parsedSeconds.value : props.currentMs
   );
   const previewPercent = parsedPercent.ok ? parsedPercent.value : savedChangePercent;
+  // The built-in rule is a character count, not a share, so its percentage
+  // depends on the screen. Shown for this one, so the empty field reads as
+  // the number it stands for.
+  const latestCells = history.samples[history.samples.length - 1]?.cells ?? props.screenCells;
+  const defaultPercentPlaceholder = latestCells
+    ? formatInactivityChangePercent(builtInChangePercent(latestCells)).replace(/%$/, "")
+    : "";
 
   const submit = () => {
     // Keep the dialog open rather than storing something the user did not
@@ -768,7 +778,7 @@ function InactivityThresholdDialog(props: {
               className="threshold-dialog-input"
               type="text"
               inputMode="decimal"
-              placeholder="built-in"
+              placeholder={defaultPercentPlaceholder}
               value={percentDraft}
               onChange={(event) => {
                 setPercentDraft(event.target.value);
