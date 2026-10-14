@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { useTerminalStore } from "../../stores/useTerminalStore";
+import { useProjectStore } from "../../stores/useProjectStore";
 import type { TerminalSession } from "../../types/terminal";
 
 // Role is derived from the runtime, so the tests drive it directly.
@@ -19,6 +20,8 @@ const {
   trimSnapshotBuffer,
 } = await import("../replication");
 const { handleTmuxTerminalFocus, renameTmuxTerminal } = await import("../tmuxControl");
+const { applySharedAppState, buildAppStateSnapshot } = await import("../appStateSnapshot");
+const { clearPendingEdits } = await import("../pendingEdits");
 
 const invokeMock = vi.mocked(invoke);
 
@@ -128,6 +131,43 @@ describe("desktop-as-master replication", () => {
       action: { name: "renameTerminal", args: ["window", "renamed"] },
     });
     expect(invokeMock.mock.calls.some(([cmd]) => cmd === "write_terminal")).toBe(false);
+  });
+
+  it("shows a replica's rename at once and keeps it through a stale snapshot", async () => {
+    // The round trip to the desktop and back took seconds, and a snapshot the
+    // desktop published before it heard about the rename put the old name
+    // straight back.
+    isWebClient.mockReturnValue(true);
+    const window = useTerminalStore.getState().sessions.window;
+    const pane: TerminalSession = {
+      ...window,
+      id: "pane",
+      backendKind: "tmux-pane",
+      tmuxPaneId: "%1",
+    };
+    useTerminalStore.setState({ sessions: { window, pane } });
+    useProjectStore.setState({
+      projects: {},
+      projectOrder: [],
+      activeProjectId: null,
+      nodes: {
+        row: { id: "row", type: "terminal", name: "window", terminalId: "window", parentId: null },
+      },
+    });
+    const stale = buildAppStateSnapshot();
+
+    await renameTmuxTerminal("window", "renamed");
+
+    const renamed = () => ({
+      window: useTerminalStore.getState().sessions.window?.title,
+      pane: useTerminalStore.getState().sessions.pane?.title,
+      row: useProjectStore.getState().nodes.row?.name,
+    });
+    expect(renamed()).toEqual({ window: "renamed", pane: "renamed", row: "renamed" });
+
+    applySharedAppState(stale, "test");
+    expect(renamed()).toEqual({ window: "renamed", pane: "renamed", row: "renamed" });
+    clearPendingEdits();
   });
 
   it("only mirrors terminal output while a replica is watching", () => {

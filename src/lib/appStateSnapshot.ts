@@ -9,6 +9,7 @@ import {
   getActiveTerminalIntent,
   resolveAdoptedActiveTerminal,
 } from "./activeTerminalIntent";
+import { overlayPendingEdits } from "./pendingEdits";
 import {
   APP_STATE_LAYOUTS_KEY,
   APP_STATE_PROJECTS_KEY,
@@ -191,9 +192,14 @@ export function applySharedAppState(
     return { restored: false, reason: "invalid", counts: getSnapshotCounts(snapshot) };
   }
 
+  // A replica's own renames and setting changes ride on top of whatever the
+  // desktop says until the desktop says the same thing; otherwise a snapshot
+  // published before it heard about them would undo them on screen.
+  const now = Date.now();
+  const replica = !isPrimaryClient();
   useProjectStore.setState({
     projects: projectState.projects,
-    nodes: projectState.nodes,
+    nodes: replica ? overlayPendingEdits("node", projectState.nodes, now) : projectState.nodes,
     activeProjectId: projectState.activeProjectId ?? null,
     projectOrder: projectState.projectOrder ?? Object.keys(projectState.projects),
   });
@@ -211,11 +217,11 @@ export function applySharedAppState(
   // knew still name the old tab, and how often those arrive depends only on
   // how busy that tab is — which is why tapping a push notification switched
   // tabs or did not depending on what the tab you were already on was doing.
-  const intent = isPrimaryClient() ? null : getActiveTerminalIntent();
+  const intent = replica ? getActiveTerminalIntent() : null;
   const adopted = resolveAdoptedActiveTerminal({
     incoming: terminalState.activeTerminalId ?? null,
     intent,
-    now: Date.now(),
+    now,
     incomingSharesTab: sharesTmuxTab(
       terminalState.sessions[intent?.terminalId ?? ""],
       terminalState.sessions[terminalState.activeTerminalId ?? ""]
@@ -225,7 +231,9 @@ export function applySharedAppState(
     clearActiveTerminalIntent();
   }
   useTerminalStore.setState({
-    sessions: terminalState.sessions,
+    sessions: replica
+      ? overlayPendingEdits("session", terminalState.sessions, now)
+      : terminalState.sessions,
     activeTerminalId: keepLocalActiveTerminal
       ? localActiveTerminalId
       : adopted.activeTerminalId,

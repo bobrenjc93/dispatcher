@@ -31,6 +31,14 @@ import { useProjectStore } from "../stores/useProjectStore";
 import { useTerminalStore } from "../stores/useTerminalStore";
 
 const BACKUP_SAVE_DEBOUNCE_MS = 1_000;
+/**
+ * The longest a change waits to be saved and published, however busy the
+ * stores are. A trailing debounce alone restarts on every store change, and a
+ * terminal printing steadily changes the store many times a second -- so a
+ * rename or a tick made while any tab was busy reached the phones whenever the
+ * output happened to pause, which could be many seconds later.
+ */
+const BACKUP_SAVE_MAX_WAIT_MS = 2_000;
 const BACKUP_SAVE_LOG_INTERVAL_MS = 15_000;
 
 export function useAppStateBackup() {
@@ -41,6 +49,8 @@ export function useAppStateBackup() {
     let readyToSave = false;
     let hasSeenAppState = hasLiveAppState();
     let saveTimer: number | null = null;
+    // When the oldest change not yet saved was made.
+    let pendingSince: number | null = null;
     let lastSavedSignature = "";
     let lastSaveLogAt = 0;
     // The last document this client and the desktop agreed on. A replica diffs
@@ -53,6 +63,7 @@ export function useAppStateBackup() {
         window.clearTimeout(saveTimer);
         saveTimer = null;
       }
+      pendingSince = null;
     };
 
     const saveNow = async () => {
@@ -114,11 +125,16 @@ export function useAppStateBackup() {
         return;
       }
 
+      const now = Date.now();
+      const since = pendingSince ?? now;
       clearSaveTimer();
+      pendingSince = since;
+      const delay = Math.min(BACKUP_SAVE_DEBOUNCE_MS, Math.max(0, since + BACKUP_SAVE_MAX_WAIT_MS - now));
       saveTimer = window.setTimeout(() => {
         saveTimer = null;
+        pendingSince = null;
         void saveNow();
-      }, BACKUP_SAVE_DEBOUNCE_MS);
+      }, delay);
     };
 
     const startSubscriptions = () => {

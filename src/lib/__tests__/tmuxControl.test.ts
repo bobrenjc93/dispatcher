@@ -71,6 +71,7 @@ import {
   resumeLiveControlSessions,
   routeTmuxTransportOutput,
   sendInputToTmuxTerminal,
+  renameTmuxTerminal,
   sendPasteToTmuxTerminal,
   TmuxPasteCancelledError,
   syncTmuxWindowSize,
@@ -3964,6 +3965,26 @@ describe("tmuxControl", () => {
     const sessions = useTerminalStore.getState().sessions;
     expect(sessions[windowTerminalId]?.title).toBe("[006/d] pr review");
     expect(sessions[paneTerminalId]?.title).toBe("[006/d] pr review");
+  });
+
+  it("names the tab before tmux confirms a rename", async () => {
+    // A rename relayed from a phone is published the moment its handler
+    // returns. Waiting for %window-renamed meant that snapshot still had the
+    // old name, and the phone heard nothing more until the next save.
+    const transportTerminalId = "transport-rename-eager";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    const { windowTerminalId, paneTerminalId } = getHydratedTmuxIds();
+
+    void renameTmuxTerminal(windowTerminalId, "eager name").catch(() => {});
+
+    const sessions = useTerminalStore.getState().sessions;
+    expect(sessions[windowTerminalId]?.title).toBe("eager name");
+    expect(sessions[paneTerminalId]?.title).toBe("eager name");
+    const node = Object.values(useProjectStore.getState().nodes)
+      .find((candidate) => candidate.terminalId === windowTerminalId);
+    expect(node?.name).toBe("eager name");
+    expect(getWrittenTmuxCommands().some((command) => command.includes("rename-window"))).toBe(true);
   });
 
   it("does not hand an abandoned command's reply to the next one in line", async () => {

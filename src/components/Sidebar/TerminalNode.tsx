@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from "react";
-import { createPortal } from "react-dom";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, type KeyboardEvent } from "react";
+import { createPortal, flushSync } from "react-dom";
 import { StatusDot } from "../common/StatusDot";
 import { ContextMenu, type ContextMenuItem } from "../common/ContextMenu";
 import { useTerminalStore } from "../../stores/useTerminalStore";
@@ -16,7 +16,8 @@ import {
   visibleTabOrder,
 } from "../../lib/tabSelection";
 import type { TerminalSession } from "../../types/terminal";
-import type { TerminalSettingsPatch } from "../../lib/terminalSettings";
+import { toSessionPatch, type TerminalSettingsPatch } from "../../lib/terminalSettings";
+import { notePendingEdit } from "../../lib/pendingEdits";
 import {
   shouldIgnoreDragStartTarget,
   startDrag,
@@ -107,9 +108,16 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
    *
    * Relayed rather than written straight to the store: on a phone the local
    * edit is overwritten by the desktop's next snapshot, so the tick came
-   * straight back off and the menu looked inert.
+   * straight back off and the menu looked inert. The phone still shows the
+   * change at once, held against stale snapshots until the desktop's copy
+   * agrees, rather than waiting seconds for the round trip.
    */
   const patchSettings = (id: string, patch: TerminalSettingsPatch) => {
+    if (isReplicaClient()) {
+      const sessionPatch = toSessionPatch(patch);
+      notePendingEdit("session", id, sessionPatch);
+      useTerminalStore.getState().patchSession(id, sessionPatch);
+    }
     performAction("patchTerminalSettings", id, patch);
   };
   // A boolean rather than the list: every tab would re-render on every
@@ -133,10 +141,19 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
   }, [editing]);
 
   const startRename = useCallback(() => {
-    if (session) {
-      setDraft(session.title);
-      setEditing(true);
+    if (!session) {
+      return;
     }
+    setDraft(session.title);
+    if (isTouchPointer()) {
+      // A phone raises its keyboard only for focus given while the tap that
+      // asked for it is still being handled. Rendering the dialog in the
+      // ordinary way lands after that, and the box sat there unfocused with
+      // no keyboard; mounting it now lets it focus itself inside the tap.
+      flushSync(() => setEditing(true));
+      return;
+    }
+    setEditing(true);
   }, [session]);
 
   // Listen for the global rename shortcut dispatched from App
@@ -600,6 +617,20 @@ function RenameDialog(props: {
 }) {
   const [draft, setDraft] = useState(props.currentTitle);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // A layout effect, not an ordinary one, so the focus happens in the same
+  // turn as the tap that opened the dialog -- later, and the phone leaves its
+  // keyboard down. The caret goes to the end rather than selecting the lot:
+  // a rename is usually an edit of the old name.
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input) {
+      return;
+    }
+    input.focus({ preventScroll: true });
+    const end = input.value.length;
+    input.setSelectionRange(end, end);
+  }, []);
 
   return (
     <div className="rename-dialog-backdrop" role="presentation" onPointerDown={props.onCancel}>

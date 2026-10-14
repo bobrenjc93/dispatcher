@@ -68,6 +68,7 @@ import {
   stripViewportStyling,
 } from "./viewportSignature";
 import { recordActivitySample } from "./activityHistory";
+import { notePendingEdit } from "./pendingEdits";
 import { resolveInactivityChangePercent } from "./inactivityThreshold";
 import { recordSessionEvent } from "./sessionRecorder";
 import { debugLog, debugLogError, previewDebugText } from "./debugLog";
@@ -5669,23 +5670,7 @@ function handleNotification(session: TmuxControlSession, line: string) {
     if (!window) {
       return;
     }
-    window.title = title;
-    const terminals = useTerminalStore.getState();
-    terminals.patchSession(window.terminalId, { title });
-    // The panes carry the window's name too -- every projection sets them from
-    // the same window snapshot, so this is the name they are meant to have.
-    // Leaving them out let the rename land in some places and not others: the
-    // sidebar and the detail panel read the window terminal and changed at
-    // once, while the mobile top bar reads whichever pane is focused and sat
-    // on the old name for ten minutes, until something happened to re-project
-    // that window. This is the moment the name changed; nothing should have to
-    // wait for a refresh to hear about it.
-    for (const pane of session.panes.values()) {
-      if (pane.windowId === windowId) {
-        terminals.patchSession(pane.terminalId, { title });
-      }
-    }
-    useProjectStore.getState().patchNode(window.nodeId, { name: title });
+    applyTmuxWindowTitle(session, window, title);
     return;
   }
 
@@ -6824,8 +6809,66 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * Give a tmux window its name everywhere it shows: the window terminal, each
+ * of its panes, and its row in the sidebar.
+ *
+ * The panes carry the window's name too -- every projection sets them from the
+ * same window snapshot, so this is the name they are meant to have. Leaving
+ * them out let a rename land in some places and not others: the sidebar and
+ * the detail panel read the window terminal and changed at once, while the
+ * mobile top bar reads whichever pane is focused and sat on the old name for
+ * ten minutes, until something happened to re-project that window.
+ */
+function applyTmuxWindowTitle(session: TmuxControlSession, window: TmuxWindowState, title: string) {
+  window.title = title;
+  const terminals = useTerminalStore.getState();
+  terminals.patchSession(window.terminalId, { title });
+  for (const pane of session.panes.values()) {
+    if (pane.windowId === window.windowId) {
+      terminals.patchSession(pane.terminalId, { title });
+    }
+  }
+  useProjectStore.getState().patchNode(window.nodeId, { name: title });
+}
+
+/**
+ * Show a rename on a replica before the desktop has made it.
+ *
+ * A replica has no tmux session to consult, so the window's panes are found
+ * the way the shared document links them: same window, same server.
+ */
+function applyReplicaRename(terminalId: string, title: string) {
+  const terminals = useTerminalStore.getState();
+  const terminal = terminals.sessions[terminalId];
+  if (!terminal) {
+    return;
+  }
+  const tabTerminalIds = terminal.backendKind === "tmux-window" && terminal.tmuxWindowId
+    ? Object.values(terminals.sessions)
+      .filter((other) =>
+        other.tmuxWindowId === terminal.tmuxWindowId
+        && (other.tmuxConnectionKey ?? null) === (terminal.tmuxConnectionKey ?? null))
+      .map((other) => other.id)
+    : [terminalId];
+  for (const id of tabTerminalIds) {
+    notePendingEdit("session", id, { title });
+    terminals.patchSession(id, { title });
+  }
+  const projects = useProjectStore.getState();
+  for (const node of Object.values(projects.nodes)) {
+    if (node.terminalId === terminalId) {
+      notePendingEdit("node", node.id, { name: title });
+      projects.patchNode(node.id, { name: title });
+    }
+  }
+}
+
 export async function renameTmuxTerminal(terminalId: string, title: string): Promise<boolean> {
   if (isReplicaClient()) {
+    // Shown here at once and held against stale snapshots until the desktop's
+    // own copy has the new name; waiting for the round trip took seconds.
+    applyReplicaRename(terminalId, title);
     performAction("renameTerminal", terminalId, title);
     // The rename lands via the desktop window and comes back in shared state,
     // so the caller must not also apply its local fallback rename.
@@ -6845,7 +6888,23 @@ export async function renameTmuxTerminal(terminalId: string, title: string): Pro
     windowId: terminal.tmuxWindowId,
     title,
   });
-  await sendCommand(session, `rename-window -t ${terminal.tmuxWindowId} ${quoteTmuxCommandArgument(title)}`);
+  // Named here before tmux confirms rather than when %window-renamed comes
+  // back. A rename relayed from a phone is published the moment its handler
+  // returns, and waiting for tmux meant that snapshot still had the old name
+  // -- the phone then heard nothing until the next save, seconds later.
+  const window = session.windows.get(terminal.tmuxWindowId);
+  const previousTitle = window?.title;
+  if (window) {
+    applyTmuxWindowTitle(session, window, title);
+  }
+  try {
+    await sendCommand(session, `rename-window -t ${terminal.tmuxWindowId} ${quoteTmuxCommandArgument(title)}`);
+  } catch (error) {
+    if (window && previousTitle !== undefined && window.title === title) {
+      applyTmuxWindowTitle(session, window, previousTitle);
+    }
+    throw error;
+  }
   return true;
 }
 
