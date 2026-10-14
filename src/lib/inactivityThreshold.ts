@@ -78,3 +78,63 @@ export function formatInactivityThreshold(value: number | undefined): string {
   }
   return parts.slice(0, 2).join(" ") || "0s";
 }
+
+/**
+ * How much of the screen has to change for output to count as the tab at work.
+ *
+ * Unset is the usual answer, and means the built-in rule: a handful of rows
+ * and characters, measured against the spinners and clocks that kept waking
+ * idle tabs. Set, it replaces that rule with one number the user picked --
+ * "below 5% for a minute is inactive" -- and output under it stops keeping
+ * the tab alive as well, because otherwise a spinner would hold it green
+ * forever and the setting would never take effect.
+ *
+ * A percentage of the screen's cells, so it means the same thing on a phone-
+ * sized pane as on a full-width one.
+ */
+export function resolveInactivityChangePercent(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 100) {
+    return undefined;
+  }
+  return value;
+}
+
+/**
+ * Turn what someone typed, in percent, into a stored value.
+ *
+ * A trailing `%` is accepted, since that is how the number is written. Empty
+ * means the built-in rule.
+ */
+export function parseInactivityChangePercent(
+  input: string
+): { ok: true; value: number | undefined } | { ok: false; reason: string } {
+  const trimmed = input.trim().replace(/%$/, "").trim();
+  if (trimmed === "") {
+    return { ok: true, value: undefined };
+  }
+
+  const percent = Number(trimmed);
+  if (!Number.isFinite(percent)) {
+    return { ok: false, reason: "Enter a percentage of the screen." };
+  }
+  if (percent <= 0 || percent > 100) {
+    return { ok: false, reason: "Enter a percentage above 0 and at most 100." };
+  }
+  return { ok: true, value: percent };
+}
+
+/** A percentage as people write one: no trailing zeros, and small ones kept. */
+export function formatInactivityChangePercent(value: number): string {
+  const digits = value >= 10 ? 0 : value >= 1 ? 1 : 2;
+  return `${Number(value.toFixed(digits))}%`;
+}
+
+/** Both halves of the setting, for the menu's narrow right-hand column. */
+export function formatInactivitySetting(
+  thresholdMs: number | undefined,
+  changePercent: number | undefined
+): string {
+  const duration = formatInactivityThreshold(thresholdMs);
+  const percent = resolveInactivityChangePercent(changePercent);
+  return percent === undefined ? duration : `${duration} < ${formatInactivityChangePercent(percent)}`;
+}

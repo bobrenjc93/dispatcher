@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { StatusDot } from "../common/StatusDot";
 import { ContextMenu, type ContextMenuItem } from "../common/ContextMenu";
@@ -34,10 +34,16 @@ import {
   parseSnoozeMinutes,
 } from "../../lib/snooze";
 import {
-  formatInactivityThreshold,
+  formatInactivityChangePercent,
+  formatInactivitySetting,
+  parseInactivityChangePercent,
   parseInactivityThresholdSeconds,
+  resolveInactivityChangePercent,
   resolveInactivityThresholdMs,
 } from "../../lib/inactivityThreshold";
+import { useActivityHistory } from "../../lib/activityHistory";
+import { isReplicaClient } from "../../lib/replication";
+import { ActivityChart } from "./ActivityChart";
 
 interface TerminalNodeProps {
   terminalId: string;
@@ -281,8 +287,11 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     const allSnoozed = everyTarget((value) => isSnoozeActive(value.snoozedUntil, Date.now()));
     const thresholds = targetSessions.map((value) => value.inactivityThresholdMs);
     const uniformThreshold = commonValue(thresholds);
+    const changePercents = targetSessions.map((value) => value.inactivityChangePercent);
+    const uniformChangePercent = commonValue(changePercents);
     const thresholdsDisagree =
-      uniformThreshold === undefined && thresholds.some((value) => value !== undefined);
+      (uniformThreshold === undefined && thresholds.some((value) => value !== undefined))
+      || (uniformChangePercent === undefined && changePercents.some((value) => value !== undefined));
 
     return [
       {
@@ -384,7 +393,9 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
         // the label. Parenthesised after an ellipsis it read as clutter,
         // and this is the same right-aligned secondary column the other
         // items already use.
-        shortcut: thresholdsDisagree ? "Mixed" : formatInactivityThreshold(uniformThreshold),
+        shortcut: thresholdsDisagree
+          ? "Mixed"
+          : formatInactivitySetting(uniformThreshold, uniformChangePercent),
         icon: (
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
             <circle cx="7" cy="7" r="4.75" stroke="currentColor" strokeWidth="1.2" />
@@ -532,11 +543,22 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
               )
             )
           }
+          currentChangePercent={
+            commonValue(
+              thresholdTargets.map(
+                (id) => useTerminalStore.getState().sessions[id]?.inactivityChangePercent
+              )
+            )
+          }
+          historyTerminalId={thresholdTargets.length === 1 ? thresholdTargets[0] : null}
           count={thresholdTargets.length}
           onCancel={() => setThresholdTargets(null)}
-          onSubmit={(value) => {
+          onSubmit={({ thresholdMs, changePercent }) => {
             for (const id of thresholdTargets) {
-              patchSettings(id, { inactivityThresholdMs: value ?? null });
+              patchSettings(id, {
+                inactivityThresholdMs: thresholdMs ?? null,
+                inactivityChangePercent: changePercent ?? null,
+              });
             }
             setThresholdTargets(null);
           }}
@@ -634,25 +656,34 @@ function prefersNoAutoFocus(): boolean {
 }
 
 /**
- * Editor for one tab's inactivity threshold.
+ * Editor for one tab's inactivity threshold: how little change, for how long.
  *
  * Seconds rather than milliseconds because that is the unit the setting is
  * thought about in, and an empty field is a real answer — go back to the
- * app-wide default — rather than a mistake to reject.
+ * default — rather than a mistake to reject. For a single tab the dialog also
+ * draws what the tab has been doing, replayed against whatever is typed, so a
+ * setting can be judged before it is saved.
  */
 function InactivityThresholdDialog(props: {
   currentMs: number | undefined;
+  currentChangePercent: number | undefined;
+  historyTerminalId: string | null;
   count: number;
-  onSubmit: (value: number | undefined) => void;
+  onSubmit: (value: { thresholdMs: number | undefined; changePercent: number | undefined }) => void;
   onCancel: () => void;
 }) {
-  const [draft, setDraft] = useState(
+  const [secondsDraft, setSecondsDraft] = useState(
     props.currentMs === undefined
       ? ""
       : String(Math.round(resolveInactivityThresholdMs(props.currentMs) / 1000))
   );
+  const savedChangePercent = resolveInactivityChangePercent(props.currentChangePercent);
+  const [percentDraft, setPercentDraft] = useState(
+    savedChangePercent === undefined ? "" : formatInactivityChangePercent(savedChangePercent).replace(/%$/, "")
+  );
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const history = useActivityHistory(props.historyTerminalId);
 
   useEffect(() => {
     // Not on a touchscreen. Focusing raises the keyboard over a dialog the
@@ -666,53 +697,97 @@ function InactivityThresholdDialog(props: {
     inputRef.current?.select();
   }, []);
 
+  const parsedSeconds = parseInactivityThresholdSeconds(secondsDraft);
+  const parsedPercent = parseInactivityChangePercent(percentDraft);
+  // What the chart previews: the draft where it parses, the saved value
+  // where it does not yet, so half-typed input does not blank the picture.
+  const previewMs = resolveInactivityThresholdMs(
+    parsedSeconds.ok ? parsedSeconds.value : props.currentMs
+  );
+  const previewPercent = parsedPercent.ok ? parsedPercent.value : savedChangePercent;
+
   const submit = () => {
-    const parsed = parseInactivityThresholdSeconds(draft);
-    if (!parsed.ok) {
-      // Keep the dialog open rather than storing something the user did not
-      // ask for; a silently corrected number is worse than being told.
-      setError(parsed.reason);
+    // Keep the dialog open rather than storing something the user did not
+    // ask for; a silently corrected number is worse than being told.
+    if (!parsedSeconds.ok) {
+      setError(parsedSeconds.reason);
       return;
     }
-    props.onSubmit(parsed.value);
+    if (!parsedPercent.ok) {
+      setError(parsedPercent.reason);
+      return;
+    }
+    props.onSubmit({ thresholdMs: parsedSeconds.value, changePercent: parsedPercent.value });
+  };
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submit();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      props.onCancel();
+    }
   };
 
   return (
     <div className="threshold-dialog-backdrop" role="presentation" onPointerDown={props.onCancel}>
       <div
-        className="threshold-dialog"
+        className={`threshold-dialog${props.historyTerminalId ? " has-chart" : ""}`}
         role="dialog"
         aria-label="Inactivity threshold"
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => event.stopPropagation()}
       >
         <p className="threshold-dialog-hint">
-          Seconds of no change before {props.count > 1 ? `each of these ${props.count} tabs` : "this tab"}
-          {" "}counts as inactive. Leave empty for the default.
+          {props.count > 1 ? `Each of these ${props.count} tabs` : "This tab"} counts as inactive once
+          its screen has changed less than the threshold for this long. Leave either empty for the default.
         </p>
-        <input
-          ref={inputRef}
-          className="threshold-dialog-input"
-          type="text"
-          inputMode="numeric"
-          placeholder={String(resolveInactivityThresholdMs(undefined) / 1000)}
-          value={draft}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            setError(null);
-          }}
-          onKeyDown={(event) => {
-            event.stopPropagation();
-            if (event.key === "Enter") {
-              event.preventDefault();
-              submit();
-            } else if (event.key === "Escape") {
-              event.preventDefault();
-              props.onCancel();
-            }
-          }}
-        />
+        <div className="threshold-dialog-fields">
+          <label className="threshold-dialog-field">
+            <span>Inactive after</span>
+            <input
+              ref={inputRef}
+              className="threshold-dialog-input"
+              type="text"
+              inputMode="decimal"
+              placeholder={String(resolveInactivityThresholdMs(undefined) / 1000)}
+              value={secondsDraft}
+              onChange={(event) => {
+                setSecondsDraft(event.target.value);
+                setError(null);
+              }}
+              onKeyDown={handleKeyDown}
+            />
+            <span>seconds</span>
+          </label>
+          <label className="threshold-dialog-field">
+            <span>below</span>
+            <input
+              className="threshold-dialog-input"
+              type="text"
+              inputMode="decimal"
+              placeholder="built-in"
+              value={percentDraft}
+              onChange={(event) => {
+                setPercentDraft(event.target.value);
+                setError(null);
+              }}
+              onKeyDown={handleKeyDown}
+            />
+            <span>% change</span>
+          </label>
+        </div>
         {error && <p className="threshold-dialog-error">{error}</p>}
+        {props.historyTerminalId && (
+          <ActivityChart
+            history={history}
+            changePercent={previewPercent}
+            inactivityMs={previewMs}
+            isReplica={isReplicaClient()}
+          />
+        )}
         <div className="threshold-dialog-actions">
           <button type="button" className="threshold-dialog-btn" onClick={props.onCancel}>
             Cancel

@@ -54,6 +54,7 @@ export type ClosedTabSettings = Partial<Pick<
   | "bounceOnAttention"
   | "pushOnInaction"
   | "inactivityThresholdMs"
+  | "inactivityChangePercent"
 >>;
 
 const SETTINGS_KEYS = [
@@ -64,6 +65,7 @@ const SETTINGS_KEYS = [
   "bounceOnAttention",
   "pushOnInaction",
   "inactivityThresholdMs",
+  "inactivityChangePercent",
 ] as const satisfies readonly (keyof ClosedTabSettings)[];
 
 export function pickClosedTabSettings(session: TerminalSession | undefined): ClosedTabSettings {

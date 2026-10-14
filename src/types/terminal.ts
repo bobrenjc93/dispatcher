@@ -67,6 +67,13 @@ export interface TerminalSession {
    * One global number makes one of those two noisy with false alarms.
    */
   inactivityThresholdMs?: number;
+  /**
+   * How much of the screen, in percent, output has to change to count as this
+   * tab at work. Unset means the built-in rule. Set, output under it neither
+   * counts nor keeps the tab green, so "below 5% for a minute" is exactly
+   * what makes it inactive.
+   */
+  inactivityChangePercent?: number;
   backendKind: TerminalBackendKind;
   restoredFromBackendKind?: TerminalBackendKind;
   tmuxControlSessionId?: string;

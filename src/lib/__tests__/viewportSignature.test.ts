@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  builtInChangePercent,
+  classifyViewportChange,
+  screenChangePercent,
   describeViewportChange,
   isBlankViewport,
   isDecorationOnlyChange,
@@ -274,5 +277,55 @@ describe("isBlankViewport", () => {
 
   it("treats a capture of nothing as nothing to read", () => {
     expect(isBlankViewport([])).toBe(true);
+  });
+});
+
+describe("classifyViewportChange", () => {
+  const change = (overrides: Partial<{
+    changedRows: number;
+    changedTextRows: number;
+    changedTextChars: number;
+    digitOnlyTextRows: number;
+  }>) => ({
+    changedRows: 1,
+    changedTextRows: 1,
+    changedTextChars: 1,
+    digitOnlyTextRows: 0,
+    ...overrides,
+  });
+  // A 100x50 pane: 5000 cells, so 50 characters is 1%.
+  const cells = 5000;
+
+  it("keeps the built-in rule when no percentage is set", () => {
+    expect(classifyViewportChange(change({ changedTextRows: 4, changedTextChars: 12 }), { cells }))
+      .toBe("small");
+    expect(classifyViewportChange(change({ changedTextRows: 4, changedTextChars: 13 }), { cells }))
+      .toBe("work");
+    expect(classifyViewportChange(change({ changedTextRows: 9, changedTextChars: 9 }), { cells }))
+      .toBe("work");
+  });
+
+  it("measures against the tab's percentage when it has one", () => {
+    // Two hundred characters is real work by the built-in rule and 4% here.
+    const big = change({ changedRows: 20, changedTextRows: 20, changedTextChars: 200 });
+    expect(classifyViewportChange(big, { cells })).toBe("work");
+    expect(classifyViewportChange(big, { cells, changePercent: 5 })).toBe("small");
+    expect(classifyViewportChange(big, { cells, changePercent: 4 })).toBe("work");
+    // And a low percentage can make the built-in rule's decoration count.
+    const tiny = change({ changedTextChars: 10 });
+    expect(classifyViewportChange(tiny, { cells, changePercent: 0.1 })).toBe("work");
+  });
+
+  it("never counts a change only in numbers, whatever the setting", () => {
+    const tick = change({ changedTextRows: 2, changedTextChars: 40, digitOnlyTextRows: 2 });
+    expect(classifyViewportChange(tick, { cells })).toBe("numbers");
+    expect(classifyViewportChange(tick, { cells, changePercent: 0.01 })).toBe("numbers");
+  });
+
+  it("measures change as a share of the screen", () => {
+    expect(screenChangePercent({ changedTextChars: 50 }, cells)).toBe(1);
+    expect(screenChangePercent({ changedTextChars: 0 }, cells)).toBe(0);
+    expect(screenChangePercent({ changedTextChars: 9000 }, cells)).toBe(100);
+    expect(builtInChangePercent(cells)).toBeCloseTo(0.24);
   });
 });

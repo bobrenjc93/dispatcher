@@ -1282,6 +1282,147 @@ body.sidebar-resizing .terminal-pane {
   box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
 }
 
+/* Wide enough for the chart when it is editing one tab. */
+.threshold-dialog.has-chart {
+  width: 580px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
+.threshold-dialog-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.threshold-dialog-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.threshold-dialog-field .threshold-dialog-input {
+  width: 84px;
+}
+
+.activity-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.activity-chart-empty,
+.activity-chart-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.activity-chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.activity-chart-summary {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.activity-chart-ranges {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.activity-chart-range {
+  padding: 2px 6px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.activity-chart-range.is-active {
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.activity-chart-plot {
+  width: 100%;
+  height: auto;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  color: var(--text-secondary);
+}
+
+.activity-chart-axis {
+  fill: var(--text-muted);
+  font-size: 9px;
+}
+
+.activity-chart-threshold-label {
+  fill: var(--accent);
+  font-size: 10px;
+}
+
+.activity-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--text-muted);
+}
+
+.activity-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.activity-chart-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.activity-chart-legend i.is-round {
+  border-radius: 50%;
+}
+
+.activity-chart-table {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.activity-chart-row {
+  display: grid;
+  grid-template-columns: 76px 1fr 120px;
+  gap: 8px;
+  padding: 3px 8px;
+}
+
+.activity-chart-row:nth-child(odd) {
+  background: var(--bg-secondary);
+}
+
+.activity-chart-row.is-event {
+  color: var(--accent);
+}
+
 .threshold-dialog-hint {
   margin: 0;
   color: var(--text-secondary);

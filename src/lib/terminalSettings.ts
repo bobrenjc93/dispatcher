@@ -25,6 +25,8 @@ export interface TerminalSettingsPatch {
   snoozedUntil?: number | null;
   /** Null goes back to the app-wide default. */
   inactivityThresholdMs?: number | null;
+  /** Null goes back to the built-in rule. */
+  inactivityChangePercent?: number | null;
 }
 
 /** Turn the wire form into what the store takes, where absent means absent. */
@@ -50,6 +52,9 @@ export function toSessionPatch(patch: TerminalSettingsPatch): Partial<TerminalSe
   }
   if (patch.inactivityThresholdMs !== undefined) {
     session.inactivityThresholdMs = patch.inactivityThresholdMs ?? undefined;
+  }
+  if (patch.inactivityChangePercent !== undefined) {
+    session.inactivityChangePercent = patch.inactivityChangePercent ?? undefined;
   }
   return session;
 }

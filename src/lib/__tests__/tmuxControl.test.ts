@@ -40,6 +40,7 @@ import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { findTerminalIds } from "../layoutUtils";
+import { getActivityHistory } from "../activityHistory";
 import { CLOSED_TAB_TTL_MS, closedTabId, listClosedTabs } from "../closedTabs";
 import { TMUX_CONTROL_STALL_MS, TMUX_OWED_REPLY_WINDOW_MS } from "../tmuxControlStall";
 import { TMUX_CONTROL_END, TMUX_CONTROL_START } from "../tmuxControlProtocol";
@@ -2172,6 +2173,54 @@ describe("tmuxControl", () => {
     await flushMicrotasks();
 
     expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
+  });
+
+  it("holds a tab to its own change threshold, and writes down what it judged", async () => {
+    // "Only inactive when it is below N% for a minute": a change the built-in
+    // rule would call work is held back when it is under the tab's own
+    // percentage, and the judgment lands in the history the dialog draws.
+    const transportTerminalId = "transport-hidden-percent";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    const windowTerminalId = getWindowTerminalIdByWindowId("@1");
+    useTerminalStore.getState().patchSession(windowTerminalId, { inactivityChangePercent: 90 });
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 first\n");
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 4, ["output so far", ""]);
+    await flushMicrotasks();
+
+    const wentQuietAt = Date.now();
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: wentQuietAt });
+
+    vi.setSystemTime(Date.now() + 90_000);
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 more\n");
+    useTerminalStore.getState().patchSession(paneTerminalId, { lastOutputAt: Date.now() });
+    await vi.advanceTimersByTimeAsync(350);
+    completeTmuxCaptureWithCursor(transportTerminalId, 6, [
+      "output so far",
+      "a whole new line of real output",
+    ]);
+    await flushMicrotasks();
+
+    expect(useTerminalStore.getState().sessions[paneTerminalId].lastOutputAt).toBe(wentQuietAt);
+    const samples = getActivityHistory(windowTerminalId).samples;
+    const last = samples[samples.length - 1];
+    expect(last).toMatchObject({ kind: "small", changePercent: 90 });
+    // Past the built-in rule's twelve characters, so without the setting it
+    // would have woken the tab.
+    expect(last.changedTextChars).toBeGreaterThan(12);
+    expect(last.percent).toBeGreaterThan(0);
+    expect(last.percent).toBeLessThan(90);
   });
 
   it("wakes a tab once a creeping screen adds up to something", async () => {

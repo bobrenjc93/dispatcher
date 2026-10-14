@@ -16,6 +16,9 @@ describe("toSessionPatch", () => {
     expect(toSessionPatch({ inactivityThresholdMs: null })).toEqual({
       inactivityThresholdMs: undefined,
     });
+    expect(toSessionPatch({ inactivityChangePercent: null })).toEqual({
+      inactivityChangePercent: undefined,
+    });
   });
 
   it("leaves out what was not mentioned", () => {
@@ -23,6 +26,10 @@ describe("toSessionPatch", () => {
     // patch was never about.
     expect(Object.keys(toSessionPatch({ pushOnInaction: true }))).toEqual(["pushOnInaction"]);
     expect(toSessionPatch({})).toEqual({});
+  });
+
+  it("carries a change threshold", () => {
+    expect(toSessionPatch({ inactivityChangePercent: 5 })).toEqual({ inactivityChangePercent: 5 });
   });
 
   it("keeps a snooze deadline", () => {

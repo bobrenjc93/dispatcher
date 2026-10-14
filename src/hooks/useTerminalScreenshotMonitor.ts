@@ -35,7 +35,11 @@ import { bounceDockForAttention, shouldBounceDock } from "../lib/dockAttention";
 import { isAppFocused } from "../lib/appFocus";
 import { isSnoozeActive } from "../lib/snooze";
 import { pushAttentionNotification } from "../lib/pushNotify";
-import { resolveInactivityThresholdMs } from "../lib/inactivityThreshold";
+import {
+  resolveInactivityChangePercent,
+  resolveInactivityThresholdMs,
+} from "../lib/inactivityThreshold";
+import { recordActivityEvent } from "../lib/activityHistory";
 import { pushStatusDebug } from "../lib/statusDebug";
 import { isDisconnectedTmuxPlaceholderTerminal } from "../lib/tmuxControl";
 import { isPrimaryClient } from "../lib/replication";
@@ -505,6 +509,31 @@ export function useTerminalScreenshotMonitor() {
     const recentHashes = new Map<string, string[]>();
     const previousTabSignatures = new Map<string, string>();
     const previousStatusSnapshots = new Map<string, string>();
+    const historyInactive = new Map<string, boolean>();
+    const historyInputAt = new Map<string, number>();
+
+    // For the threshold dialog's chart: when each tab went quiet and came
+    // back, and when somebody typed into it. Recorded as changes rather than
+    // per tick, and not on the first look at a tab, which says only what it
+    // was already doing when the app started.
+    const noteStatusHistory = (
+      tabRootTerminalId: string,
+      args: { now: number; lastUserInputAt: number; inactive: boolean }
+    ) => {
+      const wasInactive = historyInactive.get(tabRootTerminalId);
+      historyInactive.set(tabRootTerminalId, args.inactive);
+      if (wasInactive !== undefined && wasInactive !== args.inactive) {
+        recordActivityEvent(tabRootTerminalId, {
+          at: args.now,
+          kind: args.inactive ? "inactive" : "active",
+        });
+      }
+      const seenInputAt = historyInputAt.get(tabRootTerminalId);
+      historyInputAt.set(tabRootTerminalId, args.lastUserInputAt);
+      if (seenInputAt !== undefined && args.lastUserInputAt > seenInputAt) {
+        recordActivityEvent(tabRootTerminalId, { at: args.lastUserInputAt, kind: "input" });
+      }
+    };
     const lastChangedAt = new Map<string, number>();
     const acknowledgedAt = new Map<string, number>();
     const focusVisualSuppressions = new Map<string, FocusVisualSuppression>();
@@ -653,9 +682,11 @@ export function useTerminalScreenshotMonitor() {
         askedAt,
       });
       if (shouldChime) {
+        recordActivityEvent(args.tabRootTerminalId, { at: args.now, kind: "chime" });
         void notifyTerminalInaction();
       }
       if (shouldPush) {
+        recordActivityEvent(args.tabRootTerminalId, { at: args.now, kind: "push" });
         void pushAttentionNotification({
           tabRootTerminalId: args.tabRootTerminalId,
           title: args.title,
@@ -784,10 +815,19 @@ export function useTerminalScreenshotMonitor() {
         acknowledgedTime,
         // The clock the decoration rollback does not touch, so a tab whose
         // only output is a spinner reads as running rather than finished.
-        lastLivenessAt: latestSessions.reduce(
-          (latest, session) => Math.max(latest, session.lastLivenessAt ?? 0),
-          0
-        ),
+        //
+        // Unless the tab names its own change threshold. "Below 5% for a
+        // minute" is then the definition of inactive, and a spinner keeping
+        // the tab alive would mean the setting never took effect.
+        lastLivenessAt:
+          resolveInactivityChangePercent(
+            latestStore.sessions[args.tabRootTerminalId]?.inactivityChangePercent
+          ) !== undefined
+            ? 0
+            : latestSessions.reduce(
+              (latest, session) => Math.max(latest, session.lastLivenessAt ?? 0),
+              0
+            ),
         watchingSince: WATCHING_SINCE,
         hasOutputSinceUserInput: lastOutputAt > lastUserInputAt,
         wasNeedsAttention: latestSessions.some((session) => session.isNeedsAttention),
@@ -797,6 +837,11 @@ export function useTerminalScreenshotMonitor() {
         longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
       });
       const tabRootSession = latestStore.sessions[args.tabRootTerminalId];
+      noteStatusHistory(args.tabRootTerminalId, {
+        now: args.now,
+        lastUserInputAt,
+        inactive: nextNeedsAttention || nextPossiblyDone || nextLongInactive,
+      });
 
       // A snooze suppresses every way this tab can ask for something: the
       // chime, the push, the bounce, and the derived flags that colour the dot
@@ -1233,6 +1278,11 @@ export function useTerminalScreenshotMonitor() {
             longInactivityMs: SCREENSHOT_LONG_INACTIVITY_MS,
           });
           const tabRootSession = latestStore.sessions[tabRootTerminalId];
+          noteStatusHistory(tabRootTerminalId, {
+            now,
+            lastUserInputAt,
+            inactive: nextNeedsAttention || nextPossiblyDone || nextLongInactive,
+          });
           maybeNotifyForInaction({
             tabRootTerminalId,
             title: tabRootSession?.title ?? "Terminal",

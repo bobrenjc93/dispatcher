@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_INACTIVITY_THRESHOLD_MS,
+  formatInactivityChangePercent,
+  formatInactivitySetting,
   formatInactivityThreshold,
+  parseInactivityChangePercent,
   parseInactivityThresholdSeconds,
+  resolveInactivityChangePercent,
   resolveInactivityThresholdMs,
 } from "../inactivityThreshold";
 
@@ -70,5 +74,55 @@ describe("formatInactivityThreshold", () => {
     // 24h 1m 40s — the seconds are noise at this scale.
     expect(formatInactivityThreshold(86_500_000)).toBe("24h 1m");
     expect(formatInactivityThreshold(90_000)).toBe("1m 30s");
+  });
+});
+
+describe("resolveInactivityChangePercent", () => {
+  it("is unset unless a tab asked for one", () => {
+    expect(resolveInactivityChangePercent(undefined)).toBeUndefined();
+    expect(resolveInactivityChangePercent(5)).toBe(5);
+    expect(resolveInactivityChangePercent(0.25)).toBe(0.25);
+    expect(resolveInactivityChangePercent(100)).toBe(100);
+  });
+
+  it("drops values that are not a share of the screen", () => {
+    // Replicated state can carry anything; a tab that can never count as
+    // working, or never stop, is worse than the built-in rule.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 101]) {
+      expect(resolveInactivityChangePercent(bad)).toBeUndefined();
+    }
+  });
+});
+
+describe("parseInactivityChangePercent", () => {
+  it("takes the number with or without a percent sign", () => {
+    expect(parseInactivityChangePercent("5")).toEqual({ ok: true, value: 5 });
+    expect(parseInactivityChangePercent(" 5% ")).toEqual({ ok: true, value: 5 });
+    expect(parseInactivityChangePercent("0.5")).toEqual({ ok: true, value: 0.5 });
+  });
+
+  it("reads an empty field as the built-in rule", () => {
+    expect(parseInactivityChangePercent("")).toEqual({ ok: true, value: undefined });
+    expect(parseInactivityChangePercent(" % ")).toEqual({ ok: true, value: undefined });
+  });
+
+  it("refuses what is not a usable percentage", () => {
+    for (const bad of ["abc", "0", "-3", "150"]) {
+      expect(parseInactivityChangePercent(bad).ok).toBe(false);
+    }
+  });
+});
+
+describe("formatInactivitySetting", () => {
+  it("adds the percentage only when one is set", () => {
+    expect(formatInactivitySetting(60_000, undefined)).toBe("1m");
+    expect(formatInactivitySetting(60_000, 5)).toBe("1m < 5%");
+    expect(formatInactivitySetting(undefined, 0.25)).toBe("20s < 0.25%");
+  });
+
+  it("writes percentages without trailing zeros", () => {
+    expect(formatInactivityChangePercent(5)).toBe("5%");
+    expect(formatInactivityChangePercent(2.5)).toBe("2.5%");
+    expect(formatInactivityChangePercent(12.4)).toBe("12%");
   });
 });

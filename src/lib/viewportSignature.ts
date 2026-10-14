@@ -267,18 +267,88 @@ export function isDecorationOnlyChange(change: ViewportChangeDescription): boole
   if (change.changedRows === 0) {
     return false;
   }
-  // Every line that changed did so only in its numbers. Length is no guide
-  // here: a timer losing a digit shifts the rest of the line, so a tick counts
-  // as dozens of changed characters and passes for work.
-  if (
-    change.changedTextRows > 0
-    && change.digitOnlyTextRows === change.changedTextRows
-    && change.changedTextRows <= DECORATION_MAX_TEXT_ROWS
-  ) {
+  if (isNumbersOnlyChange(change)) {
     return true;
   }
   return (
     change.changedTextRows <= DECORATION_MAX_TEXT_ROWS
     && change.changedTextChars <= DECORATION_MAX_TEXT_CHARS
   );
+}
+
+/**
+ * Every line that changed did so only in its numbers.
+ *
+ * Length is no guide here: a timer losing a digit shifts the rest of the line,
+ * so a tick counts as dozens of changed characters and passes for work.
+ */
+function isNumbersOnlyChange(
+  change: Pick<ViewportChangeDescription, "changedTextRows" | "digitOnlyTextRows">
+): boolean {
+  return (
+    change.changedTextRows > 0
+    && change.digitOnlyTextRows === change.changedTextRows
+    && change.changedTextRows <= DECORATION_MAX_TEXT_ROWS
+  );
+}
+
+/**
+ * How much of the screen a change rewrote, as a percentage of its cells.
+ *
+ * Text only, like the rest of the judgment: a recolour is not something
+ * anybody reads.
+ */
+export function screenChangePercent(
+  change: Pick<ViewportChangeDescription, "changedTextChars">,
+  cells: number
+): number {
+  if (change.changedTextChars <= 0) {
+    return 0;
+  }
+  if (!(cells > 0)) {
+    return 100;
+  }
+  return Math.min(100, (change.changedTextChars / cells) * 100);
+}
+
+export type ViewportChangeClass = "work" | "small" | "numbers";
+
+/**
+ * Whether a change counts as the tab at work, and if not, why not.
+ *
+ * With no `changePercent` this is the built-in rule above. With one, the size
+ * test becomes "at least that share of the screen" -- but a change in nothing
+ * but numbers stays decoration whatever the setting, since its size is an
+ * artefact of the line shifting rather than anything new to read.
+ */
+export function classifyViewportChange(
+  change: Pick<
+    ViewportChangeDescription,
+    "changedRows" | "changedTextRows" | "changedTextChars" | "digitOnlyTextRows"
+  >,
+  options: { cells: number; changePercent?: number }
+): ViewportChangeClass {
+  if (change.changedRows === 0) {
+    return "work";
+  }
+  if (isNumbersOnlyChange(change)) {
+    return "numbers";
+  }
+  if (options.changePercent === undefined) {
+    return change.changedTextRows <= DECORATION_MAX_TEXT_ROWS
+      && change.changedTextChars <= DECORATION_MAX_TEXT_CHARS
+      ? "small"
+      : "work";
+  }
+  return screenChangePercent(change, options.cells) >= options.changePercent ? "work" : "small";
+}
+
+/**
+ * Where the built-in rule's character limit falls on a screen this size.
+ *
+ * Only for drawing: the built-in rule also has a row limit, so this is the
+ * line a chart can show, not the whole of the test.
+ */
+export function builtInChangePercent(cells: number): number {
+  return screenChangePercent({ changedTextChars: DECORATION_MAX_TEXT_CHARS }, cells);
 }

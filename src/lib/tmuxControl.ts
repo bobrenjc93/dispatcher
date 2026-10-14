@@ -59,12 +59,16 @@ import {
   TMUX_OWED_REPLY_WINDOW_MS,
 } from "./tmuxControlStall";
 import {
+  classifyViewportChange,
   describeViewportChange,
   hashViewportLines,
   isBlankViewport,
-  isDecorationOnlyChange,
   resolveViewportChange,
+  screenChangePercent,
+  stripViewportStyling,
 } from "./viewportSignature";
+import { recordActivitySample } from "./activityHistory";
+import { resolveInactivityChangePercent } from "./inactivityThreshold";
 import { recordSessionEvent } from "./sessionRecorder";
 import { debugLog, debugLogError, previewDebugText } from "./debugLog";
 import {
@@ -4324,6 +4328,19 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
 }
 
 /**
+ * How many cells the pane's screen has, for measuring a change as a share of it.
+ *
+ * The pane's own width when tmux has reported one; before that, the widest
+ * captured row is the best stand-in.
+ */
+function countViewportCells(pane: TmuxPaneState, lines: readonly string[]): number {
+  const width = pane.width > 0
+    ? pane.width
+    : lines.reduce((widest, line) => Math.max(widest, stripViewportStyling(line).length), 0);
+  return Math.max(1, lines.length) * Math.max(1, width);
+}
+
+/**
  * Decide whether output was worth waking the tab for.
  *
  * A tab's status runs on timestamps, which every byte advances whether or not
@@ -4344,6 +4361,7 @@ async function captureInitialPaneContent(session: TmuxControlSession, pane: Tmux
  */
 function settleOutputActivity(
   pane: TmuxPaneState,
+  tabRootTerminalId: string,
   signature: string,
   previousSignature: string | null,
   previousLines: readonly string[] | null,
@@ -4351,20 +4369,63 @@ function settleOutputActivity(
 ): "adopt" | "keep" {
   const revertPoint = pane.outputActivityRevertPoint;
   pane.outputActivityRevertPoint = null;
+  const cells = countViewportCells(pane, lines);
+  // The tab's own setting, if it has one; otherwise the built-in rule.
+  const changePercent = resolveInactivityChangePercent(
+    useTerminalStore.getState().sessions[tabRootTerminalId]?.inactivityChangePercent
+  );
 
   const verdict = resolveViewportChange({ signature, previousSignature });
   if (verdict === "unknown") {
+    if (revertPoint !== null) {
+      recordActivitySample(tabRootTerminalId, {
+        at: Date.now(),
+        kind: "baseline",
+        percent: 0,
+        changedRows: 0,
+        changedTextRows: 0,
+        changedTextChars: 0,
+        digitOnlyTextRows: 0,
+        cells,
+        changePercent,
+      });
+    }
     return "adopt";
   }
 
   const change = verdict === "changed" && previousLines
     ? describeViewportChange(previousLines, lines)
     : null;
-  const decorationOnly = change !== null && isDecorationOnlyChange(change);
+  const changeClass = change ? classifyViewportChange(change, { cells, changePercent }) : null;
+  const decorationOnly = changeClass !== null && changeClass !== "work";
   // Nothing left on screen to call anybody over to read.
   const blankNow = isBlankViewport(lines);
   const worthWaking = !decorationOnly && !blankNow;
   const quietForMs = revertPoint === null ? 0 : Date.now() - revertPoint;
+
+  // Only output is judged. A capture nothing wrote to -- a focus, a resize --
+  // has no bearing on the tab's status, so it has no place in its history.
+  if (revertPoint !== null) {
+    recordActivitySample(tabRootTerminalId, {
+      at: Date.now(),
+      kind: verdict === "unchanged"
+        ? "identical"
+        : blankNow
+          ? "blank"
+          : changeClass === "numbers"
+            ? "numbers"
+            : changeClass === "small"
+              ? "small"
+              : "work",
+      percent: change ? screenChangePercent(change, cells) : 0,
+      changedRows: change?.changedRows ?? 0,
+      changedTextRows: change?.changedTextRows ?? 0,
+      changedTextChars: change?.changedTextChars ?? 0,
+      digitOnlyTextRows: change?.digitOnlyTextRows ?? 0,
+      cells,
+      changePercent,
+    });
+  }
 
   if (verdict === "changed" && worthWaking) {
     // Real work. Logged when it follows a quiet spell, because that is the
@@ -4401,6 +4462,8 @@ function settleOutputActivity(
         paneId: pane.paneId,
         terminalId: pane.terminalId,
         kind: blankNow ? "blank" : decorationOnly ? "decoration" : "identical",
+        changePercent: changePercent ?? null,
+        screenPercent: change ? Number(screenChangePercent(change, cells).toFixed(3)) : 0,
         changedRows: change?.changedRows ?? 0,
         changedChars: change?.changedChars ?? 0,
         changedTextRows: change?.changedTextRows ?? 0,
@@ -4580,6 +4643,7 @@ async function redrawVisiblePaneContent(
   // a spinner. One woke five times in a day with the filter running once.
   const adoptBaseline = settleOutputActivity(
     currentPane,
+    session.windows.get(currentPane.windowId)?.terminalId ?? currentPane.terminalId,
     signature,
     previousSignature,
     previousLines,
