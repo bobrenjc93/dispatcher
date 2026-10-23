@@ -20,9 +20,9 @@ const shortcuts = [
   { keys: "⇧⌘[", description: "Previous terminal" },
   { keys: "⌘F", description: "Search in terminal" },
   { keys: "⌘K", description: "Clear terminal" },
-  { keys: "⌘+", description: "Increase font size" },
-  { keys: "⌘\u2212", description: "Decrease font size" },
-  { keys: "⌘0", description: "Reset font size" },
+  { keys: "⌘+", description: "Zoom in" },
+  { keys: "⌘\u2212", description: "Zoom out" },
+  { keys: "⌘0", description: "Reset zoom" },
   { keys: "⇧⌘P", description: "Color scheme" },
   { keys: "⇧⌘?", description: "Status debug" },
   // Mouse, but listed here for the same reason the rest is: nothing on screen

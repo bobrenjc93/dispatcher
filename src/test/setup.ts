@@ -15,7 +15,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 vi.mock("@tauri-apps/api/webview", () => ({
-  getCurrentWebview: vi.fn(() => ({ listen: vi.fn(async () => () => {}) })),
+  getCurrentWebview: vi.fn(() => ({
+    listen: vi.fn(async () => () => {}),
+    setZoom: vi.fn(async () => {}),
+  })),
 }));
 
 // ---------------------------------------------------------------------------

@@ -13,9 +13,11 @@ import { MobileKeyBar } from "./components/Terminal/MobileKeyBar";
 import { useProjectStore } from "./stores/useProjectStore";
 import { useLayoutStore } from "./stores/useLayoutStore";
 import { useTerminalStore } from "./stores/useTerminalStore";
-import { useFontStore } from "./stores/useFontStore";
+import { useZoomStore } from "./stores/useZoomStore";
 import { useColorSchemeStore } from "./stores/useColorSchemeStore";
 import { useUiStore } from "./stores/useUiStore";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { isWebClient } from "./lib/webBridge";
 import { applyTerminalBackgroundVar, applyUIColors } from "./lib/colorSchemes";
 import type { ColorScheme } from "./types/colorScheme";
 import {
@@ -341,6 +343,15 @@ export default function App() {
   useEffect(() => {
     applySidebarWidth(sidebarWidth);
   }, [applySidebarWidth, sidebarWidth]);
+
+  // Page zoom rather than font sizes: the webview relays out at the new scale
+  // and raises devicePixelRatio with it, so the sidebar, menus and pointer
+  // math all scale together and the terminal canvas re-renders sharp.
+  const zoom = useZoomStore((s) => s.zoom);
+  useEffect(() => {
+    if (isWebClient()) return;
+    getCurrentWebview().setZoom(zoom).catch((err) => console.error("setZoom failed", err));
+  }, [zoom]);
 
   useEffect(() => {
     window.localStorage.setItem(KEY_DEBUG_VISIBLE_STORAGE_KEY, showKeyDebug ? "1" : "0");
@@ -1164,18 +1175,19 @@ export default function App() {
         useProjectStore.getState().demoteChild(tabRoot || activeTermId);
       }
     }
-    // Font size: Cmd+= / Cmd+- / Cmd+0
-    if (isMeta && e.key === "=") {
+    // Zoom the whole window like a browser: Cmd+= / Cmd+- / Cmd+0. A browser
+    // already does this itself, so only the desktop window takes the keys.
+    if (isMeta && !isWebClient() && (e.key === "=" || e.key === "+")) {
       e.preventDefault();
-      useFontStore.getState().increase();
+      useZoomStore.getState().zoomIn();
     }
-    if (isMeta && e.key === "-") {
+    if (isMeta && !isWebClient() && e.key === "-") {
       e.preventDefault();
-      useFontStore.getState().decrease();
+      useZoomStore.getState().zoomOut();
     }
-    if (isMeta && e.key === "0") {
+    if (isMeta && !isWebClient() && e.key === "0") {
       e.preventDefault();
-      useFontStore.getState().reset();
+      useZoomStore.getState().resetZoom();
     }
     // Cycle projects: Cmd+] (next) / Cmd+[ (prev)
     if (isMeta && !e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft")) {
