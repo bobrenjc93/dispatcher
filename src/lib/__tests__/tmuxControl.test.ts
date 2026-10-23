@@ -3914,14 +3914,19 @@ describe("tmuxControl", () => {
 
     // The pane is told, on its own screen, why it stopped moving.
     const notices = (queueTerminalOutputMock.mock.calls as unknown as [string, string][])
-      .filter(([, data]) => typeof data === "string" && data.includes("control connection is gone"));
+      .filter(([, data]) => typeof data === "string" && data.includes("control connection is not answering"));
     expect(notices.length).toBeGreaterThan(0);
     expect(notices[0][0]).toBe(paneTerminalId);
 
-    // And nothing further is written to a stream that cannot answer.
+    // And nothing further is written to a stream that cannot answer: typing is
+    // held, and the pane says so, rather than queued to arrive all at once.
     writeTerminalMock.mockClear();
-    await expect(sendInputToTmuxTerminal(paneTerminalId, "ls\r")).rejects.toThrow();
+    queueTerminalOutputMock.mockClear();
+    await expect(sendInputToTmuxTerminal(paneTerminalId, "ls\r")).resolves.toBe(false);
     expect(writeTerminalMock).not.toHaveBeenCalled();
+    const heldNotices = (queueTerminalOutputMock.mock.calls as unknown as [string, string][])
+      .filter(([, data]) => typeof data === "string" && data.includes("Typing is not being sent"));
+    expect(heldNotices.map(([terminalId]) => terminalId)).toEqual([paneTerminalId]);
   });
 
   it("picks back up when control mode answers again", async () => {
@@ -3935,7 +3940,7 @@ describe("tmuxControl", () => {
 
     routeTmuxTransportOutput(transportTerminalId, "zsh: command not found: capture-pane\n");
     await flushMicrotasks();
-    await expect(sendInputToTmuxTerminal(paneTerminalId, "ls\r")).rejects.toThrow();
+    await expect(sendInputToTmuxTerminal(paneTerminalId, "ls\r")).resolves.toBe(false);
 
     // A single control-mode notification is proof the far end is back.
     routeTmuxTransportOutput(transportTerminalId, "%window-renamed @1 back\n");
@@ -3945,6 +3950,63 @@ describe("tmuxControl", () => {
     void sendInputToTmuxTerminal(paneTerminalId, "ls\r");
     await flushMicrotasks();
     expect(writeTerminalMock).toHaveBeenCalled();
+  });
+
+  it("holds typing once the connection has gone quiet with a command out", async () => {
+    // A link to one host froze for eighty minutes. Keystrokes written into it
+    // waited in the pipe and arrived together when it opened: two Ctrl-Cs
+    // typed ten seconds apart reached Claude Code back to back, and it exited.
+    const transportTerminalId = "transport-quiet-hold";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    const { paneTerminalId } = getHydratedTmuxIds();
+    writeTerminalMock.mockClear();
+    queueTerminalOutputMock.mockClear();
+
+    void sendInputToTmuxTerminal(paneTerminalId, "/");
+    await flushMicrotasks();
+    expect(writeTerminalMock).toHaveBeenCalledWith(transportTerminalId, "send-keys -t %1 -H 2f\n");
+
+    // Nothing comes back at all.
+    vi.setSystemTime(Date.now() + 6_000);
+    writeTerminalMock.mockClear();
+    await expect(sendInputToTmuxTerminal(paneTerminalId, "\u0003")).resolves.toBe(false);
+    await expect(sendInputToTmuxTerminal(paneTerminalId, "\u0003")).resolves.toBe(false);
+    expect(writeTerminalMock).not.toHaveBeenCalled();
+    const heldNotices = (queueTerminalOutputMock.mock.calls as unknown as [string, string][])
+      .filter(([, data]) => typeof data === "string" && data.includes("Typing is not being sent"));
+    // Said once, not once per keystroke.
+    expect(heldNotices.map(([terminalId]) => terminalId)).toEqual([paneTerminalId]);
+
+    // The connection answers, and typing goes again.
+    routeTmuxTransportOutput(transportTerminalId, "%begin 1 0\n%end 1 0\n");
+    await flushMicrotasks();
+    void sendInputToTmuxTerminal(paneTerminalId, "x");
+    await flushMicrotasks();
+    expect(writeTerminalMock).toHaveBeenCalledWith(transportTerminalId, "send-keys -t %1 -H 78\n");
+  });
+
+  it("asks a silent connection whether it is still there", async () => {
+    // Without asking, a frozen connection looks exactly like idle panes until
+    // the user types into it.
+    const transportTerminalId = "transport-heartbeat";
+    seedTransportTerminal(transportTerminalId);
+    await hydrateSingleWindow(transportTerminalId);
+    routeTmuxTransportOutput(transportTerminalId, "%window-renamed @1 idle\n");
+    await flushMicrotasks();
+    writeTerminalMock.mockClear();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(writeTerminalMock).not.toHaveBeenCalledWith(
+      transportTerminalId,
+      'display-message -p "#{session_id}"\n'
+    );
+
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      'display-message -p "#{session_id}"\n'
+    );
   });
 
   it("renames every terminal the tab is made of, not just the window", async () => {
@@ -4661,7 +4723,7 @@ describe("tmuxControl", () => {
 
     const noticeCalls = queueTerminalOutputMock.mock.calls.filter(
       (call) =>
-        typeof call[1] === "string" && call[1].includes("control connection is gone")
+        typeof call[1] === "string" && call[1].includes("control connection is not answering")
     );
     // The pane still shows it -- that is the whole point of writing it.
     expect(noticeCalls.length).toBeGreaterThan(0);
@@ -5112,6 +5174,12 @@ describe("tmuxControl", () => {
       await hydrateSingleWindow(transportTerminalId);
       const paneTerminalId = getPaneTerminalIdByPaneId("%1");
       await vi.runOnlyPendingTimersAsync();
+      // Running every pending timer jumps past the idle limit, so a heartbeat
+      // went out; answer it, or it takes the reply meant for the snapshot.
+      if (getWrittenTmuxCommands().some((command) => command.startsWith('display-message -p "#{session_id}"'))) {
+        routeTmuxTransportOutput(transportTerminalId, "%begin 9 0\n%end 9 0\n");
+        await flushMicrotasks();
+      }
       writeTerminalMock.mockClear();
 
       await requestSnapshotFromPhone(paneTerminalId);

@@ -54,8 +54,12 @@ import {
 import { noteControlModeStarted } from "./tmuxAttachWatchdog";
 import {
   buildControlStreamStalledNotice,
+  buildInputHeldNotice,
   hasControlStreamStalled,
+  isControlStreamQuiet,
   isShellRejectingControlCommand,
+  shouldSendHeartbeat,
+  TMUX_HEARTBEAT_IDLE_MS,
   TMUX_OWED_REPLY_WINDOW_MS,
 } from "./tmuxControlStall";
 import {
@@ -328,6 +332,10 @@ interface TmuxControlSession {
   controlModeActive: boolean;
   /** When the far end stopped speaking control mode, or null while it is. */
   controlStreamStalledSince: number | null;
+  /** When the last byte of any kind arrived from the far end. */
+  lastControlTrafficAt: number;
+  /** Panes already told their typing is being held, this quiet spell. */
+  inputHeldPaneIds: Set<string>;
   /** Windows being reopened right now, whose tombstone is still on disk. */
   reopeningWindowIds: Set<string>;
   /** Reply blocks to swallow before matching pending commands. See transportUnmatchedBlocksOwed. */
@@ -1068,6 +1076,8 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     unmatchedBlocksOwedUntil: 0,
     colourQueryAnswers: null,
     controlStreamStalledSince: null,
+    lastControlTrafficAt: Date.now(),
+    inputHeldPaneIds: new Set(),
     reopeningWindowIds: new Set<string>(),
     transportTerminalId: sessionId,
     projectId,
@@ -3544,6 +3554,109 @@ function scheduleControlStreamStallCheck(session: TmuxControlSession) {
   }, CONTROL_STREAM_STALL_CHECK_MS));
 }
 
+const controlStreamHeartbeats = new Map<TmuxControlSession, ReturnType<typeof setTimeout>>();
+
+/**
+ * Ask a silent connection whether it is still there.
+ *
+ * Armed by traffic and by nothing else, so a session that has gone is not
+ * asked forever: a heartbeat that is never answered leaves a command pending,
+ * the stall check takes it from there, and only traffic arms the next one.
+ */
+function scheduleControlStreamHeartbeat(session: TmuxControlSession) {
+  if (controlStreamHeartbeats.has(session)) {
+    return;
+  }
+  const delayMs = Math.max(
+    1_000,
+    session.lastControlTrafficAt + TMUX_HEARTBEAT_IDLE_MS - Date.now()
+  );
+  controlStreamHeartbeats.set(session, setTimeout(() => {
+    controlStreamHeartbeats.delete(session);
+    if (
+      controlSessions.get(session.id) !== session
+      || !session.controlModeActive
+      || session.controlStreamStalledSince !== null
+    ) {
+      return;
+    }
+    if (
+      !shouldSendHeartbeat({
+        pendingCommandCount: session.pendingCommands.length,
+        lastTrafficAt: session.lastControlTrafficAt,
+        now: Date.now(),
+      })
+    ) {
+      // Traffic since, or a command already out that will answer the same
+      // question. Either way traffic re-arms this; a pending command that never
+      // answers is the stall check's business.
+      if (session.pendingCommands.length === 0) {
+        scheduleControlStreamHeartbeat(session);
+      }
+      return;
+    }
+    void sendCommand(session, 'display-message -p "#{session_id}"').catch(() => {});
+  }, delayMs));
+}
+
+/**
+ * Whether typing into this session would only queue behind a dead connection.
+ *
+ * Returns how long it has been quiet, or null when typing can go.
+ */
+function controlStreamInputHoldMs(session: TmuxControlSession, now: number): number | null {
+  if (session.controlStreamStalledSince !== null) {
+    return now - Math.min(session.controlStreamStalledSince, session.lastControlTrafficAt);
+  }
+  const oldestPendingSentAt = session.pendingCommands[0]?.sentAt ?? null;
+  if (
+    isControlStreamQuiet({
+      oldestPendingSentAt,
+      lastTrafficAt: session.lastControlTrafficAt,
+      now,
+    })
+  ) {
+    return now - (oldestPendingSentAt ?? now);
+  }
+  return null;
+}
+
+/**
+ * Hold typing that would go into a connection that is not moving, and say so.
+ *
+ * Returns whether the input was held.
+ */
+function holdInputForQuietControlStream(
+  session: TmuxControlSession,
+  pane: TmuxPaneState,
+  data: string,
+  kind: "send-keys" | "paste"
+): boolean {
+  const quietForMs = controlStreamInputHoldMs(session, Date.now());
+  if (quietForMs === null) {
+    return false;
+  }
+  debugLog("tmux.input", "held input for a quiet connection", {
+    sessionId: session.id,
+    paneId: pane.paneId,
+    terminalId: pane.terminalId,
+    kind,
+    quietForMs,
+    stalled: session.controlStreamStalledSince !== null,
+    pendingCommands: session.pendingCommands.length,
+    bytes: data.length,
+  });
+  if (!session.inputHeldPaneIds.has(pane.paneId)) {
+    session.inputHeldPaneIds.add(pane.paneId);
+    // Dispatcher talking, not the program; see markControlStreamStalled.
+    queueTerminalOutput(pane.terminalId, buildInputHeldNotice(quietForMs), {
+      allowParkedWrite: true,
+      recordActivity: false,
+    });
+  }
+  return true;
+}
+
 async function sendCommand(
   session: TmuxControlSession,
   command: string,
@@ -5875,6 +5988,9 @@ function processControlLine(session: TmuxControlSession, line: string) {
 }
 
 function processControlChunk(session: TmuxControlSession, chunk: string) {
+  session.lastControlTrafficAt = Date.now();
+  session.inputHeldPaneIds.clear();
+  scheduleControlStreamHeartbeat(session);
   session.lineBuffer += chunk;
 
   while (true) {
@@ -5942,6 +6058,8 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     unmatchedBlocksOwedUntil: 0,
     colourQueryAnswers: null,
     controlStreamStalledSince: null,
+    lastControlTrafficAt: Date.now(),
+    inputHeldPaneIds: new Set(),
     reopeningWindowIds: new Set<string>(),
     transportTerminalId,
     projectId,
@@ -6316,6 +6434,9 @@ async function performTmuxPaste(
   if (normalized.length === 0) {
     return true;
   }
+  if (holdInputForQuietControlStream(session, pane, normalized, "paste")) {
+    return false;
+  }
   markPaneUserInput(pane, "paste");
 
   const bufferName = `dispatcher-paste-${Date.now().toString(36)}-${tmuxPasteBufferSequence++}`;
@@ -6449,6 +6570,10 @@ export async function sendInputToTmuxTerminal(terminalId: string, data: string):
       runtimeTransportBindingCount: transportTerminalToSessionId.size,
       preview: previewDebugText(data, 120),
     });
+    return false;
+  }
+
+  if (holdInputForQuietControlStream(session, pane, data, "send-keys")) {
     return false;
   }
 

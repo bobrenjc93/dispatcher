@@ -82,10 +82,77 @@ export function buildControlStreamStalledNotice(attachHint: string): string {
   return [
     "\r\n",
     "[33m",
-    "── Dispatcher: this pane's tmux control connection is gone ──",
+    "── Dispatcher: this pane's tmux control connection is not answering ──",
     "[0m\r\n",
-    "The ssh session ended, so commands are going to a shell instead.\r\n",
-    `Re-attach with: ${attachHint}\r\n`,
+    "Either the connection is stuck or the ssh session ended. Typing here is not\r\n",
+    "being sent; this clears by itself if the connection comes back.\r\n",
+    `If it does not, re-attach with: ${attachHint}\r\n`,
+  ].join("");
+}
+
+/**
+ * How long a command may go without a single byte back before typing is held.
+ *
+ * Far shorter than the stall verdict, because it costs far less to be wrong:
+ * a keystroke is not sent and the pane says so, and nothing is abandoned.
+ * Being late costs a great deal more. Keystrokes written into a connection
+ * that has stopped moving are not lost -- they wait in the pipe, and arrive
+ * all together the moment it opens. Two Ctrl-Cs typed ten seconds apart into
+ * a frozen tab reached Claude Code back to back, which is its gesture for
+ * exit, and the session it had been running for hours closed.
+ *
+ * Control mode answers every command at once, so five seconds with nothing at
+ * all coming back -- not even the output of some other pane -- is not a slow
+ * host.
+ */
+export const TMUX_INPUT_HOLD_MS = 5_000;
+
+/** Whether the connection has gone quiet with a command still waiting on it. */
+export function isControlStreamQuiet(args: {
+  oldestPendingSentAt: number | null;
+  lastTrafficAt: number;
+  now: number;
+  holdMs?: number;
+}): boolean {
+  if (args.oldestPendingSentAt === null) {
+    return false;
+  }
+  return args.lastTrafficAt <= args.oldestPendingSentAt
+    && args.now - args.oldestPendingSentAt >= (args.holdMs ?? TMUX_INPUT_HOLD_MS);
+}
+
+/**
+ * How long a connection may be silent before Dispatcher asks it something.
+ *
+ * Silence is normal -- idle panes print nothing -- and silence is also what a
+ * frozen connection looks like, so the only way to tell them apart is to ask.
+ * Without this nothing was asked until the user came back and typed: a link
+ * frozen for eighty minutes was noticed a minute after they started, and
+ * everything typed in that minute arrived late.
+ */
+export const TMUX_HEARTBEAT_IDLE_MS = 15_000;
+
+/** Whether to ask a silent connection whether it is still there. */
+export function shouldSendHeartbeat(args: {
+  pendingCommandCount: number;
+  lastTrafficAt: number;
+  now: number;
+  idleMs?: number;
+}): boolean {
+  return args.pendingCommandCount === 0
+    && args.now - args.lastTrafficAt >= (args.idleMs ?? TMUX_HEARTBEAT_IDLE_MS);
+}
+
+/** What to show in a pane when its typing was held back. */
+export function buildInputHeldNotice(quietForMs: number): string {
+  const seconds = Math.max(1, Math.round(quietForMs / 1000));
+  return [
+    "\r\n",
+    "[33m",
+    `── Dispatcher: no reply from this pane's connection for ${seconds}s ──`,
+    "[0m\r\n",
+    "Typing is not being sent, so it cannot all arrive at once later.\r\n",
+    "Type again once the connection answers.\r\n",
   ].join("");
 }
 

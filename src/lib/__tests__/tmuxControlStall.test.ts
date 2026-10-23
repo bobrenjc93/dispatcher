@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   TMUX_CONTROL_STALL_MS,
+  TMUX_HEARTBEAT_IDLE_MS,
+  TMUX_INPUT_HOLD_MS,
   hasControlStreamStalled,
+  isControlStreamQuiet,
   isShellRejectingControlCommand,
+  shouldSendHeartbeat,
 } from "../tmuxControlStall";
 
 describe("isShellRejectingControlCommand", () => {
@@ -53,5 +57,58 @@ describe("hasControlStreamStalled", () => {
         now,
       })
     ).toBe(true);
+  });
+});
+
+describe("isControlStreamQuiet", () => {
+  const now = 1_000_000;
+
+  it("holds once a command has had nothing at all back for the limit", () => {
+    expect(isControlStreamQuiet({
+      oldestPendingSentAt: now - TMUX_INPUT_HOLD_MS,
+      lastTrafficAt: now - TMUX_INPUT_HOLD_MS - 1,
+      now,
+    })).toBe(true);
+  });
+
+  it("does not hold while anything is still arriving, however slow the command", () => {
+    // A big capture streams for seconds; its bytes are the connection moving.
+    expect(isControlStreamQuiet({
+      oldestPendingSentAt: now - 30_000,
+      lastTrafficAt: now - 100,
+      now,
+    })).toBe(false);
+  });
+
+  it("does not hold before the limit or with nothing outstanding", () => {
+    expect(isControlStreamQuiet({
+      oldestPendingSentAt: now - TMUX_INPUT_HOLD_MS + 1,
+      lastTrafficAt: now - 60_000,
+      now,
+    })).toBe(false);
+    expect(isControlStreamQuiet({ oldestPendingSentAt: null, lastTrafficAt: now - 600_000, now }))
+      .toBe(false);
+  });
+});
+
+describe("shouldSendHeartbeat", () => {
+  const now = 1_000_000;
+
+  it("asks after the idle limit with nothing outstanding", () => {
+    expect(shouldSendHeartbeat({
+      pendingCommandCount: 0,
+      lastTrafficAt: now - TMUX_HEARTBEAT_IDLE_MS,
+      now,
+    })).toBe(true);
+  });
+
+  it("does not ask early, or when a command will answer the same question", () => {
+    expect(shouldSendHeartbeat({
+      pendingCommandCount: 0,
+      lastTrafficAt: now - TMUX_HEARTBEAT_IDLE_MS + 1,
+      now,
+    })).toBe(false);
+    expect(shouldSendHeartbeat({ pendingCommandCount: 1, lastTrafficAt: now - 600_000, now }))
+      .toBe(false);
   });
 });
