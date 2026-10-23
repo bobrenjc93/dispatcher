@@ -76,6 +76,7 @@ import {
   buildBackgroundColorReply,
   hasBackgroundColorQuery,
   stripBackgroundColorQuery,
+  type ColourQueryAnswers,
 } from "./backgroundColorQuery";
 import {
   findAttentionMarkers,
@@ -341,6 +342,11 @@ interface TmuxControlSession {
    * at once, so a short window covers them and bounds that.
    */
   unmatchedBlocksOwedUntil: number;
+  /**
+   * Which colour questions the server answers itself, once a window snapshot
+   * has said what the server is; null until then.
+   */
+  colourQueryAnswers: ColourQueryAnswers | null;
   lineBuffer: string;
   pendingCommands: PendingCommand[];
   currentCommand: CommandCapture | null;
@@ -1060,6 +1066,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
     id: sessionId,
     unmatchedBlocksOwed: takeUnmatchedBlocksOwed(sessionId),
     unmatchedBlocksOwedUntil: 0,
+    colourQueryAnswers: null,
     controlStreamStalledSince: null,
     reopeningWindowIds: new Set<string>(),
     transportTerminalId: sessionId,
@@ -4812,6 +4819,41 @@ async function refreshPaneContentForFocus(
   schedulePaneHistoryRefreshRetry(session, pane, "focus-history-after-viewport");
 }
 
+function noteColourQueryAnswers(
+  session: TmuxControlSession,
+  snapshots: readonly TmuxWindowSnapshot[]
+) {
+  const answers = snapshots.find((snapshot) => snapshot.colourQueryAnswers)?.colourQueryAnswers;
+  if (
+    !answers
+    || (session.colourQueryAnswers?.foreground === answers.foreground
+      && session.colourQueryAnswers?.background === answers.background)
+  ) {
+    return;
+  }
+  session.colourQueryAnswers = answers;
+  debugLog("tmux.session", "server colour query answers", {
+    sessionId: session.id,
+    ...answers,
+  });
+}
+
+/**
+ * Whether the server behind a tmux pane answers this colour question itself.
+ *
+ * If it does, any answer from us is a late duplicate the program will read as
+ * typing. Unknown until the first window snapshot, and treated as no.
+ */
+export function tmuxServerAnswersColourQuery(terminalId: string, osc: 10 | 11): boolean {
+  const state = getTmuxRuntimeState();
+  const sessionId = state.paneTerminalToSessionId.get(terminalId);
+  const answers = sessionId ? state.controlSessions.get(sessionId)?.colourQueryAnswers : null;
+  if (!answers) {
+    return false;
+  }
+  return osc === 10 ? answers.foreground : answers.background;
+}
+
 async function refreshSingleWindow(session: TmuxControlSession, windowId: string) {
   debugLog("tmux.refresh", "refresh window start", {
     sessionId: session.id,
@@ -4826,6 +4868,7 @@ async function refreshSingleWindow(session: TmuxControlSession, windowId: string
   const windowSnapshots = windowLines
     .map(parseTmuxWindowSnapshot)
     .filter((value): value is TmuxWindowSnapshot => Boolean(value));
+  noteColourQueryAnswers(session, windowSnapshots);
   const snapshot = windowSnapshots.find((value) => value.windowId === windowId) ?? null;
   if (!snapshot) {
     debugLog("tmux.refresh", "refresh window missing snapshot", {
@@ -5079,6 +5122,7 @@ async function hydrateControlSession(session: TmuxControlSession) {
     const rawWindowSnapshots = windowLines
       .map(parseTmuxWindowSnapshot)
       .filter((value): value is TmuxWindowSnapshot => Boolean(value));
+    noteColourQueryAnswers(session, rawWindowSnapshots);
     const rawPaneSnapshots = paneLines
       .map(parseTmuxPaneSnapshot)
       .filter((value): value is TmuxPaneSnapshot => Boolean(value));
@@ -5538,21 +5582,33 @@ function handleNotification(session: TmuxControlSession, line: string) {
     // whatever the control stream already has queued. Codex waits a moment,
     // gives up, assumes a light terminal and draws its status line in black.
     // Dispatcher chose the colour, so it can just say.
+    //
+    // Unless the server already has. tmux 3.6+ and smux answer it themselves
+    // the instant it is asked, and a second answer from here arrives after the
+    // program has stopped listening, as typing.
     if (hasBackgroundColorQuery(output)) {
-      const reply = buildBackgroundColorReply(
-        useColorSchemeStore.getState().getActiveScheme().terminal.background ?? "#000000"
-      );
       // Taken out of the stream either way: left in, the renderer answers it
       // too and the program reads the second reply as keystrokes.
       output = stripBackgroundColorQuery(output);
-      debugLog("tmux.notify", "answered a background colour query", {
-        sessionId: session.id,
-        paneId: pane.paneId,
-        terminalId: pane.terminalId,
-        reply: reply === null ? null : previewDebugText(reply, 40),
-      });
-      if (reply !== null) {
-        void sendInputToTmuxTerminal(pane.terminalId, reply).catch(() => {});
+      if (session.colourQueryAnswers?.background) {
+        debugLog("tmux.notify", "left a background colour query to the server", {
+          sessionId: session.id,
+          paneId: pane.paneId,
+          terminalId: pane.terminalId,
+        });
+      } else {
+        const reply = buildBackgroundColorReply(
+          useColorSchemeStore.getState().getActiveScheme().terminal.background ?? "#000000"
+        );
+        debugLog("tmux.notify", "answered a background colour query", {
+          sessionId: session.id,
+          paneId: pane.paneId,
+          terminalId: pane.terminalId,
+          reply: reply === null ? null : previewDebugText(reply, 40),
+        });
+        if (reply !== null) {
+          void sendInputToTmuxTerminal(pane.terminalId, reply).catch(() => {});
+        }
       }
     }
 
@@ -5884,6 +5940,7 @@ function createControlSession(transportTerminalId: string): TmuxControlSession |
     id: transportTerminalId,
     unmatchedBlocksOwed: takeUnmatchedBlocksOwed(transportTerminalId),
     unmatchedBlocksOwedUntil: 0,
+    colourQueryAnswers: null,
     controlStreamStalledSince: null,
     reopeningWindowIds: new Set<string>(),
     transportTerminalId,

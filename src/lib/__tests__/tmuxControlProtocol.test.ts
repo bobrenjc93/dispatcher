@@ -94,6 +94,16 @@ describe("tmuxControlProtocol", () => {
     });
   });
 
+  it("reads which colour questions the server answers itself", () => {
+    expect(parseTmuxWindowSnapshot(
+      "@1\tshell\t1\t*\tremote-host\t/tmp/smux-1081/default\t$0\t1788974979\t3.2a\t"
+    )?.colourQueryAnswers).toEqual({ foreground: false, background: true });
+    expect(parseTmuxWindowSnapshot(
+      "@1\tshell\t1\t*\tremote-host\t/tmp/tmux-501/default\t$2\t1786482454\t3.6a\t"
+    )?.colourQueryAnswers).toEqual({ foreground: true, background: true });
+    expect(parseTmuxWindowSnapshot("@1\tshell\t1\t*")?.colourQueryAnswers).toBeUndefined();
+  });
+
   it("parses a durable tmux connection identity for restored-tab matching", () => {
     expect(parseTmuxWindowSnapshot(
       "@1\tshell\t1\t*\tremote-host\t/tmp/tmux-501/default\t$2\t1786482454"
@@ -159,10 +169,10 @@ describe("tmuxControlProtocol", () => {
 
   it("builds hydrate pane commands across all windows for attach flows", () => {
     expect(buildTmuxWindowSnapshotCommand()).toBe(
-      'list-windows -F "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}\\t#{host}\\t#{socket_path}\\t#{session_id}\\t#{session_created}"'
+      'list-windows -F "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}\\t#{host}\\t#{socket_path}\\t#{session_id}\\t#{session_created}\\t#{version}\\t#{smux_version}"'
     );
     expect(buildTmuxWindowSnapshotCommand("@24")).toBe(
-      'display-message -p -t @24 "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}\\t#{host}\\t#{socket_path}\\t#{session_id}\\t#{session_created}"'
+      'display-message -p -t @24 "#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}\\t#{host}\\t#{socket_path}\\t#{session_id}\\t#{session_created}\\t#{version}\\t#{smux_version}"'
     );
     expect(buildTmuxPaneSnapshotCommand({ allWindows: true })).toBe(
       'list-panes -s -F "#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"'

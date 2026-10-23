@@ -69,6 +69,7 @@ import {
   sendPasteToTmuxTerminal,
   TmuxPasteCancelledError,
   syncTmuxWindowSizeFromPaneTerminal,
+  tmuxServerAnswersColourQuery,
   type TmuxPasteProgress,
 } from "../lib/tmuxControl";
 import { wrapBracketedPaste } from "../lib/tmuxControlProtocol";
@@ -668,7 +669,36 @@ export function clearSolicitedResponsesForTests() {
   solicitedResponseUntil.clear();
 }
 
-export function stripGeneratedTerminalResponseSequences(data: string): {
+/**
+ * Whether the program in a tmux pane already has this answer from the server.
+ *
+ * tmux has always answered the cursor report and device attributes itself,
+ * and smux has since v0.3.1, instantly and straight into the pane. Ours comes
+ * a network round trip later, after the program has taken the server's and
+ * stopped listening, so it is read as typing: `okc login` saw `^[[2;1Ry` where
+ * its user had typed `y`. The colour answers depend on the server; see
+ * multiplexerColourQueryAnswers.
+ */
+export function isReplyTheTmuxServerGives(terminalId: string, reply: string): boolean {
+  if (reply.startsWith("\u001b]10;")) {
+    return tmuxServerAnswersColourQuery(terminalId, 10);
+  }
+  if (reply.startsWith("\u001b]11;")) {
+    return tmuxServerAnswersColourQuery(terminalId, 11);
+  }
+  return !reply.startsWith("\u001b]");
+}
+
+/**
+ * Remove the replies xterm generated from data on its way to a program.
+ *
+ * Every reply goes unless `shouldStrip` is given, in which case only the
+ * replies it picks do.
+ */
+export function stripGeneratedTerminalResponseSequences(
+  data: string,
+  shouldStrip?: (reply: string) => boolean
+): {
   data: string;
   strippedBytes: number;
   strippedCount: number;
@@ -677,6 +707,9 @@ export function stripGeneratedTerminalResponseSequences(data: string): {
   let strippedCount = 0;
   TERMINAL_RESPONSE_SEQUENCE_PATTERN.lastIndex = 0;
   const sanitized = data.replace(TERMINAL_RESPONSE_SEQUENCE_PATTERN, (match) => {
+    if (shouldStrip && !shouldStrip(match)) {
+      return match;
+    }
     strippedBytes += match.length;
     strippedCount += 1;
     return "";
@@ -1257,8 +1290,15 @@ export function handleTerminalInputData(
 
   const backendKind = useTerminalStore.getState().sessions[terminalId]?.backendKind ?? "local";
   let inputData = data;
-  if (backendKind === "tmux-pane" && !isSolicitedTerminalResponse(terminalId)) {
-    const sanitized = stripGeneratedTerminalResponseSequences(inputData);
+  if (backendKind === "tmux-pane") {
+    // A question just asked is still owed whatever answers the server does not
+    // give itself; anything else is a replay artefact and goes entirely.
+    const sanitized = isSolicitedTerminalResponse(terminalId)
+      ? stripGeneratedTerminalResponseSequences(
+        inputData,
+        (reply) => isReplyTheTmuxServerGives(terminalId, reply)
+      )
+      : stripGeneratedTerminalResponseSequences(inputData);
     if (sanitized.strippedCount > 0) {
       debugLog("terminal.input", "suppress generated terminal response for tmux pane", {
         terminalId,

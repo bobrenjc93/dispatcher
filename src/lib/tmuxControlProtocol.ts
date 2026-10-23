@@ -1,3 +1,5 @@
+import { multiplexerColourQueryAnswers, type ColourQueryAnswers } from "./backgroundColorQuery";
+
 export const TMUX_CONTROL_START = "\u001bP1000p";
 export const TMUX_CONTROL_END = "\u001b\\";
 
@@ -17,7 +19,7 @@ export function wrapBracketedPaste(text: string): string {
   return `${BRACKETED_PASTE_START}${text}${BRACKETED_PASTE_END}`;
 }
 const TMUX_WINDOW_SNAPSHOT_FORMAT =
-  '"#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}\\t#{host}\\t#{socket_path}\\t#{session_id}\\t#{session_created}"';
+  '"#{window_id}\\t#{window_name}\\t#{window_active}\\t#{window_flags}\\t#{host}\\t#{socket_path}\\t#{session_id}\\t#{session_created}\\t#{version}\\t#{smux_version}"';
 const TMUX_PANE_SNAPSHOT_FORMAT =
   '"#{window_id}\\t#{pane_id}\\t#{pane_left}\\t#{pane_top}\\t#{pane_width}\\t#{pane_height}\\t#{pane_active}\\t#{pane_current_path}\\t#{cursor_x}\\t#{cursor_y}\\t#{alternate_on}\\t#{history_size}"';
 const TMUX_PANE_CURSOR_FORMAT = '"#{cursor_x}\\t#{cursor_y}"';
@@ -31,6 +33,8 @@ export interface TmuxWindowSnapshot {
   isActive: boolean;
   flags: string;
   connectionKey?: string;
+  /** Present when the server said what it is; see multiplexerColourQueryAnswers. */
+  colourQueryAnswers?: ColourQueryAnswers;
 }
 
 export interface TmuxPaneSnapshot {
@@ -327,6 +331,8 @@ export function parseTmuxWindowSnapshot(line: string): TmuxWindowSnapshot | null
     socketPath = "",
     sessionId = "",
     sessionCreated = "",
+    version,
+    smuxVersion = "",
   ] = line.split("\t");
   if (!windowId || title === undefined || activeFlag === undefined) {
     return null;
@@ -342,6 +348,9 @@ export function parseTmuxWindowSnapshot(line: string): TmuxWindowSnapshot | null
     isActive: activeFlag === "1",
     flags,
     ...(connectionKey ? { connectionKey } : {}),
+    ...(version
+      ? { colourQueryAnswers: multiplexerColourQueryAnswers({ version, smuxVersion, socketPath }) }
+      : {}),
   };
 }
 

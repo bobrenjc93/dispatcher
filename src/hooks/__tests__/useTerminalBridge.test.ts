@@ -174,6 +174,7 @@ vi.mock("../../lib/replication", async (importOriginal) => {
 import {
   captureTerminalScreenshot,
   clearSolicitedResponsesForTests,
+  isReplyTheTmuxServerGives,
   isSolicitedTerminalResponse,
   pasteTextIntoTerminalById,
   disposeTerminalInstance,
@@ -926,6 +927,22 @@ describe("useTerminalBridge synthetic input", () => {
       data: "\u001b[2J",
       strippedBytes: 0,
       strippedCount: 0,
+    });
+  });
+
+  it("never sends a tmux pane the cursor report or attributes its server already gave", () => {
+    // The server answers these the instant they are asked. Ours arrived a round
+    // trip later, after `okc login` had stopped listening, and was read as the
+    // start of the `y` typed at its prompt.
+    const colour = "\u001b]11;rgb:0a0a/0a0a/0a0a\u001b\\";
+    const replies = `${colour}\u001b[2;1R\u001b[?1;2c\u001b[>0;276;0c`;
+    const serverGives = (reply: string) => isReplyTheTmuxServerGives("tmux-unknown-server", reply);
+
+    // A server not yet known to answer colours still hears ours.
+    expect(stripGeneratedTerminalResponseSequences(replies, serverGives)).toEqual({
+      data: colour,
+      strippedBytes: replies.length - colour.length,
+      strippedCount: 3,
     });
   });
 
