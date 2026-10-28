@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ACTIVITY_HISTORY_WINDOW_MS,
+  getActivityHistoryStartedAt,
   replayInactivity,
   type ActivityEvent,
   type ActivityHistory,
@@ -14,7 +15,9 @@ import { builtInChangePercent } from "../../lib/viewportSignature";
  *
  * One bar per time its output was judged, as tall as the share of the screen
  * it changed; the dashed line is the threshold, and the shaded stretches are
- * when the tab would have counted as inactive. All of it is replayed against
+ * when the tab would have counted as inactive, each led by a hatched one the
+ * length of the duration -- the quiet it had to sit through first, which is
+ * how the duration shows up on the chart. All of it is replayed against
  * the numbers in the dialog as they are typed, so "would 5% for a minute have
  * stopped those false alarms?" is answered by looking rather than by waiting
  * a day to find out.
@@ -35,8 +38,23 @@ const PLOT_HEIGHT = HEIGHT - MARGIN.top - MARGIN.bottom;
 const RANGES = [
   { label: "2m", ms: 2 * 60_000 },
   { label: "10m", ms: 10 * 60_000 },
-  { label: "30m", ms: ACTIVITY_HISTORY_WINDOW_MS },
+  { label: "30m", ms: 30 * 60_000 },
+  { label: "2h", ms: 2 * 60 * 60_000 },
+  { label: "6h", ms: 6 * 60 * 60_000 },
+  { label: "24h", ms: ACTIVITY_HISTORY_WINDOW_MS },
 ] as const;
+
+/**
+ * The view that shows the setting: ten minutes, or the shortest range with
+ * room for the duration and the quiet after it when that is longer. Opening on
+ * ten minutes for a two-hour threshold showed none of what the setting does.
+ */
+function rangeForInactivity(inactivityMs: number): number {
+  return (
+    RANGES.find((range) => range.ms >= RANGES[1].ms && range.ms >= inactivityMs * 1.5)
+    ?? RANGES[RANGES.length - 1]
+  ).ms;
+}
 
 /*
  * Log-like, because the interesting values span four orders of magnitude: a
@@ -62,6 +80,11 @@ function formatAgo(ms: number): string {
     return `${seconds}s`;
   }
   const minutes = Math.floor(seconds / 60);
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const restMinutes = minutes % 60;
+    return restMinutes === 0 || hours >= 10 ? `${hours}h` : `${hours}h ${restMinutes}m`;
+  }
   const rest = seconds % 60;
   return rest === 0 || minutes >= 10 ? `${minutes}m` : `${minutes}m ${rest}s`;
 }
@@ -122,7 +145,9 @@ export function ActivityChart(props: {
 }) {
   const { history, changePercent, inactivityMs } = props;
   const [now, setNow] = useState(() => Date.now());
-  const [rangeMs, setRangeMs] = useState<number>(RANGES[1].ms);
+  // Follows the duration being typed until a range is picked by hand.
+  const [pickedRangeMs, setPickedRangeMs] = useState<number | null>(null);
+  const rangeMs = pickedRangeMs ?? rangeForInactivity(inactivityMs);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -139,7 +164,7 @@ export function ActivityChart(props: {
       <p className="activity-chart-empty">
         {props.isReplica
           ? "This tab's history is kept on the desktop. Open this dialog there to see it."
-          : "Nothing from this tab has been judged yet. Each time it prints, the share of the screen that changed will show up here."}
+          : `This tab has not printed since ${formatClock(getActivityHistoryStartedAt())}, when Dispatcher started keeping its history. Each time it prints, the share of the screen that changed will show up here.`}
       </p>
     );
   }
@@ -190,7 +215,7 @@ export function ActivityChart(props: {
               key={range.label}
               type="button"
               className={`activity-chart-range${range.ms === rangeMs ? " is-active" : ""}`}
-              onClick={() => setRangeMs(range.ms)}
+              onClick={() => setPickedRangeMs(range.ms)}
             >
               {range.label}
             </button>
@@ -203,6 +228,36 @@ export function ActivityChart(props: {
         role="img"
         aria-label="Screen change over time against the inactivity threshold"
       >
+        <defs>
+          <pattern id="activity-chart-wait" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="6" stroke={BROWN} strokeWidth="2.5" opacity={0.45} />
+          </pattern>
+        </defs>
+
+        {replay.waits.map((wait) => {
+          const x1 = Math.max(MARGIN.left, scaleX(wait.start));
+          const x2 = Math.min(WIDTH - MARGIN.right, scaleX(wait.end));
+          if (x2 <= x1) {
+            return null;
+          }
+          const label = formatAgo(inactivityMs);
+          return (
+            <g key={`wait-${wait.start}`}>
+              <rect x={x1} y={MARGIN.top} width={x2 - x1} height={PLOT_HEIGHT} fill="url(#activity-chart-wait)" />
+              {x2 - x1 >= label.length * 6 + 8 && (
+                <text x={(x1 + x2) / 2} y={MARGIN.top + 11} textAnchor="middle" className="activity-chart-wait-label">
+                  {label}
+                </text>
+              )}
+              <title>
+                {wait.end > now
+                  ? `Quiet since ${formatClock(wait.start)}; inactive at ${formatClock(wait.end)} unless something counts`
+                  : `Quiet ${formatClock(wait.start)} – ${formatClock(wait.end)}, the ${label} before going inactive`}
+              </title>
+            </g>
+          );
+        })}
+
         {replay.spans.map((span) => {
           const x1 = Math.max(MARGIN.left, scaleX(span.start));
           const x2 = Math.min(WIDTH - MARGIN.right, scaleX(span.end ?? now));
@@ -371,6 +426,7 @@ export function ActivityChart(props: {
         <span><i style={{ background: GREEN }} />counts</span>
         <span><i style={{ background: AMBER }} />below threshold</span>
         <span><i style={{ background: BLUE }} />numbers only</span>
+        <span><i className="is-hatched" />quiet, before inactive</span>
         <span><i style={{ background: BROWN, opacity: 0.6 }} />inactive</span>
         <span><i className="is-round" style={{ background: "var(--accent)" }} />chime</span>
         <span><i style={{ background: "var(--accent)" }} />push</span>

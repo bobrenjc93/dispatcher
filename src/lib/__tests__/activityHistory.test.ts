@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACTIVITY_HISTORY_BUCKET_MS,
+  ACTIVITY_HISTORY_DETAIL_MS,
   ACTIVITY_HISTORY_WINDOW_MS,
   forgetActivityHistory,
   getActivityHistory,
@@ -90,6 +92,19 @@ describe("replayInactivity", () => {
     expect(replay.lastActivityAt).toBe(100_000);
   });
 
+  it("marks the quiet stretch before each span, as long as the duration", () => {
+    const history: ActivityHistory = {
+      samples: [sample(0, 10), sample(100_000, 10)],
+      events: [],
+    };
+    // The window before going inactive scales with the setting: double the
+    // duration and it doubles.
+    expect(replayInactivity({ history, changePercent: 5, inactivityMs: 5_000, now: 102_000 }).waits)
+      .toEqual([{ start: 0, end: 5_000 }, { start: 100_000, end: 105_000 }]);
+    expect(replayInactivity({ history, changePercent: 5, inactivityMs: 10_000, now: 102_000 }).waits)
+      .toEqual([{ start: 0, end: 10_000 }, { start: 100_000, end: 110_000 }]);
+  });
+
   it("counts typing as activity", () => {
     const history: ActivityHistory = {
       samples: [sample(0, 10)],
@@ -122,7 +137,36 @@ describe("replayInactivity", () => {
 });
 
 describe("activity history store", () => {
-  it("keeps half an hour and tells subscribers", () => {
+  it("keeps older samples a day, merged to the strongest in each bucket", () => {
+    const id = "history-merge-tab";
+    forgetActivityHistory(id);
+    const bucket = ACTIVITY_HISTORY_BUCKET_MS;
+
+    // Two samples in one early bucket, one in the next.
+    recordActivitySample(id, spinner(0));
+    recordActivitySample(id, sample(1_000, 12));
+    recordActivitySample(id, spinner(bucket + 1_000));
+    // Recent enough to be kept as judged.
+    const recentAt = 2 * 60 * 60_000;
+    recordActivitySample(id, spinner(recentAt));
+    recordActivitySample(id, spinner(recentAt + 1_000));
+
+    // Two hours on, the early buckets are merged, not gone: a two-hour
+    // threshold needs them.
+    expect(getActivityHistory(id).samples.map((value) => [value.at, value.kind])).toEqual([
+      [1_000, "work"],
+      [bucket + 1_000, "small"],
+      [recentAt, "small"],
+      [recentAt + 1_000, "small"],
+    ]);
+
+    // A day on, they are dropped.
+    recordActivitySample(id, sample(ACTIVITY_HISTORY_WINDOW_MS + bucket + 2_000, 10));
+    expect(getActivityHistory(id).samples[0].at).toBeGreaterThan(bucket + 1_000);
+    forgetActivityHistory(id);
+  });
+
+  it("keeps half an hour in full and tells subscribers", () => {
     const id = "history-test-tab";
     forgetActivityHistory(id);
     let notified = 0;
@@ -136,10 +180,11 @@ describe("activity history store", () => {
     expect(getActivityHistory(id)).toBe(first);
 
     recordActivityEvent(id, { at: 1_000, kind: "chime" });
-    recordActivitySample(id, sample(ACTIVITY_HISTORY_WINDOW_MS + 1, 10));
+    recordActivitySample(id, sample(ACTIVITY_HISTORY_DETAIL_MS + 1, 10));
     const history = getActivityHistory(id);
     expect(history).not.toBe(first);
-    expect(history.samples.map((value) => value.at)).toEqual([ACTIVITY_HISTORY_WINDOW_MS + 1]);
+    // The first sample aged out of the detail window into its own bucket.
+    expect(history.samples.map((value) => value.at)).toEqual([0, ACTIVITY_HISTORY_DETAIL_MS + 1]);
     expect(history.events).toEqual([{ at: 1_000, kind: "chime" }]);
     expect(notified).toBe(3);
 

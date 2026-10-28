@@ -1376,6 +1376,11 @@ body.sidebar-resizing .terminal-pane {
   font-size: 10px;
 }
 
+.activity-chart-wait-label {
+  fill: var(--text-muted);
+  font-size: 9px;
+}
+
 .activity-chart-legend {
   display: flex;
   flex-wrap: wrap;
@@ -1398,6 +1403,14 @@ body.sidebar-resizing .terminal-pane {
 
 .activity-chart-legend i.is-round {
   border-radius: 50%;
+}
+
+.activity-chart-legend i.is-hatched {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(139, 107, 63, 0.75) 0 2px,
+    transparent 2px 4px
+  );
 }
 
 .activity-chart-table {

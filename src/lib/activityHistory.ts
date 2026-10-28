@@ -9,9 +9,16 @@
  * threshold dialog draws them -- and replays them against whatever is being
  * typed, so the effect of a setting is visible before it is saved.
  *
- * In memory and on the desktop only. It is a window onto the last half hour,
- * not a record anybody needs back after a reload, and the desktop is where the
+ * In memory and on the desktop only. It is a window onto the last day, not a
+ * record anybody needs back after a reload, and the desktop is where the
  * judging happens.
+ *
+ * A day because a threshold can be hours long, and a chart that cannot reach
+ * back as far as the setting cannot show what it does: a tab set to two hours
+ * was drawn against ten minutes of history. Only the last half hour is kept in
+ * full, though. Older samples are merged into one per couple of minutes, which
+ * bounds a busy tab's day to a few hundred entries and costs a replay against
+ * an hours-long duration nothing it can see.
  */
 
 import { useSyncExternalStore } from "react";
@@ -71,32 +78,67 @@ export interface ActivityHistory {
   events: readonly ActivityEvent[];
 }
 
-export const ACTIVITY_HISTORY_WINDOW_MS = 30 * 60_000;
+/** How far back anything is kept. */
+export const ACTIVITY_HISTORY_WINDOW_MS = 24 * 60 * 60_000;
+/** How far back every sample is kept as it was judged. */
+export const ACTIVITY_HISTORY_DETAIL_MS = 30 * 60_000;
+/** Older than the detail window, one sample per this long. */
+export const ACTIVITY_HISTORY_BUCKET_MS = 2 * 60_000;
 const MAX_SAMPLES = 1_500;
-const MAX_EVENTS = 400;
+const MAX_MERGED_SAMPLES = ACTIVITY_HISTORY_WINDOW_MS / ACTIVITY_HISTORY_BUCKET_MS;
+const MAX_EVENTS = 2_000;
 
 const EMPTY_HISTORY: ActivityHistory = { samples: [], events: [] };
 
 interface HistoryEntry {
+  /** Older than the detail window, merged per bucket; oldest first. */
+  merged: ActivitySample[];
+  /** Within it, as judged; oldest first. */
   samples: ActivitySample[];
   events: ActivityEvent[];
   snapshot: ActivityHistory | null;
 }
 
-const histories = new Map<string, HistoryEntry>();
+interface ActivityHistoryState {
+  histories: Map<string, HistoryEntry>;
+  /** When this window started keeping history, which is as far back as any of it goes. */
+  startedAt: number;
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __dispatcherActivityHistoryState: ActivityHistoryState | undefined;
+}
+
+/*
+ * Kept on the global so a hot reload of this module does not empty it. Every
+ * edit here in a dev build otherwise wiped every tab's history, and an idle
+ * tab -- the kind whose threshold is worth looking at -- then had nothing to
+ * draw until it next printed.
+ */
+const state: ActivityHistoryState = globalThis.__dispatcherActivityHistoryState
+  ?? (globalThis.__dispatcherActivityHistoryState = { histories: new Map(), startedAt: Date.now() });
+const histories = state.histories;
 const listeners = new Set<() => void>();
+
+/** When history-keeping began; nothing earlier than this can be shown. */
+export function getActivityHistoryStartedAt(): number {
+  return state.startedAt;
+}
 
 function entryFor(tabRootTerminalId: string): HistoryEntry {
   let entry = histories.get(tabRootTerminalId);
   if (!entry) {
-    entry = { samples: [], events: [], snapshot: null };
+    entry = { merged: [], samples: [], events: [], snapshot: null };
     histories.set(tabRootTerminalId, entry);
   }
+  // An entry made by an earlier version of this module, before a hot reload.
+  entry.merged ??= [];
   return entry;
 }
 
-function prune<T extends { at: number }>(items: T[], max: number, now: number) {
-  const cutoff = now - ACTIVITY_HISTORY_WINDOW_MS;
+function prune<T extends { at: number }>(items: T[], max: number, now: number, windowMs: number) {
+  const cutoff = now - windowMs;
   let drop = 0;
   while (drop < items.length && (items[drop].at < cutoff || items.length - drop > max)) {
     drop += 1;
@@ -113,17 +155,66 @@ function changed(entry: HistoryEntry) {
   }
 }
 
+/** Which of two samples in a bucket says more about whether the tab was working. */
+const SAMPLE_WEIGHT: Record<ActivitySampleKind, number> = {
+  baseline: 5,
+  work: 5,
+  small: 4,
+  numbers: 3,
+  blank: 2,
+  identical: 1,
+};
+
+function strongerSample(a: ActivitySample, b: ActivitySample): ActivitySample {
+  const byKind = SAMPLE_WEIGHT[b.kind] - SAMPLE_WEIGHT[a.kind];
+  if (byKind !== 0) {
+    return byKind > 0 ? b : a;
+  }
+  return b.percent > a.percent ? b : a;
+}
+
+/**
+ * Fold one aged-out sample into the merged history.
+ *
+ * Each bucket keeps its strongest sample, at that sample's own time: whether
+ * the tab was working in those minutes, and by how much, is what a replay
+ * needs, and the strongest one answers both for any threshold.
+ */
+function mergeSample(merged: ActivitySample[], sample: ActivitySample) {
+  const last = merged[merged.length - 1];
+  if (
+    last
+    && Math.floor(last.at / ACTIVITY_HISTORY_BUCKET_MS) === Math.floor(sample.at / ACTIVITY_HISTORY_BUCKET_MS)
+  ) {
+    merged[merged.length - 1] = strongerSample(last, sample);
+    return;
+  }
+  merged.push(sample);
+}
+
 export function recordActivitySample(tabRootTerminalId: string, sample: ActivitySample) {
   const entry = entryFor(tabRootTerminalId);
   entry.samples.push(sample);
-  prune(entry.samples, MAX_SAMPLES, sample.at);
+  const detailCutoff = sample.at - ACTIVITY_HISTORY_DETAIL_MS;
+  let aged = 0;
+  while (
+    aged < entry.samples.length
+    && (entry.samples[aged].at < detailCutoff || entry.samples.length - aged > MAX_SAMPLES)
+  ) {
+    mergeSample(entry.merged, entry.samples[aged]);
+    aged += 1;
+  }
+  if (aged > 0) {
+    entry.samples.splice(0, aged);
+  }
+  prune(entry.merged, MAX_MERGED_SAMPLES, sample.at, ACTIVITY_HISTORY_WINDOW_MS);
   changed(entry);
 }
 
 export function recordActivityEvent(tabRootTerminalId: string, event: ActivityEvent) {
   const entry = entryFor(tabRootTerminalId);
   entry.events.push(event);
-  prune(entry.events, MAX_EVENTS, event.at);
+  prune(entry.events, MAX_EVENTS, event.at, ACTIVITY_HISTORY_WINDOW_MS);
   changed(entry);
 }
 
@@ -142,7 +233,7 @@ export function getActivityHistory(tabRootTerminalId: string): ActivityHistory {
     return EMPTY_HISTORY;
   }
   if (!entry.snapshot) {
-    entry.snapshot = { samples: entry.samples.slice(), events: entry.events.slice() };
+    entry.snapshot = { samples: [...entry.merged, ...entry.samples], events: entry.events.slice() };
   }
   return entry.snapshot;
 }
@@ -186,6 +277,13 @@ export interface InactiveSpan {
 export interface InactivityReplay {
   counted: boolean[];
   spans: InactiveSpan[];
+  /**
+   * The quiet stretch the tab sat through before each span, plus the one it is
+   * sitting through now. Each is exactly the duration long, ending where its
+   * span starts -- the one drawing of the setting whose width moves with it.
+   * The current one ends in the future.
+   */
+  waits: { start: number; end: number }[];
   /** When the tab goes inactive if nothing else counts, or null if it already has. */
   inactiveAt: number | null;
   /** The last thing that counted as activity, if any did. */
@@ -264,5 +362,10 @@ export function replayInactivity(args: {
     spans.push({ start: inactiveSince, end: null });
   }
 
-  return { counted, spans, inactiveAt, lastActivityAt };
+  const waits = spans.map((span) => ({ start: span.start - inactivityMs, end: span.start }));
+  if (inactiveAt !== null) {
+    waits.push({ start: inactiveAt - inactivityMs, end: inactiveAt });
+  }
+
+  return { counted, spans, waits, inactiveAt, lastActivityAt };
 }
