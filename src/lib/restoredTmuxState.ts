@@ -88,12 +88,69 @@ function removeTerminalNode(
   delete nodes[nodeId];
 }
 
+type SessionStatus = Pick<
+  TerminalSession,
+  | "hasDetectedActivity"
+  | "lastUserInputAt"
+  | "lastOutputAt"
+  | "isNeedsAttention"
+  | "isPossiblyDone"
+  | "isLongInactive"
+  | "isRecentlyFocused"
+>;
+
+/** A tab's activity status as it is before anything has been seen. */
+export const UNSEEN_SESSION_STATUS: SessionStatus = {
+  hasDetectedActivity: false,
+  lastUserInputAt: 0,
+  lastOutputAt: 0,
+  isNeedsAttention: false,
+  isPossiblyDone: false,
+  isLongInactive: false,
+  isRecentlyFocused: false,
+};
+
+/**
+ * The status a saved tab comes back with after a restart.
+ *
+ * A local tab's shell starts over, so it starts unseen. A tmux tab's program
+ * does not: it kept running on the server the whole time, and only Dispatcher
+ * restarted. Starting it unseen showed a tab busy on a long tool call as gray
+ * -- the only thing moving on its screen was the tool's elapsed-time counter,
+ * which may keep a green tab green but is not allowed to wake one -- until it
+ * next printed something real. So it comes back as it was, timestamps and
+ * all, and goes quiet when it would have anyway.
+ *
+ * Nothing announces the difference. The first look after startup arms
+ * notifications rather than firing them, and a tab already brown or needing
+ * attention stays so rather than turning so.
+ */
+export function restoredSessionStatus(session: TerminalSession): SessionStatus {
+  const kind = session.restoredFromBackendKind ?? session.backendKind;
+  if (kind !== "tmux-window" && kind !== "tmux-pane") {
+    return UNSEEN_SESSION_STATUS;
+  }
+  return {
+    hasDetectedActivity: session.hasDetectedActivity ?? false,
+    lastUserInputAt: session.lastUserInputAt ?? 0,
+    lastOutputAt: session.lastOutputAt ?? 0,
+    isNeedsAttention: session.isNeedsAttention ?? false,
+    isPossiblyDone: session.isPossiblyDone ?? false,
+    isLongInactive: session.isLongInactive ?? false,
+    isRecentlyFocused: false,
+  };
+}
+
 function clearRestoreMarker(session: TerminalSession): TerminalSession {
   const effectiveBackendKind = session.restoredFromBackendKind ?? session.backendKind;
 
+  // A tab whose connection did not survive is a placeholder: nothing on it is
+  // running that Dispatcher can see, so the status it was restored with no
+  // longer describes anything.
   if (effectiveBackendKind === "tmux-window") {
     return {
       ...session,
+      ...UNSEEN_SESSION_STATUS,
       backendKind: "tmux-window",
       restoredFromBackendKind: undefined,
       tmuxControlSessionId: undefined,
@@ -104,6 +161,7 @@ function clearRestoreMarker(session: TerminalSession): TerminalSession {
   if (effectiveBackendKind === "tmux-pane") {
     return {
       ...session,
+      ...UNSEEN_SESSION_STATUS,
       backendKind: "tmux-pane",
       restoredFromBackendKind: undefined,
       tmuxControlSessionId: undefined,

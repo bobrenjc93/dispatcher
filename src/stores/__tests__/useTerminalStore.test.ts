@@ -196,6 +196,46 @@ describe("useTerminalStore", () => {
       expect(result.sessions["t2"].notifyOnInaction).toBe(false);
     });
 
+    it("brings a tmux tab back with the status it had, since its program kept running", () => {
+      // Only Dispatcher restarted. Starting the tab unseen showed one busy on
+      // a long tool call as gray, because the elapsed-time counter that was
+      // all it printed may keep a tab green but cannot wake one.
+      const { merge } = (useTerminalStore as any).persist.getOptions();
+      const status = {
+        hasDetectedActivity: true,
+        lastUserInputAt: 111,
+        lastOutputAt: 222,
+        isNeedsAttention: false,
+        isPossiblyDone: true,
+        isLongInactive: false,
+        isRecentlyFocused: true,
+      };
+      const persisted = {
+        sessions: {
+          pane: {
+            id: "pane",
+            title: "tmux",
+            notes: "",
+            ...status,
+            backendKind: "tmux-pane",
+            tmuxControlSessionId: "transport",
+            tmuxPaneId: "%1",
+          },
+          local: { id: "local", title: "zsh", notes: "", ...status, backendKind: "local" },
+        },
+        activeTerminalId: "pane",
+      };
+      const result = merge(persisted, { sessions: {}, activeTerminalId: null });
+      expect(result.sessions.pane).toMatchObject({ ...status, isRecentlyFocused: false });
+      // A local tab's shell started over, so it starts unseen as before.
+      expect(result.sessions.local).toMatchObject({
+        hasDetectedActivity: false,
+        lastUserInputAt: 0,
+        lastOutputAt: 0,
+        isPossiblyDone: false,
+      });
+    });
+
     it("hands restored tmux sessions to startup normalization with their transport link intact", () => {
       const { merge } = (useTerminalStore as any).persist.getOptions();
       const persisted = {

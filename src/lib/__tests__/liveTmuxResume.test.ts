@@ -97,6 +97,36 @@ describe("tmux state across a reload", () => {
     expect(result.sessions[WINDOW]?.backendKind).toBe("tmux-window");
   });
 
+  it("clears the restored status of a tab whose connection did not survive", () => {
+    const withStatus = snapshot(new Set());
+    withStatus.sessions[WINDOW] = {
+      ...withStatus.sessions[WINDOW],
+      hasDetectedActivity: true,
+      lastOutputAt: 500,
+      isPossiblyDone: true,
+    };
+    const result = normalizeRestoredTmuxState(withStatus);
+
+    // A placeholder runs nothing Dispatcher can see, so the status it was
+    // restored with describes nothing.
+    expect(result.sessions[WINDOW]).toMatchObject({
+      hasDetectedActivity: false,
+      lastOutputAt: 0,
+      isPossiblyDone: false,
+    });
+  });
+
+  it("keeps the restored status of a tab whose connection survived", () => {
+    const withStatus = snapshot(new Set([TRANSPORT]));
+    withStatus.sessions[WINDOW] = {
+      ...withStatus.sessions[WINDOW],
+      hasDetectedActivity: true,
+      lastOutputAt: 500,
+    };
+    const result = normalizeRestoredTmuxState(withStatus);
+    expect(result.sessions[WINDOW]).toMatchObject({ hasDetectedActivity: true, lastOutputAt: 500 });
+  });
+
   it("keeps tmux tabs when it could not find out what is alive", () => {
     // "Could not ask" is not "nothing is running". Treating them the same
     // deleted transports that were alive, and a deleted transport can never be

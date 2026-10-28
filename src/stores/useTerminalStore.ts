@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import { getScopedStorageKey } from "../lib/storageNamespace";
 import { throttledJSONStorage } from "../lib/throttledStorage";
 import { noteActiveTerminalIntent } from "../lib/activeTerminalIntent";
+import { restoredSessionStatus } from "../lib/restoredTmuxState";
 import type { TerminalSession } from "../types/terminal";
 
 interface TerminalStore {
@@ -302,13 +303,7 @@ export const useTerminalStore = create<TerminalStore>()(
           updated[id] = {
             ...session,
             notes: session.notes ?? "",
-            hasDetectedActivity: false,
-            lastUserInputAt: 0,
-            lastOutputAt: 0,
-            isNeedsAttention: false,
-            isPossiblyDone: false,
-            isLongInactive: false,
-            isRecentlyFocused: false,
+            ...restoredSessionStatus(session),
             isPinnedGreen: (session.isPinnedGray ?? false)
               ? false
               : (session.isPinnedGreen ?? false),
