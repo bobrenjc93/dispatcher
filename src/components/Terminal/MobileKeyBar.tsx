@@ -8,7 +8,6 @@ import {
   stepComposeHistory,
 } from "../../lib/composeHistory";
 import {
-  clearTerminalById,
   pasteTextIntoTerminalById,
   readTerminalScrollbackText,
   sendSyntheticTerminalInput,
@@ -31,12 +30,16 @@ interface KeyDefinition {
 
 const ESC = "\u001b";
 
+/** Gap between typing `/clear` and pressing Enter; see sendClearCommand. */
+const CLEAR_COMMAND_ENTER_DELAY_MS = 120;
+
 /**
  * The keys worth reaching for without a swipe.
  *
  * The bar scrolls horizontally on a phone, so position is not cosmetic: what
  * sits past the fold costs a gesture before it costs a tap. These are the ones
- * used constantly — history, Enter, interrupt, search, and clearing the line.
+ * used constantly — history, Enter, interrupt, search, clearing the line, and
+ * starting an agent's conversation over.
  *
  * Split either side of the compose button, which sits with Enter because the
  * two are used together: write something, then run it.
@@ -105,12 +108,15 @@ export function MobileKeyBar() {
     event.preventDefault();
   };
 
-  // The same thing Cmd+K does on the desktop: empty the screen and drop the
-  // pane's scrollback. tmux owns the scrollback, so this goes through the
-  // desktop rather than clearing the phone's own renderer, which the next
-  // capture would simply undo.
-  const clearTerminal = () => {
-    void clearTerminalById(activeTerminalId);
+  // Type `/clear` and press Enter: what a phone is mostly pointed at is an
+  // agent, and starting its conversation over is the reset that matters there,
+  // not emptying the screen. Enter goes as its own keystroke a moment later.
+  // Sent in one burst, an agent that watches for pastes can take the whole
+  // thing for one, and a newline inside a paste does not submit.
+  const sendClearCommand = () => {
+    const terminalId = activeTerminalId;
+    sendSyntheticTerminalInput(terminalId, "/clear");
+    window.setTimeout(() => sendSyntheticTerminalInput(terminalId, "\r"), CLEAR_COMMAND_ENTER_DELAY_MS);
   };
 
   // Paste the body, then send Enter as a separate keystroke rather than
@@ -203,12 +209,12 @@ export function MobileKeyBar() {
         <button
           type="button"
           className="mobile-key"
-          title="Clear the screen and its scrollback (Cmd+K)"
+          title="Type /clear and press Enter"
           onPointerDown={keepFocus}
           onMouseDown={keepFocus}
-          onClick={clearTerminal}
+          onClick={sendClearCommand}
         >
-          clear
+          /clear
         </button>
         {TRAILING_KEYS.map((key) => (
           <button
