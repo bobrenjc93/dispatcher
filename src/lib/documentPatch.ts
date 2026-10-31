@@ -179,7 +179,10 @@ function mergeCollection<T>(
   return next;
 }
 
-/** Apply a replica's edits to this client's stores. Runs on the desktop. */
+/**
+ * Apply a replica's edits to this client's stores. Runs on the desktop, and on the
+ * replica itself to hold an edit the desktop has not published yet.
+ */
 export function applyDocumentPatch(patch: DocumentPatch) {
   if (!patch || isEmptyPatch(patch)) {
     return;
@@ -211,4 +214,70 @@ export function applyDocumentPatch(patch: DocumentPatch) {
     }
     useLayoutStore.setState({ layouts });
   }
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  return Object.is(a, b) || JSON.stringify(a) === JSON.stringify(b);
+}
+
+function collectionReflects(
+  current: Record<string, Entity> | undefined,
+  changed: Record<string, Fields> | undefined,
+  removedIds: string[] | undefined
+): boolean {
+  const map = current ?? {};
+  for (const [id, fields] of Object.entries(changed ?? {})) {
+    const entity = map[id];
+    if (!entity) {
+      return false;
+    }
+    for (const [key, value] of Object.entries(fields)) {
+      if (value === undefined ? key in entity : !sameValue(entity[key], value)) {
+        return false;
+      }
+    }
+  }
+  return (removedIds ?? []).every((id) => !(id in map));
+}
+
+/**
+ * Whether a published document already says what a patch says.
+ *
+ * A replica's edit is applied here at once and reaches the desktop a moment
+ * later, and the desktop republishes on its own all the while -- a status dot
+ * ticking over is enough. A copy published in between knows nothing of the
+ * edit, and adopting it put a dragged tab back where it started, then forward
+ * again when the next copy arrived. So the edit is held over incoming copies
+ * until one carries it, which is what this answers.
+ */
+export function isDocumentPatchReflected(patch: DocumentPatch, snapshot: AppStateSnapshot): boolean {
+  const projects = snapshot[APP_STATE_PROJECTS_KEY]?.state;
+  const terminals = snapshot[APP_STATE_TERMINALS_KEY]?.state;
+  const layouts = snapshot[APP_STATE_LAYOUTS_KEY]?.state?.layouts ?? {};
+
+  if (
+    !collectionReflects(projects?.projects as Record<string, Entity> | undefined, patch.projects, patch.removed?.projects)
+    || !collectionReflects(projects?.nodes as Record<string, Entity> | undefined, patch.nodes, patch.removed?.nodes)
+    || !collectionReflects(terminals?.sessions as Record<string, Entity> | undefined, patch.sessions, patch.removed?.sessions)
+  ) {
+    return false;
+  }
+  for (const [id, layout] of Object.entries(patch.layouts ?? {})) {
+    if (!sameValue(layouts[id], layout)) {
+      return false;
+    }
+  }
+  if ((patch.removed?.layouts ?? []).some((id) => id in layouts)) {
+    return false;
+  }
+  if (patch.projectOrder !== undefined && !sameValue(projects?.projectOrder ?? [], patch.projectOrder)) {
+    return false;
+  }
+  if (patch.activeProjectId !== undefined && (projects?.activeProjectId ?? null) !== patch.activeProjectId) {
+    return false;
+  }
+  if (patch.activeTerminalId !== undefined && (terminals?.activeTerminalId ?? null) !== patch.activeTerminalId) {
+    return false;
+  }
+  return true;
 }

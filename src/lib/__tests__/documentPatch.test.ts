@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import { buildAppStateSnapshot, getAppStateSignature } from "../appStateSnapshot";
-import { applyDocumentPatch, buildDocumentPatch } from "../documentPatch";
+import { applyDocumentPatch, buildDocumentPatch, isDocumentPatchReflected } from "../documentPatch";
 import { useLayoutStore } from "../../stores/useLayoutStore";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
@@ -138,5 +138,51 @@ describe("document patches from a replica", () => {
     applyDocumentPatch({});
 
     expect(getAppStateSignature(buildAppStateSnapshot())).toBe(before);
+  });
+});
+
+describe("whether the desktop has published a replica's edit", () => {
+  beforeEach(() => {
+    seed();
+    useProjectStore.setState((s) => ({
+      nodes: {
+        ...s.nodes,
+        r1: { ...s.nodes.r1, children: ["a", "b", "c"] } as never,
+      },
+    }));
+  });
+
+  it("is not reflected by a copy published before the edit, and is by one after", () => {
+    // A tab dragged on a phone: a copy the desktop published in between does
+    // not have it, and adopting that copy put the tab back where it started.
+    const before = buildAppStateSnapshot();
+    useProjectStore.getState().reorderChild("r1", "c", "a", "before");
+    const after = buildAppStateSnapshot();
+    const patch = buildDocumentPatch(before, after)!;
+
+    expect(isDocumentPatchReflected(patch, before)).toBe(false);
+    expect(isDocumentPatchReflected(patch, after)).toBe(true);
+  });
+
+  it("checks removals and the active tab too", () => {
+    const before = buildAppStateSnapshot();
+    expect(isDocumentPatchReflected({ removed: { sessions: ["t1"] } }, before)).toBe(false);
+    expect(isDocumentPatchReflected({ activeTerminalId: "t1" }, before)).toBe(true);
+    expect(isDocumentPatchReflected({ activeTerminalId: null }, before)).toBe(false);
+    expect(isDocumentPatchReflected({ projectOrder: ["p1"] }, before)).toBe(true);
+  });
+
+  it("re-applying a held edit over the older copy puts it back", () => {
+    const before = buildAppStateSnapshot();
+    useProjectStore.getState().reorderChild("r1", "c", "a", "before");
+    const patch = buildDocumentPatch(before, buildAppStateSnapshot())!;
+
+    // The stale copy arrives and is adopted...
+    useProjectStore.setState((s) => ({
+      nodes: { ...s.nodes, r1: { ...s.nodes.r1, children: ["a", "b", "c"] } as never },
+    }));
+    // ...and the held edit goes back on top of it.
+    applyDocumentPatch(patch);
+    expect(useProjectStore.getState().nodes.r1.children).toEqual(["c", "a", "b"]);
   });
 });

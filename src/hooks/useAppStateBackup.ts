@@ -13,7 +13,12 @@ import {
 } from "../lib/appStateSnapshot";
 import { getClientId } from "../lib/clientId";
 import { debugLog } from "../lib/debugLog";
-import { applyDocumentPatch, buildDocumentPatch } from "../lib/documentPatch";
+import {
+  applyDocumentPatch,
+  buildDocumentPatch,
+  isDocumentPatchReflected,
+  type DocumentPatch,
+} from "../lib/documentPatch";
 import {
   isPrimaryClient,
   performAction,
@@ -40,6 +45,20 @@ const BACKUP_SAVE_DEBOUNCE_MS = 1_000;
  */
 const BACKUP_SAVE_MAX_WAIT_MS = 2_000;
 const BACKUP_SAVE_LOG_INTERVAL_MS = 15_000;
+/**
+ * How soon a replica sends what was changed on it. One frame, so the several
+ * steps of a multi-row drag go as one patch -- but not the save debounce. The
+ * desktop republishes on its own all the time, and every copy it published
+ * while a phone's edit sat waiting to be sent was adopted over it: a dragged
+ * tab jumped back, and was lost outright if nothing sent it afterwards.
+ */
+const REPLICA_PATCH_DELAY_MS = 16;
+/**
+ * How long a replica holds its own edit over copies from the desktop that do
+ * not show it yet. Long past any round trip; an edit still missing after this
+ * was not applied, and holding it longer would only fight the desktop.
+ */
+const PENDING_PATCH_TTL_MS = 10_000;
 
 export function useAppStateBackup() {
   const [bootstrapComplete, setBootstrapComplete] = useState(false);
@@ -57,6 +76,9 @@ export function useAppStateBackup() {
     // against it so it sends only what the user changed here.
     let syncBase: AppStateSnapshot | null = null;
     let unsubscribers: Array<() => void> = [];
+    // Edits this replica sent that the desktop has not yet published back.
+    let pendingPatches: Array<{ patch: DocumentPatch; sentAt: number }> = [];
+    let replicaPatchTimer: number | null = null;
 
     const clearSaveTimer = () => {
       if (saveTimer !== null) {
@@ -64,6 +86,48 @@ export function useAppStateBackup() {
         saveTimer = null;
       }
       pendingSince = null;
+    };
+
+    /** Send a replica's edits now, rather than when the backup is next saved. */
+    const flushReplicaPatch = () => {
+      if (replicaPatchTimer !== null) {
+        window.clearTimeout(replicaPatchTimer);
+        replicaPatchTimer = null;
+      }
+      if (disposed || !readyToSave || isPrimaryClient() || !syncBase) {
+        return;
+      }
+      const snapshot = buildAppStateSnapshot();
+      const patch = buildDocumentPatch(syncBase, snapshot);
+      if (!patch) {
+        return;
+      }
+      performAction("documentPatch", patch);
+      pendingPatches.push({ patch, sentAt: Date.now() });
+      syncBase = snapshot;
+    };
+
+    const scheduleReplicaPatch = () => {
+      if (disposed || !readyToSave || isPrimaryClient() || replicaPatchTimer !== null) {
+        return;
+      }
+      replicaPatchTimer = window.setTimeout(flushReplicaPatch, REPLICA_PATCH_DELAY_MS);
+    };
+
+    /**
+     * Put back this replica's edits that a copy from the desktop predates.
+     *
+     * Applied oldest first, and dropped once a copy carries them or they are
+     * too old to still be on their way.
+     */
+    const holdPendingPatches = (remote: AppStateSnapshot) => {
+      const now = Date.now();
+      pendingPatches = pendingPatches.filter(
+        (entry) => now - entry.sentAt < PENDING_PATCH_TTL_MS && !isDocumentPatchReflected(entry.patch, remote)
+      );
+      for (const entry of pendingPatches) {
+        applyDocumentPatch(entry.patch);
+      }
     };
 
     const saveNow = async () => {
@@ -93,11 +157,7 @@ export function useAppStateBackup() {
       // that has already moved on, so republishing it would undo whatever the
       // desktop changed meanwhile. Send just this client's edits instead.
       if (!isPrimaryClient()) {
-        const patch = syncBase ? buildDocumentPatch(syncBase, snapshot) : null;
-        if (patch) {
-          performAction("documentPatch", patch);
-          syncBase = snapshot;
-        }
+        flushReplicaPatch();
         return;
       }
 
@@ -137,11 +197,16 @@ export function useAppStateBackup() {
       }, delay);
     };
 
+    const onStoreChange = () => {
+      scheduleReplicaPatch();
+      scheduleSave();
+    };
+
     const startSubscriptions = () => {
       unsubscribers = [
-        useProjectStore.subscribe(scheduleSave),
-        useTerminalStore.subscribe(scheduleSave),
-        useLayoutStore.subscribe(scheduleSave),
+        useProjectStore.subscribe(onStoreChange),
+        useTerminalStore.subscribe(onStoreChange),
+        useLayoutStore.subscribe(onStoreChange),
       ];
     };
 
@@ -157,8 +222,16 @@ export function useAppStateBackup() {
         return false;
       }
 
+      // Anything changed here and not sent yet goes first, so it is diffed
+      // against the copy it was made on rather than lost under the new one.
+      if (!isPrimaryClient()) {
+        flushReplicaPatch();
+      }
       const result = applySharedAppState(snapshot, source);
       if (result.restored) {
+        if (!isPrimaryClient()) {
+          holdPendingPatches(snapshot);
+        }
         const applied = buildAppStateSnapshot();
         lastSavedSignature = getAppStateSignature(applied);
         syncBase = applied;
@@ -249,6 +322,9 @@ export function useAppStateBackup() {
       disposed = true;
       setAppStatePublishFlusher(null);
       clearSaveTimer();
+      if (replicaPatchTimer !== null) {
+        window.clearTimeout(replicaPatchTimer);
+      }
       for (const unsubscribe of unsubscribers) {
         unsubscribe();
       }
