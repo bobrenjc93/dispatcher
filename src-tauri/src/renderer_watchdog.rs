@@ -153,8 +153,9 @@ impl RendererWatchdog {
                     continue;
                 }
 
+                let window_focused = main_window_focused(&app_handle);
                 let recover = match state.lock() {
-                    Ok(mut guard) => guard.should_recover(SystemTime::now()),
+                    Ok(mut guard) => guard.should_recover(SystemTime::now(), window_focused),
                     Err(_) => false,
                 };
                 if recover {
@@ -307,7 +308,28 @@ impl RendererWatchdogState {
     /// tmux clients are in another process and a reload reattaches to them.
     /// A blank window the user has to notice and restart by hand is a worse
     /// outcome than a reload they may not even see.
-    fn should_recover(&mut self, now: SystemTime) -> bool {
+    ///
+    /// Not while the page is hidden, though. WebKit throttles the timers of a
+    /// page nobody can see -- an occluded window, a sleeping display -- so its
+    /// heartbeat goes quiet without anything being wrong. Reloading it then
+    /// meant reloading every two minutes all night: one run reloaded a hidden
+    /// window 160 times, and every reload re-ran the workspace restore and
+    /// reattached every tmux session, which is how tabs came to be dropped,
+    /// rebuilt as new ones and lose what had been set on them. A page that
+    /// last said it was hidden is left alone unless the window has focus, which
+    /// is when someone is actually looking at it and a silent renderer is
+    /// wedged rather than throttled. A dead web process is still reloaded at
+    /// once, by `observe_web_content`.
+    fn should_recover(&mut self, now: SystemTime, window_focused: bool) -> bool {
+        let last_said_hidden = self
+            .last_details
+            .as_ref()
+            .and_then(|details| details.visibility_state.as_deref())
+            == Some("hidden");
+        if last_said_hidden && !window_focused {
+            return false;
+        }
+
         let Some(last_heartbeat_at) = self.last_heartbeat_at else {
             // Never heard from it at all: measure from start-up instead, so a
             // window that dies before its first heartbeat is still recovered.
@@ -433,6 +455,15 @@ fn format_megabytes(bytes: Option<u64>) -> String {
 /// A native reload rather than evaluating `location.reload()`: if the renderer
 /// has stopped answering, its JavaScript is exactly what cannot be relied on to
 /// run. Terminals are unaffected — they live in the daemon.
+/// Whether the main window has focus; false when it cannot be found or asked.
+fn main_window_focused(app_handle: &tauri::AppHandle) -> bool {
+    use tauri::Manager;
+    app_handle
+        .get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false)
+}
+
 fn reload_window(app_handle: &tauri::AppHandle, reason: &str) {
     use tauri::Manager;
     let Some(window) = app_handle.get_webview_window("main") else {
@@ -527,8 +558,24 @@ mod tests {
         let mut state = watchdog_state(Duration::from_millis(
             (HEARTBEAT_RECOVER_AFTER_MS + 1_000) as u64,
         ));
-        assert!(state.should_recover(SystemTime::now()));
+        assert!(state.should_recover(SystemTime::now(), true));
         assert_eq!(state.recovery_count, 1);
+    }
+
+    #[test]
+    fn leaves_a_hidden_page_alone_while_nobody_is_looking() {
+        // A hidden page's timers are throttled, so silence is expected; one run
+        // reloaded a hidden window every two minutes all night.
+        let mut state = watchdog_state(Duration::from_millis(
+            (HEARTBEAT_RECOVER_AFTER_MS * 10) as u64,
+        ));
+        if let Some(details) = state.last_details.as_mut() {
+            details.visibility_state = Some("hidden".to_string());
+        }
+        assert!(!state.should_recover(SystemTime::now(), false));
+        assert_eq!(state.recovery_count, 0);
+        // Focused, someone is looking, and the silence means it is wedged.
+        assert!(state.should_recover(SystemTime::now(), true));
     }
 
     #[test]
@@ -538,7 +585,7 @@ mod tests {
         let mut state = watchdog_state(Duration::from_millis(
             (HEARTBEAT_STALE_AFTER_MS + 1_000) as u64,
         ));
-        assert!(!state.should_recover(SystemTime::now()));
+        assert!(!state.should_recover(SystemTime::now(), true));
         assert_eq!(state.recovery_count, 0);
     }
 
@@ -550,8 +597,8 @@ mod tests {
             (HEARTBEAT_RECOVER_AFTER_MS + 1_000) as u64,
         ));
         let now = SystemTime::now();
-        assert!(state.should_recover(now));
-        assert!(!state.should_recover(now));
+        assert!(state.should_recover(now, true));
+        assert!(!state.should_recover(now, true));
         assert_eq!(state.recovery_count, 1);
     }
 
@@ -563,7 +610,7 @@ mod tests {
         state.last_heartbeat_at = None;
         state.started_at = SystemTime::now()
             - Duration::from_millis((HEARTBEAT_RECOVER_AFTER_MS + 1_000) as u64);
-        assert!(state.should_recover(SystemTime::now()));
+        assert!(state.should_recover(SystemTime::now(), true));
     }
 
     #[test]
@@ -606,7 +653,7 @@ mod tests {
         assert_eq!(state.web_content_pid, None);
         // The heartbeat watchdog must not reload it a second time.
         state.last_heartbeat_at = Some(now - Duration::from_millis((HEARTBEAT_RECOVER_AFTER_MS + 1) as u64));
-        assert!(!state.should_recover(now));
+        assert!(!state.should_recover(now, true));
     }
 
     #[test]
