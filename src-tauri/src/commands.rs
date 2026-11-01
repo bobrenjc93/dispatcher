@@ -391,6 +391,61 @@ fn rotate_existing_app_state_backups(path: &std::path::Path) -> Result<(), PtyEr
     Ok(())
 }
 
+/// How many hourly and daily snapshots of the workspace to keep.
+const APP_STATE_HOURLY_SNAPSHOTS: usize = 72;
+const APP_STATE_DAILY_SNAPSHOTS: usize = 30;
+
+/// Keep snapshots of the workspace an hour and a day apart.
+///
+/// The generations above are a minute deep at best, because every change
+/// rotates them. When tabs went missing over a night of reloads, all ten were
+/// copies of the already-damaged workspace, and nothing older existed to put
+/// back. One snapshot per hour for three days, and one per day for a month,
+/// costs a few megabytes and means a loss can be undone.
+///
+/// Best effort: a snapshot that cannot be written is not a reason to fail the
+/// save it rides on.
+fn snapshot_app_state_history(path: &std::path::Path, content: &str, now_secs: u64) {
+    let Some(dir) = path.parent().map(|parent| parent.join("history")) else {
+        return;
+    };
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    for (kind, bucket_secs, keep) in [
+        ("hourly", 3_600u64, APP_STATE_HOURLY_SNAPSHOTS),
+        ("daily", 86_400u64, APP_STATE_DAILY_SNAPSHOTS),
+    ] {
+        let prefix = format!("{}.{}-", file_name, kind);
+        let snapshot = dir.join(format!("{}{}.json", prefix, now_secs / bucket_secs));
+        if !snapshot.exists() {
+            let _ = fs::write(&snapshot, content);
+        }
+        prune_app_state_history(&dir, &prefix, keep);
+    }
+}
+
+fn prune_app_state_history(dir: &std::path::Path, prefix: &str, keep: usize) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut buckets: Vec<(u64, std::path::PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let bucket = name.strip_prefix(prefix)?.strip_suffix(".json")?.parse().ok()?;
+            Some((bucket, entry.path()))
+        })
+        .collect();
+    buckets.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, stale) in buckets.into_iter().skip(keep) {
+        let _ = fs::remove_file(stale);
+    }
+}
+
 #[tauri::command]
 pub fn read_app_state_backup(
     app_handle: AppHandle,
@@ -421,6 +476,11 @@ pub fn write_app_state_backup(
     let tmp_path = path.with_extension("json.tmp");
     fs::write(&tmp_path, &content)?;
     fs::rename(&tmp_path, &path)?;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    snapshot_app_state_history(&path, &content, now_secs);
 
     // Every client persists the same document shape, so the write doubles as
     // the sync point: hand it to the replicas so their tabs, layout and notes
@@ -444,6 +504,42 @@ pub fn get_app_state_backup_path(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keeps_one_snapshot_per_hour_and_day_and_prunes_old_ones() {
+        let dir = std::env::temp_dir().join(format!(
+            "dispatcher-history-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dispatcher-state-backup.dev.json");
+        let history = dir.join("history");
+
+        // Two writes in one hour keep the first; a write each hour for longer
+        // than the window keeps only the newest.
+        super::snapshot_app_state_history(&path, "first", 3_600 * 10);
+        super::snapshot_app_state_history(&path, "second", 3_600 * 10 + 60);
+        let first_hour = history.join("dispatcher-state-backup.dev.json.hourly-10.json");
+        assert_eq!(std::fs::read_to_string(&first_hour).unwrap(), "first");
+
+        for hour in 11..(11 + super::APP_STATE_HOURLY_SNAPSHOTS as u64 + 5) {
+            super::snapshot_app_state_history(&path, "later", 3_600 * hour);
+        }
+        let hourly = std::fs::read_dir(&history)
+            .unwrap()
+            .filter(|entry| {
+                entry.as_ref().unwrap().file_name().to_string_lossy().contains(".hourly-")
+            })
+            .count();
+        assert_eq!(hourly, super::APP_STATE_HOURLY_SNAPSHOTS);
+        assert!(!first_hour.exists());
+        assert!(history.join("dispatcher-state-backup.dev.json.daily-0.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::app_state_backup_file_name;
 
     #[test]
