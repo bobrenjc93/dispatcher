@@ -52,6 +52,7 @@ import {
   setTerminalSnapshotSource,
 } from "./replication";
 import { noteControlModeStarted } from "./tmuxAttachWatchdog";
+import { carryOverTabSettings } from "./tabSettingsCarryOver";
 import {
   buildControlStreamStalledNotice,
   buildInputHeldNotice,
@@ -1751,6 +1752,42 @@ function removeWindowNodeFromParent(parentNodeId: string, nodeId: string) {
   }));
 }
 
+/**
+ * Put one tab node where another is, taking it out of wherever it was.
+ *
+ * Returns whether it moved. The node being replaced is left in its parent's
+ * list until it is removed, so it is the caller's to remove.
+ */
+function moveWindowNodeIntoPlaceOf(movingNodeId: string, placeNodeId: string): boolean {
+  if (movingNodeId === placeNodeId) {
+    return false;
+  }
+  const nodes = useProjectStore.getState().nodes;
+  const moving = nodes[movingNodeId];
+  const place = nodes[placeNodeId];
+  const parentId = place?.parentId;
+  const parent = parentId ? nodes[parentId] : undefined;
+  if (!moving || !parentId || !parent?.children?.includes(placeNodeId)) {
+    return false;
+  }
+  useProjectStore.setState((state) => {
+    const next = { ...state.nodes };
+    for (const [id, node] of Object.entries(next)) {
+      if (id !== parentId && node.children?.includes(movingNodeId)) {
+        next[id] = { ...node, children: node.children.filter((child) => child !== movingNodeId) };
+      }
+    }
+    const currentParent = next[parentId];
+    const children = (currentParent.children ?? []).filter((child) => child !== movingNodeId);
+    const at = children.indexOf(placeNodeId);
+    children.splice(at + 1, 0, movingNodeId);
+    next[parentId] = { ...currentParent, children };
+    next[movingNodeId] = { ...next[movingNodeId], parentId };
+    return { nodes: next };
+  });
+  return true;
+}
+
 function removeWindowNodeFromAllParents(nodeId: string) {
   const projectState = useProjectStore.getState();
   const parentNodeIds = Object.entries(projectState.nodes)
@@ -2328,6 +2365,25 @@ function pruneDuplicateWindowProjections(
       removedPaneTerminalIds: paneTerminalIds,
       title: terminal.title,
     });
+
+    // The copy going may be the one the user set up -- the older one, from
+    // before a reconnect -- so what they set on it, and where they put it,
+    // moves to the copy that stays rather than going with it.
+    const keptSession = useTerminalStore.getState().sessions[keep.terminalId];
+    const carried = keptSession ? carryOverTabSettings(terminal, keptSession) : {};
+    if (Object.keys(carried).length > 0) {
+      useTerminalStore.getState().patchSession(keep.terminalId, carried);
+    }
+    const tookPlace = nodeId ? moveWindowNodeIntoPlaceOf(keep.nodeId, nodeId) : false;
+    if (Object.keys(carried).length > 0 || tookPlace) {
+      debugLog("tmux.session", "carried duplicate window settings over", {
+        windowId: keep.windowId,
+        keptTerminalId: keep.terminalId,
+        removedTerminalId: terminalId,
+        settings: Object.keys(carried),
+        tookPlace,
+      });
+    }
 
     for (const paneTerminalId of paneTerminalIds) {
       disposePaneTerminal(paneTerminalId, {
