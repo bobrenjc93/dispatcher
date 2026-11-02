@@ -123,6 +123,15 @@ export interface ClosedTmuxTab {
   /** Each pane's, by pane id, since panes come back as new terminals too. */
   paneSettings?: Record<string, ClosedTabSettings>;
   title: string;
+  /** The sidebar row's description, which lives on the row, not the session. */
+  description?: string;
+  /**
+   * Where the row sat, for bringing the tab back while its server cannot be
+   * reached and there is no window order to put it back by.
+   */
+  parentNodeId?: string | null;
+  /** The row above it in that parent; null when it was first. */
+  anchorNodeId?: string | null;
   closedAt: number;
 }
 

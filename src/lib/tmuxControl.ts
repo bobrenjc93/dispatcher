@@ -35,7 +35,7 @@ import {
   reconcileTmuxWindowNodePlacements,
   resolveAdjacentTmuxWindowAfterClose,
 } from "./tmuxWindowOrder";
-import { findLayoutKeyForTerminal, findTerminalIds } from "./layoutUtils";
+import { createLeaf, findLayoutKeyForTerminal, findTerminalIds } from "./layoutUtils";
 import {
   findDisconnectedTmuxWindowPlaceholder,
   findNodeByTerminalId,
@@ -6898,6 +6898,30 @@ function collectPaneSettings(
   return settings;
 }
 
+interface ClosedWindowPlacement {
+  description?: string;
+  parentNodeId: string | null;
+  anchorNodeId: string | null;
+}
+
+/** A window tab's row, read before closing takes it out of the sidebar. */
+function readClosedWindowPlacement(windowTerminalId: string | undefined): ClosedWindowPlacement {
+  const found = windowTerminalId
+    ? findNodeByTerminalId(useProjectStore.getState().nodes, windowTerminalId)
+    : null;
+  if (!found) {
+    return { parentNodeId: null, anchorNodeId: null };
+  }
+  const parentNodeId = found.node.parentId ?? null;
+  const siblings = parentNodeId ? useProjectStore.getState().nodes[parentNodeId]?.children ?? [] : [];
+  const index = siblings.indexOf(found.nodeId);
+  return {
+    ...(found.node.description ? { description: found.node.description } : {}),
+    parentNodeId,
+    anchorNodeId: index > 0 ? siblings[index - 1] : null,
+  };
+}
+
 /**
  * Stop projecting a window but leave it running, so the tab can come back.
  *
@@ -6917,6 +6941,7 @@ function tombstoneTmuxWindow(options: {
   anchorWindowId: string | null;
   settings: ClosedTabSettings;
   paneSettings: Record<string, ClosedTabSettings>;
+  placement: ClosedWindowPlacement;
 }) {
   const evicted = rememberClosedTab({
     kind: "tmux",
@@ -6928,6 +6953,7 @@ function tombstoneTmuxWindow(options: {
     settings: options.settings,
     paneSettings: options.paneSettings,
     title: options.title,
+    ...options.placement,
     closedAt: Date.now(),
   });
   endEvictedClosedTmuxTabs(evicted);
@@ -6976,6 +7002,7 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
     const anchorWindowId = windowIdAbove(session, windowId);
     const settings = pickClosedTabSettings(terminal);
     const paneSettings = collectPaneSettings(session, paneIds);
+    const placement = readClosedWindowPlacement(terminalId);
     removeWindowProjection(session, windowId);
     syncWindowNodeOrder(session);
     tombstoneTmuxWindow({
@@ -6987,6 +7014,7 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
       anchorWindowId,
       settings,
       paneSettings,
+      placement,
     });
     return true;
   }
@@ -7018,6 +7046,7 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
       const anchorWindowId = windowIdAbove(session, windowId);
       const settings = pickClosedTabSettings(windowTerminal ?? undefined);
       const paneSettings = collectPaneSettings(session, paneIds);
+      const placement = readClosedWindowPlacement(windowState?.terminalId);
       removeWindowProjection(session, windowId);
       syncWindowNodeOrder(session);
       tombstoneTmuxWindow({
@@ -7029,6 +7058,7 @@ export async function closeTmuxTerminal(terminalId: string): Promise<boolean> {
         anchorWindowId,
         settings,
         paneSettings,
+        placement,
       });
     } else {
       session.optimisticallyClosedPaneIds.add(paneId);
@@ -7814,17 +7844,151 @@ export async function reopenLastClosedTmuxTab(): Promise<boolean> {
   return reopenClosedTmuxTab(closed);
 }
 
+/**
+ * Bring a closed tab back while its server cannot be reached.
+ *
+ * Reopening is often just to look at a tab again -- its title, its notes,
+ * what it was for -- and none of that needs the server. Refusing because the
+ * window could not be asked for left the shortcut doing nothing at all for as
+ * long as the newest closed tab sat on a dead connection, and every older one
+ * stuck behind it. So the tab comes back as a disconnected one, the same thing
+ * a restart leaves for a server that is down, with what was set on it; when
+ * the server is attached again the window is adopted into it as usual.
+ */
+function reopenClosedTmuxTabOffline(
+  closed: ClosedTmuxTab,
+  session: TmuxControlSession | null,
+  reason: string
+): boolean {
+  if (session) {
+    // So that the window, if the connection comes back, is projected into
+    // this tab rather than kept hidden as closed.
+    ensureOptimisticCloseState(session);
+    session.optimisticallyClosedWindowIds.delete(closed.windowId);
+    for (const paneId of closed.paneIds ?? []) {
+      session.optimisticallyClosedPaneIds.delete(paneId);
+    }
+  }
+
+  const projectState = useProjectStore.getState();
+  const terminalState = useTerminalStore.getState();
+  const windowTerminalId = generateId();
+  const panes = (closed.paneIds ?? []).map((paneId) => ({ paneId, terminalId: generateId() }));
+  const disconnected = (id: string, extra: Partial<TerminalSession>): TerminalSession => ({
+    id,
+    title: closed.title,
+    notes: "",
+    hasDetectedActivity: false,
+    lastUserInputAt: 0,
+    lastOutputAt: 0,
+    isNeedsAttention: false,
+    isPossiblyDone: false,
+    isLongInactive: false,
+    isRecentlyFocused: false,
+    backendKind: "tmux-window",
+    tmuxConnectionKey: closed.connectionKey ?? undefined,
+    tmuxWindowId: closed.windowId,
+    ...extra,
+  });
+  useTerminalStore.setState((state) => {
+    const sessions = { ...state.sessions };
+    sessions[windowTerminalId] = disconnected(windowTerminalId, { ...(closed.settings ?? {}) });
+    for (const pane of panes) {
+      sessions[pane.terminalId] = disconnected(pane.terminalId, {
+        backendKind: "tmux-pane",
+        tmuxPaneId: pane.paneId,
+        ...(closed.paneSettings?.[pane.paneId] ?? {}),
+      });
+    }
+    return { sessions };
+  });
+  useLayoutStore.setState((state) => ({
+    layouts: {
+      ...state.layouts,
+      [windowTerminalId]: createLeaf(panes[0]?.terminalId ?? windowTerminalId),
+    },
+  }));
+
+  // Where it was, then beside the window that sat above it, then with the
+  // rest of its connection's tabs, then wherever the user is.
+  const anchorWindowNode = closed.anchorWindowId
+    ? Object.entries(terminalState.sessions)
+      .filter(([, value]) =>
+        value.backendKind === "tmux-window"
+        && value.tmuxWindowId === closed.anchorWindowId
+        && (value.tmuxConnectionKey ?? null) === closed.connectionKey
+      )
+      .map(([id]) => findNodeByTerminalId(projectState.nodes, id))
+      .find((entry) => entry !== null) ?? null
+    : null;
+  const activeProject = projectState.activeProjectId
+    ? projectState.projects[projectState.activeProjectId]
+    : projectState.projects[projectState.projectOrder[0]];
+  const parentNodeId = [
+    closed.parentNodeId ?? null,
+    anchorWindowNode?.node.parentId ?? null,
+    session?.parentNodeId ?? null,
+    activeProject?.rootGroupId ?? null,
+  ].find((id): id is string => Boolean(id && projectState.nodes[id])) ?? null;
+  if (!parentNodeId) {
+    debugLog("tmux.action", "nowhere to put a reopened tab", { windowId: closed.windowId });
+    return false;
+  }
+  const nodeId = generateId();
+  projectState.addNode({
+    id: nodeId,
+    type: "terminal",
+    name: closed.title,
+    ...(closed.description ? { description: closed.description } : {}),
+    terminalId: windowTerminalId,
+    parentId: parentNodeId,
+  });
+  const siblings = useProjectStore.getState().nodes[parentNodeId]?.children ?? [];
+  const anchorNodeId = parentNodeId === closed.parentNodeId && closed.anchorNodeId !== undefined
+    ? closed.anchorNodeId
+    : anchorWindowNode?.node.parentId === parentNodeId
+      ? anchorWindowNode.nodeId
+      : undefined;
+  const anchorIndex = anchorNodeId ? siblings.indexOf(anchorNodeId) : -1;
+  if (anchorNodeId === null) {
+    projectState.insertChildAt(parentNodeId, nodeId, 0);
+  } else if (anchorIndex >= 0) {
+    projectState.insertChildAt(parentNodeId, nodeId, anchorIndex + 1);
+  } else {
+    projectState.addChildToNode(parentNodeId, nodeId);
+  }
+
+  forgetClosedTab(closed);
+  const projectId = findProjectIdForTerminal(
+    useProjectStore.getState().projects,
+    useProjectStore.getState().projectOrder,
+    useProjectStore.getState().nodes,
+    useTerminalStore.getState().sessions,
+    windowTerminalId
+  );
+  if (projectId) {
+    useProjectStore.getState().setActiveProject(projectId);
+  }
+  useTerminalStore.getState().setActiveTerminal(panes[0]?.terminalId ?? windowTerminalId);
+  debugLog("tmux.action", "reopened a closed tab while its server is unreachable", {
+    windowId: closed.windowId,
+    title: closed.title,
+    reason,
+    sessionId: session?.id ?? null,
+    parentNodeId,
+    closedForMs: Date.now() - closed.closedAt,
+  });
+  return true;
+}
+
 /** Bring back one particular closed tmux tab. */
 export async function reopenClosedTmuxTab(closed: ClosedTmuxTab): Promise<boolean> {
   const session = findControlSessionForClosedTab(closed);
   if (!session) {
-    // Kept, not dropped: the server may be reachable again later, and this is
-    // still the last tab that was closed.
-    debugLog("tmux.action", "cannot reopen yet; no live control session", {
-      windowId: closed.windowId,
-      title: closed.title,
-    });
-    return false;
+    return reopenClosedTmuxTabOffline(closed, null, "no control session");
+  }
+  if (session.controlStreamStalledSince !== null || !session.controlModeActive) {
+    return reopenClosedTmuxTabOffline(closed, session, "control stream not answering");
   }
 
   // Un-hide the window and its panes. Both halves matter: a window whose panes
@@ -7860,11 +8024,11 @@ export async function reopenClosedTmuxTab(closed: ClosedTmuxTab): Promise<boolea
   try {
     await refreshSingleWindow(session, closed.windowId);
   } catch (error) {
-    // The server could not be asked — a dropped ssh leaves the control stream
-    // answering nothing. Keep the tab so the next attempt, after re-attaching,
-    // still has something to reopen.
+    // The server could not be asked -- a dropped ssh leaves the control stream
+    // answering nothing. Bring the tab back disconnected instead.
     debugLogError("tmux.action", "could not reach the server to reopen a tab", error);
-    return false;
+    session.reopeningWindowIds.delete(closed.windowId);
+    return reopenClosedTmuxTabOffline(closed, session, "window list request failed");
   } finally {
     session.reopeningWindowIds.delete(closed.windowId);
   }
@@ -7884,6 +8048,11 @@ export async function reopenClosedTmuxTab(closed: ClosedTmuxTab): Promise<boolea
 
   forgetClosedTab(closed);
   restoreClosedTabSettings(session, restored.terminalId, closed);
+  // The window comes back as a new row, and the description lived on the old
+  // one.
+  if (closed.description && !useProjectStore.getState().nodes[restored.nodeId]?.description) {
+    useProjectStore.getState().updateNodeDescription(restored.nodeId, closed.description);
+  }
 
   // Land in the tab, the way a browser does. Without this the reopen is
   // invisible: the window returns to its own place among twenty others and

@@ -4979,16 +4979,19 @@ describe("tmuxControl", () => {
     expect(getProjectedWindowIds()).toEqual(["@1", "@2"]);
   });
 
-  it("keeps the tab when the server cannot be reached to reopen it", async () => {
-    // What lost a tab for good: ssh had dropped, so the reopen asked a shell
-    // for the window and waited forever — after the tombstone had already
-    // been consumed. Pressing the shortcut again reached for older tabs, and
-    // that one was never coming back.
+  it("brings the tab back disconnected when the server cannot be reached", async () => {
+    // Reopening is often only to look at a tab again, which needs nothing from
+    // the server. Refusing left the shortcut doing nothing while the newest
+    // closed tab sat on a dead connection, with every older one behind it.
     const transportTerminalId = "transport-reopen-unreachable";
     seedTransportTerminal(transportTerminalId);
 
     await hydrateSingleWindow(transportTerminalId);
     const { windowTerminalId } = getHydratedTmuxIds();
+    useTerminalStore.getState().patchSession(windowTerminalId, { notes: "why this tab exists" });
+    const nodeId = Object.values(useProjectStore.getState().nodes)
+      .find((node) => node.terminalId === windowTerminalId)!.id;
+    useProjectStore.getState().updateNodeDescription(nodeId, "the description");
     await closeTmuxTerminal(windowTerminalId);
     expect(listClosedTabs()).toHaveLength(1);
 
@@ -4996,9 +4999,19 @@ describe("tmuxControl", () => {
     routeTmuxTransportOutput(transportTerminalId, "zsh: command not found: capture-pane\n");
     await flushMicrotasks();
 
-    await expect(reopenLastClosedTmuxTab()).resolves.toBe(false);
-    // Still remembered, so re-attaching and pressing again can still work.
-    expect(listClosedTabs().map(closedTabId)).toEqual(["@1"]);
+    await expect(reopenLastClosedTmuxTab()).resolves.toBe(true);
+    expect(listClosedTabs()).toEqual([]);
+
+    const reopened = Object.values(useTerminalStore.getState().sessions).find(
+      (value) => value.backendKind === "tmux-window" && value.tmuxWindowId === "@1"
+    )!;
+    // Disconnected: no control session, so re-attaching adopts it.
+    expect(reopened.tmuxControlSessionId).toBeUndefined();
+    expect(reopened.notes).toBe("why this tab exists");
+    const row = Object.values(useProjectStore.getState().nodes)
+      .find((node) => node.terminalId === reopened.id)!;
+    expect(row.description).toBe("the description");
+    expect(useProjectStore.getState().nodes[row.parentId!]?.children).toContain(row.id);
   });
 
   it("stops offering a tab whose window the server says is gone", async () => {
