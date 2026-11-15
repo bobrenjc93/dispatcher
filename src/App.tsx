@@ -187,8 +187,6 @@ export default function App() {
   const setDetailPanelCollapsed = useUiStore((s) => s.setDetailPanelCollapsed);
   const compactTerminalFit = useUiStore((s) => s.compactTerminalFit);
   const setCompactTerminalFit = useUiStore((s) => s.setCompactTerminalFit);
-  const compactTouchGesture = useUiStore((s) => s.compactTouchGesture);
-  const setCompactTouchGesture = useUiStore((s) => s.setCompactTouchGesture);
 
   // The notes column has no room next to a terminal on a phone; start hidden
   // there, and restore the desktop preference when there is space again.
@@ -970,18 +968,12 @@ export default function App() {
 
   // A tab arriving from the parking lot keeps the font it had when it was last
   // shown, which on a phone renders enormous until something re-fits it.
-  //
-  // Scrolling history is something you go into for the tab you are reading,
-  // not a setting that follows you around: it hides the rows above the fold,
-  // which is rarely what you want the moment a different tab appears. Every
-  // tab therefore opens on Pan, showing the whole grid.
   useEffect(() => {
     if (!isCompact || !activeTerminalId) {
       return;
     }
-    setCompactTouchGesture("pan");
     presentTerminalForViewport(activeTerminalId);
-  }, [isCompact, activeTerminalId, setCompactTouchGesture]);
+  }, [isCompact, activeTerminalId]);
   const activeLayoutKey = (() => {
     if (!activeProject) return null;
     if (activeTerminalId) {
@@ -1275,9 +1267,7 @@ export default function App() {
   return (
     <div
       ref={appRootRef}
-      className={`app${isCompact ? " app-compact" : ""}${
-        isCompact && compactTouchGesture === "history" ? " touch-history" : ""
-      }`}
+      className={`app${isCompact ? " app-compact" : ""}`}
     >
       {isCompact && (
         <div className="mobile-topbar">
@@ -1312,19 +1302,6 @@ export default function App() {
             }
           >
             Fit
-          </button>
-          <button
-            className="mobile-fit-toggle"
-            aria-label={
-              compactTouchGesture === "pan"
-                ? "Swipe to scroll history instead of moving around the grid"
-                : "Swipe to move around the grid instead of scrolling history"
-            }
-            onClick={() =>
-              setCompactTouchGesture(compactTouchGesture === "pan" ? "history" : "pan")
-            }
-          >
-            {compactTouchGesture === "pan" ? "Scroll" : "Pan"}
           </button>
           <button
             className="mobile-notes-toggle"

@@ -23,6 +23,21 @@
   --sidebar-width: 240px;
   --header-height: 44px;
   --divider-size: 1px;
+
+  /* Type. One scale for the whole UI, stepped up on a phone below, so a size
+     is chosen by role rather than by pixel and the two layouts stay in step. */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  --text-2xs: 10px; /* chart axes */
+  --text-xs: 11px;  /* captions, uppercase section labels */
+  --text-sm: 12px;  /* secondary text, hints, compact controls */
+  --text-base: 13px;
+  --text-md: 14px;  /* panel titles, prominent copy */
+  --text-lg: 15px;  /* dialog titles */
+  --text-2xl: 22px;
+  --leading-prose: 1.5;
+  --tracking-title: -0.02em;
+  --tracking-caps: 0.07em;
 }
 
 html, body, #root {
@@ -31,9 +46,23 @@ html, body, #root {
   overflow: hidden;
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 13px;
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* iOS otherwise inflates text it judges too small when the phone turns to
+     landscape, which resizes the whole UI out from under the layout. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Controls take the UI face rather than the browser's own, which is a
+   different size on every platform. Sizes are still set per control. */
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
 }
 
 .app {
@@ -87,9 +116,9 @@ html, body, #root {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--text-md);
   color: var(--text-primary);
-  letter-spacing: -0.3px;
+  letter-spacing: var(--tracking-title);
 }
 
 .sidebar-actions {
@@ -137,7 +166,7 @@ html, body, #root {
   width: 24px;
   height: 24px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   cursor: pointer;
   display: flex;
@@ -156,7 +185,7 @@ html, body, #root {
   padding: 24px 16px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .key-debug-overlay {
@@ -193,7 +222,7 @@ html, body, #root {
   justify-content: space-between;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border-color);
-  font-size: 12px;
+  font-size: var(--text-sm);
   background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
 }
 
@@ -231,7 +260,7 @@ html, body, #root {
   border: 1px solid var(--border-color);
   border-radius: 999px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
@@ -250,8 +279,8 @@ html, body, #root {
 
 .key-debug-list {
   overflow: auto;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
 }
 
@@ -304,7 +333,7 @@ html, body, #root {
 
 .key-debug-screenshot-caption {
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: var(--text-2xs);
 }
 
 .key-debug-screenshot-image {
@@ -348,9 +377,9 @@ html, body, #root {
 
 .project-name {
   font-weight: 500;
-  font-size: 11px;
+  font-size: var(--text-xs);
   text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: var(--tracking-caps);
   color: var(--text-secondary);
   flex: 1;
 }
@@ -490,7 +519,7 @@ body.sidebar-dragging * {
   background: var(--bg-primary);
   border: 1px solid var(--text-muted);
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-family: inherit;
   padding: 1px 4px;
   border-radius: 4px;
@@ -504,9 +533,9 @@ body.sidebar-dragging * {
 }
 
 .sidebar-rename-project {
-  font-size: 11px;
+  font-size: var(--text-xs);
   text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: var(--tracking-caps);
   font-weight: 500;
 }
 
@@ -533,7 +562,7 @@ body.sidebar-dragging * {
 }
 
 .group-name {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -602,7 +631,7 @@ body.sidebar-resizing .terminal-pane {
 }
 
 .terminal-node-title {
-  font-size: 13px;
+  font-size: var(--text-base);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -631,7 +660,7 @@ body.sidebar-resizing .terminal-pane {
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: var(--text-md);
 }
 
 .project-view {
@@ -694,12 +723,12 @@ body.sidebar-resizing .terminal-pane {
 }
 
 .detail-panel-title {
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 600;
   word-break: break-word;
   cursor: default;
   color: var(--text-primary);
-  letter-spacing: -0.3px;
+  letter-spacing: var(--tracking-title);
 }
 
 .detail-panel-actions {
@@ -744,9 +773,9 @@ body.sidebar-resizing .terminal-pane {
 }
 
 .detail-panel-label {
-  font-size: 11px;
+  font-size: var(--text-xs);
   text-transform: uppercase;
-  letter-spacing: 0.8px;
+  letter-spacing: var(--tracking-caps);
   color: var(--text-muted);
   font-weight: 500;
 }
@@ -757,7 +786,7 @@ body.sidebar-resizing .terminal-pane {
 }
 
 .detail-panel-notes {
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-family: inherit;
   color: var(--text-secondary);
   background: var(--bg-primary);
@@ -767,7 +796,7 @@ body.sidebar-resizing .terminal-pane {
   resize: none;
   outline: none;
   overflow-y: auto;
-  line-height: 1.5;
+  line-height: var(--leading-prose);
   flex: 1;
   min-height: 0;
 }
@@ -782,7 +811,7 @@ body.sidebar-resizing .terminal-pane {
 }
 
 .detail-panel-exit {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--green);
   font-weight: 500;
 }
@@ -844,7 +873,7 @@ body.sidebar-resizing .terminal-pane {
 
 .terminal-loading-copy {
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 
 @keyframes terminal-loading-spin {
@@ -888,14 +917,14 @@ body.sidebar-resizing .terminal-pane {
   border-radius: 999px;
   background: color-mix(in srgb, var(--green) 14%, transparent);
   color: color-mix(in srgb, var(--green) 74%, white 26%);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.8px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
 
 .tmux-placeholder-title {
-  font-size: 22px;
+  font-size: var(--text-2xl);
   line-height: 1.1;
   letter-spacing: -0.03em;
   color: var(--text-primary);
@@ -903,13 +932,13 @@ body.sidebar-resizing .terminal-pane {
 
 .tmux-placeholder-copy {
   color: var(--text-secondary);
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: var(--text-md);
+  line-height: var(--leading-prose);
 }
 
 .tmux-placeholder-inline-command,
 .tmux-placeholder-command {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 .tmux-placeholder-inline-command {
@@ -930,7 +959,7 @@ body.sidebar-resizing .terminal-pane {
   border: 1px solid var(--border-color);
   background: color-mix(in srgb, var(--bg-primary) 82%, black 18%);
   color: color-mix(in srgb, var(--green) 70%, white 30%);
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 
 .tmux-placeholder-copy kbd {
@@ -944,7 +973,7 @@ body.sidebar-resizing .terminal-pane {
   border: 1px solid var(--border-color);
   background: color-mix(in srgb, var(--bg-active) 70%, black 30%);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.8;
 }
 
@@ -981,7 +1010,7 @@ body.sidebar-resizing .terminal-pane {
   background: color-mix(in srgb, var(--bg-surface) 88%, black 12%);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.3;
   pointer-events: none;
   z-index: 4;
@@ -1005,6 +1034,7 @@ body.sidebar-resizing .terminal-pane {
 .terminal-paste-progress-size {
   color: var(--text-muted);
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 /* The banner lets clicks through to the terminal; this is the one exception. */
@@ -1055,7 +1085,7 @@ body.sidebar-resizing .terminal-pane {
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-family: inherit;
   padding: 3px 8px;
   border-radius: 4px;
@@ -1186,10 +1216,10 @@ body.sidebar-resizing .terminal-pane {
 }
 
 .dialog-title {
-  font-size: 15px;
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
-  letter-spacing: -0.3px;
+  letter-spacing: var(--tracking-title);
 }
 
 .dialog-input {
@@ -1197,7 +1227,7 @@ body.sidebar-resizing .terminal-pane {
   border: 1px solid var(--border-color);
   color: var(--text-primary);
   padding: 8px 12px;
-  font-size: 14px;
+  font-size: var(--text-md);
   font-family: inherit;
   border-radius: 8px;
   outline: none;
@@ -1222,7 +1252,7 @@ body.sidebar-resizing .terminal-pane {
 .dialog-btn {
   padding: 6px 16px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-family: inherit;
   cursor: pointer;
   transition: background 0.15s, opacity 0.15s;
@@ -1300,12 +1330,13 @@ body.sidebar-resizing .terminal-pane {
   align-items: center;
   gap: 6px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
 }
 
 .threshold-dialog-field .threshold-dialog-input {
   width: 84px;
+  font-variant-numeric: tabular-nums;
 }
 
 .activity-chart {
@@ -1313,15 +1344,16 @@ body.sidebar-resizing .terminal-pane {
   flex-direction: column;
   gap: 6px;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
 }
 
 .activity-chart-empty,
 .activity-chart-note {
   margin: 0;
   color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.45;
+  font-size: var(--text-xs);
+  line-height: var(--leading-prose);
 }
 
 .activity-chart-header {
@@ -1333,7 +1365,7 @@ body.sidebar-resizing .terminal-pane {
 
 .activity-chart-summary {
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.4;
 }
 
@@ -1349,7 +1381,7 @@ body.sidebar-resizing .terminal-pane {
   border: 1px solid transparent;
   border-radius: 4px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
 
@@ -1368,17 +1400,17 @@ body.sidebar-resizing .terminal-pane {
 
 .activity-chart-axis {
   fill: var(--text-muted);
-  font-size: 9px;
+  font-size: var(--text-2xs);
 }
 
 .activity-chart-threshold-label {
   fill: var(--accent);
-  font-size: 10px;
+  font-size: var(--text-2xs);
 }
 
 .activity-chart-wait-label {
   fill: var(--text-muted);
-  font-size: 9px;
+  font-size: var(--text-2xs);
 }
 
 .activity-chart-legend {
@@ -1418,7 +1450,7 @@ body.sidebar-resizing .terminal-pane {
   overflow-y: auto;
   border: 1px solid var(--border-color);
   border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 .activity-chart-row {
@@ -1439,8 +1471,8 @@ body.sidebar-resizing .terminal-pane {
 .threshold-dialog-hint {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: var(--text-sm);
+  line-height: var(--leading-prose);
 }
 
 .threshold-dialog-input {
@@ -1451,8 +1483,8 @@ body.sidebar-resizing .terminal-pane {
   border: 1px solid var(--border-color);
   border-radius: 6px;
   color: var(--text-primary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
 }
 
 .threshold-dialog-input:focus {
@@ -1463,7 +1495,7 @@ body.sidebar-resizing .terminal-pane {
 .threshold-dialog-error {
   margin: 0;
   color: var(--status-red, #e5534b);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .threshold-dialog-actions {
@@ -1478,7 +1510,7 @@ body.sidebar-resizing .terminal-pane {
   border: 1px solid var(--border-color);
   border-radius: 6px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   cursor: pointer;
 }
 
@@ -1523,7 +1555,7 @@ body.sidebar-resizing .terminal-pane {
 .rename-dialog-hint {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .rename-dialog-input {
@@ -1534,7 +1566,7 @@ body.sidebar-resizing .terminal-pane {
   border: 1px solid var(--border-color);
   border-radius: 6px;
   color: var(--text-primary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   /* Under 16px iOS zooms the page on focus and does not zoom back out. */
   font-size: 16px;
 }
@@ -1557,7 +1589,7 @@ body.sidebar-resizing .terminal-pane {
   border: 1px solid var(--border-color);
   border-radius: 6px;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--text-base);
   cursor: pointer;
 }
 
@@ -1596,15 +1628,15 @@ body.sidebar-resizing .terminal-pane {
 .push-setup-title {
   margin: 0;
   color: var(--text-primary);
-  font-size: 17px;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
 .push-setup-copy {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: var(--text-base);
+  line-height: var(--leading-prose);
 }
 
 .push-setup-note {
@@ -1615,7 +1647,7 @@ body.sidebar-resizing .terminal-pane {
 .push-setup-error {
   margin: 0;
   color: var(--status-red, #e5534b);
-  font-size: 13px;
+  font-size: var(--text-base);
   line-height: 1.4;
 }
 
@@ -1632,7 +1664,7 @@ body.sidebar-resizing .terminal-pane {
   border: 1px solid var(--border-color);
   border-radius: 8px;
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--text-md);
   cursor: pointer;
 }
 
@@ -1675,7 +1707,7 @@ body.sidebar-resizing .terminal-pane {
   background: transparent;
   border: none;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-family: inherit;
   padding: 6px 12px;
   border-radius: 4px;
@@ -1701,8 +1733,9 @@ body.sidebar-resizing .terminal-pane {
 .context-menu-shortcut {
   margin-left: 16px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .context-menu-check {
@@ -1794,13 +1827,13 @@ body.sidebar-resizing .terminal-pane {
 }
 
 .hotkey-help-desc {
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-secondary);
 }
 
 .hotkey-help-key {
-  font-family: "Menlo", "Monaco", monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   color: var(--text-primary);
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
@@ -1808,6 +1841,7 @@ body.sidebar-resizing .terminal-pane {
   padding: 2px 8px;
   min-width: 32px;
   text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ===== Font Settings Dialog ===== */
@@ -1843,7 +1877,7 @@ body.sidebar-resizing .terminal-pane {
 .font-settings-font-display {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--text-base);
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -1854,7 +1888,7 @@ body.sidebar-resizing .terminal-pane {
   background: transparent;
   border: 1px solid var(--border-color);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-family: inherit;
   padding: 3px 10px;
   border-radius: 5px;
@@ -1891,7 +1925,7 @@ body.sidebar-resizing .terminal-pane {
 }
 
 .font-settings-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   white-space: nowrap;
   flex-shrink: 0;
@@ -1937,13 +1971,14 @@ body.sidebar-resizing .terminal-pane {
   background: var(--bg-primary);
   border: none;
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-family: inherit;
   padding: 0;
   outline: none;
   width: 40px;
   text-align: center;
   -moz-appearance: textfield;
+  font-variant-numeric: tabular-nums;
 }
 
 .font-settings-number::-webkit-inner-spin-button,
@@ -1970,7 +2005,7 @@ body.sidebar-resizing .terminal-pane {
   background: transparent;
   border: none;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-family: inherit;
   cursor: pointer;
   padding: 2px 0;
@@ -2009,7 +2044,7 @@ body.sidebar-resizing .terminal-pane {
   background: transparent;
   border: none;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-family: inherit;
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
@@ -2069,6 +2104,29 @@ body.sidebar-resizing .terminal-pane {
    but far too short for the desktop layout. The two cannot share a value, so
    they are kept in sync by hand. */
 @media (max-width: 820px), (hover: none) and (pointer: coarse) and (max-height: 500px) {
+  /* A phone is read at arm's length with a thumb on it, so every step of the
+     scale goes up together -- 13px body text that is fine on a desktop is
+     squinting distance here. On :root rather than .app-compact so dialogs and
+     menus rendered outside the app's tree step up with it. */
+  :root {
+    --text-2xs: 11px;
+    --text-xs: 12px;
+    --text-sm: 13px;
+    --text-base: 15px;
+    --text-md: 16px;
+    --text-lg: 17px;
+    --text-2xl: 24px;
+  }
+
+  /* Under 16px iOS zooms the page when a field takes focus, and does not zoom
+     back out. Important because the notes field sizes itself inline to the
+     terminal font. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select {
+    font-size: max(16px, 1em) !important;
+  }
+
   .app-compact {
     flex-direction: column;
     /* The soft keyboard shrinks the visual viewport, not the window, so 100dvh
@@ -2097,7 +2155,9 @@ body.sidebar-resizing .terminal-pane {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 13px;
+    font-size: var(--text-base);
+    font-weight: 600;
+    letter-spacing: var(--tracking-title);
     color: var(--text-primary);
   }
 
@@ -2115,7 +2175,7 @@ body.sidebar-resizing .terminal-pane {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     color: var(--text-secondary);
-    font-size: 12px;
+    font-size: var(--text-sm);
     cursor: pointer;
   }
 
@@ -2202,34 +2262,43 @@ body.sidebar-resizing .terminal-pane {
     min-height: 38px;
   }
 
-  /* In readable mode the grid is wider than the screen; swipe to follow a long
-     line rather than shrinking everything to fit. The xterm element lives in
-     .terminal-container, so that is the box that has to scroll. */
+  /* The grid is the desktop's, so it is usually wider and taller than the
+     screen. The xterm element lives in .terminal-container, so that is the box
+     that scrolls to reach the rest of it -- but by script, not by the browser.
+     One finger pans the grid and runs on into the scrollback above it as a
+     single gesture (attachTouchScrollback); a native swipe would stop at this
+     box's edge and never reach the history inside it. Pinching is left alone. */
   .app-compact .terminal-container {
     overflow: auto;
-    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .app-compact .terminal-container::-webkit-scrollbar {
+    display: none;
   }
 
   .app-compact .terminal-pane {
-    touch-action: pan-x pan-y pinch-zoom;
+    touch-action: pinch-zoom;
   }
 
-  /* Hand the vertical swipe to xterm's scrollback.
-     The grid can be taller than the phone, so this box scrolls to reach the
-     rows that do not fit — but the scrollback lives in a scroller *inside* it,
-     and a touch gesture chains outward, never inward. Whenever this box can
-     scroll vertically it takes the swipe and the history is unreachable.
-     Stopping it here leaves xterm's scroller as the innermost one, so the swipe
-     lands there instead. The grid is pinned to its bottom because that is where
-     the prompt is; the rows above it are what the Pan toggle is for. Horizontal
-     panning is untouched — nothing else competes for that gesture. */
-  /* The grid is anchored to its bottom by a negative margin worked out against
-     the measured heights, not by flex alignment. As a flex item the grid is
-     shrinkable by default, and a shrunk grid leaves `.xterm-screen`
-     overflowing it — the newest rows end up clipped off the bottom with no way
-     to reach them, which is the opposite of what anchoring is for. */
-  .app-compact.touch-history .terminal-container {
-    overflow-y: hidden;
+  /* Where the screen is in the history and the grid together, while a swipe
+     or a flick moves it. Placed by attachTouchScrollback. */
+  .terminal-scroll-indicator {
+    position: absolute;
+    top: 0;
+    right: 2px;
+    width: 3px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--text-primary) 45%, transparent);
+    opacity: 0;
+    transition: opacity 0.35s ease;
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .terminal-scroll-indicator.is-visible {
+    opacity: 1;
+    transition-duration: 0.1s;
   }
 
   /* Safari zooms the page whenever a focused input's text is under 16px, and a
@@ -2276,8 +2345,8 @@ body.sidebar-resizing .terminal-pane {
     border: 1px solid var(--border-color);
     border-radius: 6px;
     color: var(--text-secondary);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 13px;
+    font-family: var(--font-mono);
+    font-size: 14px;
     cursor: pointer;
   }
 
@@ -2304,7 +2373,7 @@ body.sidebar-resizing .terminal-pane {
     border-radius: 999px;
     box-shadow: 0 4px 12px rgb(0 0 0 / 45%);
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: var(--text-base);
     white-space: nowrap;
     pointer-events: none;
   }
@@ -2342,8 +2411,8 @@ body.sidebar-resizing .terminal-pane {
   /* Monospace here, unlike the compose field: this is terminal output being
      read back, and column alignment is often the point. */
   .select-input {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 13px;
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
     white-space: pre;
     overflow-wrap: normal;
     overflow-x: auto;
