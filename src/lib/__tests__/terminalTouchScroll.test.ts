@@ -1,108 +1,66 @@
 import { describe, expect, it } from "vitest";
 import {
-  maxVerticalScrollOffset,
-  resolveVerticalScroll,
+  consumeTouchScrollLines,
+  shouldScrollHistory,
   TouchVelocityTracker,
-  verticalScrollOffset,
-  type VerticalScrollState,
 } from "../terminalTouchScroll";
 
-const ROW = 15;
+/** At the newest output, 200 lines of history above the grid. */
+const atNewest = { viewportY: 200, baseY: 200 };
 
-/** A grid 10 rows taller than the screen, sitting on 200 lines of history. */
-function atNewest(overrides: Partial<VerticalScrollState> = {}): VerticalScrollState {
-  return {
-    viewportY: 200,
-    baseY: 200,
-    scrollTop: 10 * ROW,
-    maxScrollTop: 10 * ROW,
-    rowHeightPx: ROW,
-    ...overrides,
-  };
-}
-
-function move(state: VerticalScrollState, deltaPx: number) {
-  return resolveVerticalScroll(state, verticalScrollOffset(state) + deltaPx);
-}
-
-describe("one vertical axis over the history and the grid", () => {
-  it("pans the grid first, by the pixel, without touching the history", () => {
-    const placement = move(atNewest(), -7);
-
-    expect(placement.viewportY).toBe(200);
-    expect(placement.scrollTop).toBe(10 * ROW - 7);
-    expect(placement.atEdge).toBe(false);
+describe("who a swipe belongs to", () => {
+  it("leaves panning the grid to the browser", () => {
+    // Up, towards the bottom of a grid taller than the screen.
+    expect(shouldScrollHistory({ ...atNewest, dx: 1, dy: -6, scrollTop: 40 })).toBe(false);
+    // Down, back towards the top of the grid.
+    expect(shouldScrollHistory({ ...atNewest, dx: 0, dy: 6, scrollTop: 40 })).toBe(false);
   });
 
-  it("runs on into the history once the grid is at its top", () => {
-    // The top of the screen starts on line 210 (200 of history, 10 rows down
-    // the grid). 12 rows up is 10 of grid, then 2 of history.
-    const placement = move(atNewest(), -12 * ROW);
-
-    expect(placement.viewportY + placement.scrollTop / ROW).toBe(198);
-    expect(placement.viewportY).toBeLessThan(200);
+  it("runs on into the history when pulled down from the top of the grid", () => {
+    expect(shouldScrollHistory({ ...atNewest, dx: 1, dy: 6, scrollTop: 0 })).toBe(true);
   });
 
-  it("keeps moving by the pixel inside the history when the grid overflows", () => {
-    const top = atNewest({ scrollTop: 0 });
-    const placement = move(top, -4);
-
-    // xterm takes a whole line and the box gives back all but 4px of it, so
-    // the screen moves 4px rather than a whole row.
-    expect(placement.viewportY).toBe(199);
-    expect(placement.scrollTop).toBe(ROW - 4);
+  it("does not take a push up at the top of the grid", () => {
+    expect(shouldScrollHistory({ ...atNewest, dx: 0, dy: -6, scrollTop: 0 })).toBe(false);
   });
 
-  it("comes back down through the history before the grid", () => {
-    const inHistory = atNewest({ viewportY: 150, scrollTop: 0 });
-    const placement = move(inHistory, 60 * ROW);
-
-    // 50 lines of history, then 10 rows of grid, lands exactly on the newest.
-    expect(placement.viewportY).toBe(200);
-    expect(placement.scrollTop).toBe(10 * ROW);
+  it("keeps every vertical swipe while reading back through the history", () => {
+    const reading = { viewportY: 150, baseY: 200 };
+    expect(shouldScrollHistory({ ...reading, dx: 0, dy: -6, scrollTop: 0 })).toBe(true);
+    expect(shouldScrollHistory({ ...reading, dx: 0, dy: 6, scrollTop: 0 })).toBe(true);
   });
 
-  it("stops at the oldest line and says so", () => {
-    const placement = move(atNewest(), -1_000_000);
-
-    expect(placement.viewportY).toBe(0);
-    expect(placement.scrollTop).toBe(0);
-    expect(placement.atEdge).toBe(true);
+  it("always pans sideways, even in the history", () => {
+    const reading = { viewportY: 150, baseY: 200 };
+    expect(shouldScrollHistory({ ...reading, dx: -8, dy: 3, scrollTop: 0 })).toBe(false);
   });
 
-  it("stops at the newest output and says so", () => {
-    const placement = move(atNewest(), 50);
+  it("has nothing to take on the alternate screen", () => {
+    expect(shouldScrollHistory({ viewportY: 0, baseY: 0, dx: 0, dy: 6, scrollTop: 0 })).toBe(false);
+  });
+});
 
-    expect(placement.offsetPx).toBe(maxVerticalScrollOffset(atNewest()));
-    expect(placement.atEdge).toBe(true);
+describe("touch scrollback", () => {
+  it("carries the remainder so a slow drag still moves", () => {
+    // A finger produces many small deltas. Rounding each one on its own throws
+    // nearly all of them away, and the history never moves.
+    let carryLines = 0;
+    let scrolled = 0;
+    for (let move = 0; move < 15; move += 1) {
+      const step = consumeTouchScrollLines(carryLines, 5, 15);
+      carryLines = step.carryLines;
+      scrolled += step.lines;
+    }
+    // 15 moves of 5px over a 15px cell is five whole lines.
+    expect(scrolled).toBe(5);
   });
 
-  it("steps whole lines when the grid fits the screen", () => {
-    const fits = atNewest({ scrollTop: 0, maxScrollTop: 0 });
-    const placement = move(fits, -4);
-
-    expect(placement.viewportY).toBe(199);
-    expect(placement.scrollTop).toBe(0);
-    // The 4px asked for is kept as the target, so further small moves add up
-    // instead of each jumping another line.
-    expect(placement.offsetPx).toBe(200 * ROW - 4);
+  it("scrolls back through history when the finger travels down", () => {
+    expect(consumeTouchScrollLines(0, -30, 15).lines).toBe(-2);
   });
 
-  it("only pans on the alternate screen, which has no history", () => {
-    const alt = atNewest({ viewportY: 0, baseY: 0 });
-    const placement = move(alt, -12 * ROW);
-
-    expect(placement.viewportY).toBe(0);
-    expect(placement.scrollTop).toBe(0);
-    expect(placement.atEdge).toBe(true);
-  });
-
-  it("does nothing before the cells are measured", () => {
-    const unmeasured = atNewest({ rowHeightPx: 0 });
-    const placement = resolveVerticalScroll(unmeasured, 0);
-
-    expect(placement.viewportY).toBe(200);
-    expect(placement.scrollTop).toBe(10 * ROW);
+  it("ignores an unmeasured cell rather than scrolling wildly", () => {
+    expect(consumeTouchScrollLines(0.5, 40, 0)).toEqual({ lines: 0, carryLines: 0.5 });
   });
 });
 

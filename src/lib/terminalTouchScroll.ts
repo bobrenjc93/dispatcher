@@ -1,87 +1,72 @@
 /**
- * One vertical axis for a terminal on a phone.
+ * One finger for both panning a terminal and scrolling its history on a phone.
  *
- * Two things scroll vertically there. The grid is the desktop's, usually taller
- * than the screen, so the box around it scrolls to reach the rows below the
- * fold; and above the grid's first row sits xterm's scrollback, which moves
+ * Two things move under a finger there. The grid is the desktop's, usually
+ * wider and taller than the screen, so the box around it scrolls to reach the
+ * rest; and above the grid's first row sits xterm's scrollback, which moves
  * only through `scrollLines()`. They used to be separate gestures behind a
- * Pan / Scroll toggle, because a native swipe chains outward and could never
- * fall through from the box into the history inside it.
+ * Pan / Scroll toggle, because a native swipe chains outward and can never fall
+ * through from the box into the history inside it.
  *
- * Seen as one document they are a single column: the history lines, then the
- * grid. The line at the top of the screen is `viewportY + scrollTop / rowHeight`,
- * so a swipe only has to move that one number, and these functions decide how
- * to split it between the two scrollers.
+ * Panning stays native. iOS runs it on its own thread, in step with the finger
+ * whatever the page is doing, and nothing driven from script keeps up with
+ * that: touches reach the page late and a scroll offset set from script lands a
+ * frame after that. So script only takes the swipes the browser cannot do --
+ * the ones that go into the history -- and leaves every other one alone.
  */
-export interface VerticalScrollState {
-  /** Buffer line on the grid's top row: xterm's `viewportY`. */
+
+/**
+ * Whether a swipe is for the history rather than for panning the grid.
+ *
+ * Decided on the first move, because that is the only one the browser lets the
+ * page cancel: once it has started a native scroll, the rest of the gesture is
+ * its.
+ *
+ * `dy` is the finger's travel, positive downwards -- pulling content down,
+ * towards older output.
+ */
+export function shouldScrollHistory(args: {
+  dx: number;
+  dy: number;
+  /** xterm's `viewportY`: the buffer line on the grid's top row. */
   viewportY: number;
-  /** The newest `viewportY` can be: xterm's `baseY`. Zero on the alt screen. */
+  /** xterm's `baseY`: the newest `viewportY` can be. Zero on the alt screen. */
   baseY: number;
   /** The box around the grid. */
   scrollTop: number;
-  maxScrollTop: number;
-  rowHeightPx: number;
-}
-
-export interface VerticalScrollPlacement {
-  viewportY: number;
-  scrollTop: number;
-  /** Where the request landed once held inside the document. */
-  offsetPx: number;
-  /** The request ran past the oldest line or the newest one. */
-  atEdge: boolean;
-}
-
-/** How far down the whole column the top of the screen is, in pixels. */
-export function verticalScrollOffset(state: VerticalScrollState): number {
-  return state.viewportY * state.rowHeightPx + state.scrollTop;
-}
-
-/** The furthest down the column the top of the screen can be. */
-export function maxVerticalScrollOffset(state: VerticalScrollState): number {
-  return state.baseY * state.rowHeightPx + Math.max(0, state.maxScrollTop);
+}): boolean {
+  // Sideways is always a pan; nothing else wants that direction.
+  if (Math.abs(args.dy) <= Math.abs(args.dx)) {
+    return false;
+  }
+  // Already reading back: every vertical swipe stays in the history until it
+  // comes back to the newest line.
+  if (args.viewportY < args.baseY) {
+    return true;
+  }
+  // Pulling down from the top of the grid runs on into what came before it.
+  return args.dy > 0 && args.baseY > 0 && args.scrollTop <= 1;
 }
 
 /**
- * Split a position in the column between xterm and the box.
+ * Turn a finger's travel into whole lines of scrollback.
  *
- * The box moves first and xterm only when the box cannot get there. That is
- * the difference between smooth and stepped: the box scrolls by the pixel and
- * on the compositor, while `scrollLines()` moves whole rows and repaints the
- * grid. Crossing into the history, the box gives back a row's worth of travel
- * for each line xterm takes, so the swipe keeps moving by the pixel there too
- * whenever the grid overflows the screen by at least a row.
+ * The remainder is carried between moves: a finger produces many small deltas,
+ * and rounding each one on its own throws most of them away, so a slow drag
+ * would move nothing at all.
  */
-export function resolveVerticalScroll(
-  state: VerticalScrollState,
-  offsetPx: number
-): VerticalScrollPlacement {
-  const rowHeight = state.rowHeightPx;
-  const maxScrollTop = Math.max(0, state.maxScrollTop);
-  if (!(rowHeight > 0) || !Number.isFinite(offsetPx)) {
-    return {
-      viewportY: state.viewportY,
-      scrollTop: state.scrollTop,
-      offsetPx: verticalScrollOffset(state),
-      atEdge: false,
-    };
+export function consumeTouchScrollLines(
+  carryLines: number,
+  deltaPx: number,
+  cellHeightPx: number
+): { lines: number; carryLines: number } {
+  if (!Number.isFinite(deltaPx) || !(cellHeightPx > 0)) {
+    return { lines: 0, carryLines };
   }
 
-  const max = maxVerticalScrollOffset(state);
-  const offset = Math.min(max, Math.max(0, offsetPx));
-  const atEdge = offset !== offsetPx;
-
-  let viewportY = state.viewportY;
-  const wanted = offset - viewportY * rowHeight;
-  if (wanted < 0) {
-    viewportY = Math.max(0, viewportY - Math.ceil(-wanted / rowHeight));
-  } else if (wanted > maxScrollTop) {
-    viewportY = Math.min(state.baseY, viewportY + Math.ceil((wanted - maxScrollTop) / rowHeight));
-  }
-  const scrollTop = Math.min(maxScrollTop, Math.max(0, offset - viewportY * rowHeight));
-
-  return { viewportY, scrollTop, offsetPx: offset, atEdge };
+  const total = carryLines + deltaPx / cellHeightPx;
+  const lines = Math.trunc(total);
+  return { lines, carryLines: total - lines };
 }
 
 /** How far back a release looks to judge how fast the finger was going. */

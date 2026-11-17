@@ -34,10 +34,9 @@ import {
 } from "../lib/terminalTouchSelection";
 import { debugLog } from "../lib/debugLog";
 import {
-  resolveVerticalScroll,
+  consumeTouchScrollLines,
+  shouldScrollHistory,
   TouchVelocityTracker,
-  verticalScrollOffset,
-  type VerticalScrollState,
 } from "../lib/terminalTouchScroll";
 import { getScopedStorageKey } from "../lib/storageNamespace";
 import {
@@ -1737,6 +1736,10 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
  * at the prompt was left showing the top of the grid with the prompt below the
  * fold, and output stopped following because the box no longer counted as at
  * the bottom.
+ *
+ * Whether the box was at the bottom is judged against the size it had before
+ * the change, kept from the previous one. Not from a scroll listener: that
+ * would read layout on every frame of a native pan, while xterm is dirtying it.
  */
 function attachStickToBottom(terminalId: string, instance: TerminalInstance) {
   const screen = instance.element.querySelector<HTMLElement>(".xterm-screen");
@@ -1744,51 +1747,36 @@ function attachStickToBottom(terminalId: string, instance: TerminalInstance) {
     return;
   }
 
-  // Whether the box was at the bottom before the change. Read from the last
-  // scroll rather than at the change, by when the grid has already grown.
-  let atBottom = true;
   let box: HTMLElement | null = null;
-  const track = () => {
-    if (box) {
-      atBottom = isScrolledToBottom(box.scrollTop, box.scrollHeight, box.clientHeight);
-    }
-  };
+  // The box's furthest scroll before this change; null until first measured.
+  let previousMaxScrollTop: number | null = null;
 
   new ResizeObserver(() => {
     // The element moves between panes as tabs are shown and parked.
     const current = instance.element.parentElement;
     if (current !== box) {
-      box?.removeEventListener("scroll", track);
       box = current;
-      box?.addEventListener("scroll", track, { passive: true });
+      previousMaxScrollTop = null;
     }
-    if (!isCompactViewport()) {
+    if (!box || !isCompactViewport()) {
       return;
     }
+    const wasAtBottom = previousMaxScrollTop === null
+      || previousMaxScrollTop - box.scrollTop <= FOLLOW_BOTTOM_TOLERANCE_PX;
     const buffer = instance.xterm.buffer.active;
-    if (atBottom && buffer.viewportY >= buffer.baseY) {
+    if (wasAtBottom && buffer.viewportY >= buffer.baseY) {
       scrollTerminalToBottom(terminalId);
-    } else {
-      track();
     }
+    previousMaxScrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
   }).observe(screen);
 }
 
 /** Marks the scrolling box while a selection is being dragged. */
 const TOUCH_SELECTING_CLASS = "terminal-touch-selecting";
 
-/** Movement before a swipe is committed to an axis. */
-const TOUCH_AXIS_LOCK_SLOP_PX = 8;
-/**
- * How far one axis has to lead the other for a swipe to lock to it. A swipe
- * that is neither clearly across nor clearly down moves freely, the way a
- * native scroller lets you drift diagonally over a wide grid.
- */
-const TOUCH_AXIS_LOCK_RATIO = 1.8;
-
 /** Shortest the position indicator gets, however long the history. */
 const TOUCH_SCROLL_INDICATOR_MIN_PX = 28;
-/** How long the position indicator stays up once the content stops. */
+/** How long the position indicator stays up once the history stops. */
 const TOUCH_SCROLL_INDICATOR_LINGER_MS = 700;
 
 /** Nominal frame, so friction means the same thing whatever the refresh rate. */
@@ -1803,10 +1791,10 @@ const MOMENTUM_MIN_RELEASE_VELOCITY_PX_PER_MS = 0.15;
 /**
  * Carry a flick forward after the finger lifts.
  *
- * The browser does this itself for anything it scrolls, but the swipe here is
- * driven by hand — xterm's scrollback is buffer state moved by `scrollLines()`,
- * not something the browser scrolls — so the decay has to be modelled rather
- * than inherited.
+ * The browser does this itself for anything it scrolls, but xterm's scrollback
+ * is not something the browser scrolls — it is buffer state moved by
+ * `scrollLines()`. Driving that from touch deltas alone stops dead on release,
+ * so the decay has to be modelled rather than inherited.
  *
  * Framed as decay-per-frame but applied against real elapsed time, so a dropped
  * frame slows the flick by the same amount it would have if it had rendered.
@@ -1831,17 +1819,14 @@ export function isMomentumSpent(velocityPxPerMs: number): boolean {
 }
 
 /**
- * Pan and scroll a terminal with one finger on a phone.
+ * Scroll the history with the same finger that pans the grid.
  *
- * One gesture for everything: sideways moves along a line that runs off the
- * screen, and up and down moves through a single column made of the history
- * and then the grid (see `resolveVerticalScroll`). The browser is kept out of
- * it entirely — a native swipe chains outward, so it would always stop at the
- * edge of the box and never reach the history inside — and the gesture, the
- * flick and both scrollers are driven from here instead.
- *
- * Applied once a frame rather than per touchmove, which coalesces the several
- * moves a fast finger can produce in one frame into one `scrollLines()`.
+ * Each swipe is given to one owner on its first move (`shouldScrollHistory`).
+ * Panning is left to the browser, which runs it natively in step with the
+ * finger; only a swipe into the history is taken, and that moves xterm by
+ * `scrollLines()`, which is all the scrollback has. Taking the panning too, to
+ * make the two one continuous scroll, made every pan lag behind the finger on
+ * iOS.
  */
 function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
   if (!isTouchPointer()) {
@@ -1850,58 +1835,48 @@ function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
 
   const element = instance.element;
   const velocity = new TouchVelocityTracker();
-  let tracking = false;
+  let gesture: "idle" | "undecided" | "native" | "history" = "idle";
   let startX = 0;
   let startY = 0;
-  let lastX = 0;
   let lastY = 0;
-  let axis: "undecided" | "vertical" | "horizontal" | "free" = "undecided";
-  // Content travel waiting for the next frame. Positive moves towards the
-  // right-hand end of the lines and towards newer output.
-  let pendingX = 0;
-  let pendingY = 0;
-  let momentum: { x: number; y: number } | null = null;
-  let frame: number | null = null;
+  let carryLines = 0;
+  // Content speed for a flick, px/ms; positive walks towards newer output.
+  let momentum = 0;
+  let momentumFrame: number | null = null;
   let lastFrameAt = 0;
-  // Travel xterm could not take yet because it moves by whole rows. Kept
-  // rather than dropped, or a slow drag over a grid that fits the screen would
-  // never add up to a line.
-  let residualPx = 0;
-  // A box position that belongs to lines xterm has not drawn yet. Set straight
-  // away it would show the old rows a row out of place for a frame, which is a
-  // visible jolt each time the swipe crosses a line.
-  let scrollTopAwaitingRender: number | null = null;
 
   const scroller = () =>
     element.closest<HTMLElement>(".terminal-container") ?? element.parentElement;
 
-  // Where the screen is in the whole column, shown while it moves. Neither
-  // scroller can show this itself: the box's own bar knows nothing of the
-  // history above it, and a box scrolled by script gets no bar on iOS at all.
+  // Where the screen is in the history, while it moves. The box's own bar
+  // knows nothing of the history, and there is no element scrolling through
+  // it for the browser to give one to.
   const indicator = document.createElement("div");
   indicator.className = "terminal-scroll-indicator";
   let indicatorHideTimer: number | null = null;
-  const showIndicator = (box: HTMLElement, state: VerticalScrollState) => {
-    const host = box.parentElement;
-    if (!host) {
+  const showIndicator = () => {
+    const box = scroller();
+    const host = box?.parentElement;
+    if (!box || !host) {
       return;
     }
     // The element moves between panes as tabs are shown and parked.
     if (indicator.parentElement !== host) {
       host.appendChild(indicator);
     }
-    const column = state.baseY * state.rowHeightPx + box.scrollHeight;
+    const buffer = instance.xterm.buffer.active;
     const visible = box.clientHeight;
     if (indicatorHideTimer !== null) {
       window.clearTimeout(indicatorHideTimer);
       indicatorHideTimer = null;
     }
-    if (!(column > visible + 1) || visible <= 0) {
+    if (buffer.baseY <= 0 || visible <= 0) {
       indicator.classList.remove("is-visible");
       return;
     }
-    const thumb = Math.max(TOUCH_SCROLL_INDICATOR_MIN_PX, visible * (visible / column));
-    const progress = Math.min(1, Math.max(0, verticalScrollOffset(state) / (column - visible)));
+    const lines = buffer.baseY + instance.xterm.rows;
+    const thumb = Math.max(TOUCH_SCROLL_INDICATOR_MIN_PX, visible * (instance.xterm.rows / lines));
+    const progress = buffer.viewportY / buffer.baseY;
     indicator.style.height = `${thumb}px`;
     indicator.style.transform = `translateY(${box.offsetTop + (visible - thumb) * progress}px)`;
     indicator.classList.add("is-visible");
@@ -1911,141 +1886,67 @@ function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
     }, TOUCH_SCROLL_INDICATOR_LINGER_MS);
   };
 
-  const applyScrollTopAwaitingRender = () => {
-    if (scrollTopAwaitingRender === null) {
-      return;
-    }
-    const box = scroller();
-    if (box) {
-      box.scrollTop = scrollTopAwaitingRender;
-    }
-    scrollTopAwaitingRender = null;
-  };
-  instance.xterm.onRender(applyScrollTopAwaitingRender);
-
-  /** Move the content; returns which axes ran into an edge. */
-  const scrollBy = (dx: number, dy: number): { x: boolean; y: boolean } => {
-    const box = scroller();
-    if (!box) {
-      return { x: true, y: true };
-    }
-
-    let xBlocked = false;
-    if (dx !== 0) {
-      const maxLeft = Math.max(0, box.scrollWidth - box.clientWidth);
-      const wanted = box.scrollLeft + dx;
-      const next = Math.min(maxLeft, Math.max(0, wanted));
-      xBlocked = next !== wanted;
-      box.scrollLeft = next;
-    }
-
-    let yBlocked = false;
+  /** Move the history; false once it has run into the oldest or newest line. */
+  const scrollHistoryBy = (deltaPx: number): boolean => {
     const cell = getTerminalCellSize(terminalId);
-    if (dy !== 0 && cell) {
-      const buffer = instance.xterm.buffer.active;
-      const state = {
-        viewportY: buffer.viewportY,
-        baseY: buffer.baseY,
-        scrollTop: scrollTopAwaitingRender ?? box.scrollTop,
-        maxScrollTop: Math.max(0, box.scrollHeight - box.clientHeight),
-        rowHeightPx: cell.height,
-      };
-      const placement = resolveVerticalScroll(
-        state,
-        verticalScrollOffset(state) + residualPx + dy
-      );
-      yBlocked = placement.atEdge;
-      residualPx = placement.offsetPx
-        - (placement.viewportY * cell.height + placement.scrollTop);
-      if (placement.viewportY !== state.viewportY) {
-        instance.xterm.scrollLines(placement.viewportY - state.viewportY);
-        scrollTopAwaitingRender = placement.scrollTop;
-      } else {
-        scrollTopAwaitingRender = null;
-        box.scrollTop = placement.scrollTop;
-      }
-      showIndicator(box, { ...state, viewportY: placement.viewportY, scrollTop: placement.scrollTop });
+    if (!cell) {
+      return false;
     }
-    return { x: xBlocked, y: yBlocked };
+    const consumed = consumeTouchScrollLines(carryLines, deltaPx, cell.height);
+    carryLines = consumed.carryLines;
+    if (consumed.lines === 0) {
+      return true;
+    }
+    const before = instance.xterm.buffer.active.viewportY;
+    instance.xterm.scrollLines(consumed.lines);
+    showIndicator();
+    return instance.xterm.buffer.active.viewportY !== before;
   };
 
-  const stop = () => {
-    if (frame !== null) {
-      cancelAnimationFrame(frame);
-      frame = null;
+  const stopMomentum = () => {
+    if (momentumFrame !== null) {
+      cancelAnimationFrame(momentumFrame);
+      momentumFrame = null;
     }
-    momentum = null;
-    pendingX = 0;
-    pendingY = 0;
+    momentum = 0;
   };
 
-  const tick = (now: number) => {
-    frame = null;
-    // Still waiting a frame on. Whatever was holding xterm back, the box
-    // cannot be left behind for good.
-    applyScrollTopAwaitingRender();
-
-    if (tracking) {
-      const dx = pendingX;
-      const dy = pendingY;
-      pendingX = 0;
-      pendingY = 0;
-      scrollBy(dx, dy);
-      lastFrameAt = now;
-      return;
-    }
-
-    if (!momentum) {
-      return;
-    }
-    const elapsedMs = Math.min(64, Math.max(0, now - lastFrameAt));
+  const coast = (now: number) => {
+    momentumFrame = null;
+    const step = stepMomentum({
+      velocityPxPerMs: momentum,
+      elapsedMs: Math.min(64, Math.max(0, now - lastFrameAt)),
+    });
     lastFrameAt = now;
-    const stepX = stepMomentum({ velocityPxPerMs: momentum.x, elapsedMs });
-    const stepY = stepMomentum({ velocityPxPerMs: momentum.y, elapsedMs });
-    const blocked = scrollBy(stepX.distancePx, stepY.distancePx);
+    momentum = step.velocityPxPerMs;
     // Coasting against a hard edge just burns frames, and without a
     // rubber-band there is nothing to show for it.
-    momentum = {
-      x: blocked.x ? 0 : stepX.velocityPxPerMs,
-      y: blocked.y ? 0 : stepY.velocityPxPerMs,
-    };
-    if (isMomentumSpent(momentum.x) && isMomentumSpent(momentum.y)) {
-      momentum = null;
+    if (!scrollHistoryBy(step.distancePx) || isMomentumSpent(momentum)) {
+      momentum = 0;
       return;
     }
-    frame = requestAnimationFrame(tick);
-  };
-
-  const scheduleTick = () => {
-    if (frame === null) {
-      frame = requestAnimationFrame(tick);
-    }
+    momentumFrame = requestAnimationFrame(coast);
   };
 
   element.addEventListener("touchstart", (event) => {
     // A finger landing on a flick catches it, the way it does anywhere else.
-    stop();
-    tracking = event.touches.length === 1 && isCompactViewport();
-    if (!tracking) {
+    stopMomentum();
+    if (event.touches.length !== 1 || !isCompactViewport()) {
+      gesture = "idle";
       return;
     }
     const touch = event.touches[0];
-    startX = lastX = touch.clientX;
-    startY = lastY = touch.clientY;
-    axis = "undecided";
-    residualPx = 0;
+    startX = touch.clientX;
+    startY = touch.clientY;
+    lastY = touch.clientY;
+    carryLines = 0;
+    gesture = "undecided";
     velocity.reset(touch.clientX, touch.clientY, event.timeStamp);
   }, { passive: true });
 
   element.addEventListener("touchmove", (event) => {
-    if (!tracking || event.touches.length !== 1) {
+    if (gesture === "idle" || gesture === "native" || event.touches.length !== 1) {
       return;
-    }
-    // Every single-finger move is ours, including the first few before the
-    // swipe has an axis: once the browser starts a native scroll it stops
-    // letting the page cancel the moves that follow.
-    if (event.cancelable) {
-      event.preventDefault();
     }
     // A long press already claimed this drag to extend a selection.
     if (element.classList.contains(TOUCH_SELECTING_CLASS)) {
@@ -2053,64 +1954,57 @@ function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
     }
 
     const touch = event.touches[0];
-    velocity.add(touch.clientX, touch.clientY, event.timeStamp);
-    if (axis === "undecided") {
-      const dx = Math.abs(touch.clientX - startX);
-      const dy = Math.abs(touch.clientY - startY);
-      if (dx + dy < TOUCH_AXIS_LOCK_SLOP_PX) {
+    if (gesture === "undecided") {
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      if (dx === 0 && dy === 0) {
         return;
       }
-      axis = dy > dx * TOUCH_AXIS_LOCK_RATIO
-        ? "vertical"
-        : dx > dy * TOUCH_AXIS_LOCK_RATIO ? "horizontal" : "free";
-      // Start from where the finger first landed, so the slop is not lost.
-      lastX = startX;
-      lastY = startY;
+      const buffer = instance.xterm.buffer.active;
+      gesture = shouldScrollHistory({
+        dx,
+        dy,
+        viewportY: buffer.viewportY,
+        baseY: buffer.baseY,
+        scrollTop: scroller()?.scrollTop ?? 0,
+      })
+        ? "history"
+        : "native";
+      if (gesture === "native") {
+        return;
+      }
     }
 
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    velocity.add(touch.clientX, touch.clientY, event.timeStamp);
     // Content follows the finger: dragging up walks towards newer output.
-    if (axis !== "vertical") {
-      pendingX += lastX - touch.clientX;
-    }
-    if (axis !== "horizontal") {
-      pendingY += lastY - touch.clientY;
-    }
-    lastX = touch.clientX;
+    // Applied here rather than on the next frame, which would only add one.
+    scrollHistoryBy(lastY - touch.clientY);
     lastY = touch.clientY;
-    scheduleTick();
   }, { passive: false });
 
   element.addEventListener("touchend", (event) => {
-    if (!tracking) {
+    const wasHistory = gesture === "history";
+    gesture = "idle";
+    if (!wasHistory || element.classList.contains(TOUCH_SELECTING_CLASS)) {
       return;
     }
-    tracking = false;
-    if (axis === "undecided" || element.classList.contains(TOUCH_SELECTING_CLASS)) {
-      return;
-    }
-    // Anything still waiting goes out first, so the flick starts from where the
-    // finger left the content.
-    if (pendingX !== 0 || pendingY !== 0) {
-      scrollBy(pendingX, pendingY);
-      pendingX = 0;
-      pendingY = 0;
-    }
-    const release = velocity.velocity(event.timeStamp);
-    const x = axis === "vertical" ? 0 : -release.x;
-    const y = axis === "horizontal" ? 0 : -release.y;
     // A finger that had come to rest before lifting was placing the view
     // deliberately, so leave it exactly where it was put.
-    if (Math.hypot(x, y) < MOMENTUM_MIN_RELEASE_VELOCITY_PX_PER_MS) {
+    const release = -velocity.velocity(event.timeStamp).y;
+    if (Math.abs(release) < MOMENTUM_MIN_RELEASE_VELOCITY_PX_PER_MS) {
       return;
     }
-    momentum = { x, y };
+    momentum = release;
     lastFrameAt = performance.now();
-    scheduleTick();
+    momentumFrame = requestAnimationFrame(coast);
   }, { passive: true });
 
   element.addEventListener("touchcancel", () => {
-    tracking = false;
-    stop();
+    gesture = "idle";
+    stopMomentum();
   }, { passive: true });
 }
 

@@ -2264,25 +2264,21 @@ body.sidebar-resizing .terminal-pane {
 
   /* The grid is the desktop's, so it is usually wider and taller than the
      screen. The xterm element lives in .terminal-container, so that is the box
-     that scrolls to reach the rest of it -- but by script, not by the browser.
-     One finger pans the grid and runs on into the scrollback above it as a
-     single gesture (attachTouchScrollback); a native swipe would stop at this
-     box's edge and never reach the history inside it. Pinching is left alone. */
+     that scrolls to reach the rest of it -- natively, so a pan stays under the
+     finger. A swipe that goes on into the scrollback is taken over by script
+     instead (attachTouchScrollback); a native one would stop at this box's edge
+     and never reach the history inside it. */
   .app-compact .terminal-container {
     overflow: auto;
-    scrollbar-width: none;
-  }
-
-  .app-compact .terminal-container::-webkit-scrollbar {
-    display: none;
+    -webkit-overflow-scrolling: touch;
   }
 
   .app-compact .terminal-pane {
-    touch-action: pinch-zoom;
+    touch-action: pan-x pan-y pinch-zoom;
   }
 
-  /* Where the screen is in the history and the grid together, while a swipe
-     or a flick moves it. Placed by attachTouchScrollback. */
+  /* Where the screen is in the history while a swipe or a flick moves it.
+     Placed by attachTouchScrollback. */
   .terminal-scroll-indicator {
     position: absolute;
     top: 0;
