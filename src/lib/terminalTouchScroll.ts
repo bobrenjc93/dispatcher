@@ -110,3 +110,43 @@ export class TouchVelocityTracker {
     return { x: (last.x - first.x) / elapsed, y: (last.y - first.y) / elapsed };
   }
 }
+
+/** Furthest a finger can drift and still be tapping rather than swiping. */
+export const TAP_SLOP_PX = 10;
+/** Longer than this is a press, not a tap; the selection gesture starts at 450. */
+export const TAP_MAX_MS = 400;
+/**
+ * How long after the content last moved a touch still counts as stopping it.
+ * A finger put down on a coasting scroll is catching it, not asking to type.
+ */
+export const TAP_AFTER_SCROLL_MS = 300;
+
+/**
+ * Whether a touch on a terminal was meant as a tap -- the gesture that
+ * focuses it and raises the keyboard.
+ *
+ * The browser decides a touch was a tap on movement alone, and generously:
+ * catching a flick, a short swipe that never got far enough to scroll, or a
+ * thumb resting while the other hand types all came out as taps, and each one
+ * threw the keyboard up over the output being read.
+ */
+export function isDeliberateTap(args: {
+  /** Furthest the finger got from where it landed. */
+  movedPx: number;
+  durationMs: number;
+  /** From the content last moving to the finger landing; Infinity if never. */
+  sinceScrollMs: number;
+  /** The content moved while the finger was down. */
+  scrolledDuringTouch: boolean;
+  /** Most fingers down at once during the touch. */
+  maxTouches: number;
+  /** A selection was up when the finger landed, so the tap was to dismiss it. */
+  dismissedSelection: boolean;
+}): boolean {
+  return args.maxTouches === 1
+    && !args.dismissedSelection
+    && !args.scrolledDuringTouch
+    && args.movedPx <= TAP_SLOP_PX
+    && args.durationMs <= TAP_MAX_MS
+    && args.sinceScrollMs >= TAP_AFTER_SCROLL_MS;
+}

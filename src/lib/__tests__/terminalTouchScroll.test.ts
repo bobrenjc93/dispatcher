@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   consumeTouchScrollLines,
+  isDeliberateTap,
   shouldScrollHistory,
   TouchVelocityTracker,
 } from "../terminalTouchScroll";
@@ -94,5 +95,45 @@ describe("release velocity", () => {
     }
 
     expect(tracker.velocity(300).y).toBeCloseTo(0.1, 5);
+  });
+});
+
+describe("telling a tap from a slip", () => {
+  const tap = {
+    movedPx: 2,
+    durationMs: 120,
+    sinceScrollMs: Infinity,
+    scrolledDuringTouch: false,
+    maxTouches: 1,
+    dismissedSelection: false,
+  };
+
+  it("takes a short, still, single-finger touch as a tap", () => {
+    expect(isDeliberateTap(tap)).toBe(true);
+  });
+
+  it("does not take catching a coasting scroll as a tap", () => {
+    expect(isDeliberateTap({ ...tap, sinceScrollMs: 80 })).toBe(false);
+    expect(isDeliberateTap({ ...tap, sinceScrollMs: 600 })).toBe(true);
+  });
+
+  it("does not take a swipe too short to scroll as a tap", () => {
+    expect(isDeliberateTap({ ...tap, movedPx: 18 })).toBe(false);
+  });
+
+  it("does not take a touch that moved the content as a tap", () => {
+    expect(isDeliberateTap({ ...tap, scrolledDuringTouch: true })).toBe(false);
+  });
+
+  it("does not take a resting thumb as a tap", () => {
+    expect(isDeliberateTap({ ...tap, durationMs: 900 })).toBe(false);
+  });
+
+  it("does not take the end of a pinch as a tap", () => {
+    expect(isDeliberateTap({ ...tap, maxTouches: 2 })).toBe(false);
+  });
+
+  it("does not take the tap that dismissed a selection as a request to type", () => {
+    expect(isDeliberateTap({ ...tap, dismissedSelection: true })).toBe(false);
   });
 });

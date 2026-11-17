@@ -35,6 +35,7 @@ import {
 import { debugLog } from "../lib/debugLog";
 import {
   consumeTouchScrollLines,
+  isDeliberateTap,
   shouldScrollHistory,
   TouchVelocityTracker,
 } from "../lib/terminalTouchScroll";
@@ -1726,6 +1727,9 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
     return true;
   });
 
+  // Ahead of the selection gesture: it needs to see a selection that the
+  // selection gesture's own touchstart is about to clear.
+  attachTapGuard(terminalId, instance);
   attachTouchSelection(terminalId, instance);
   attachTouchScrollback(terminalId, instance);
   attachTouchPinch(instance);
@@ -1914,6 +1918,7 @@ function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
     }
     const before = instance.xterm.buffer.active.viewportY;
     instance.xterm.scrollLines(consumed.lines);
+    noteTouchScroll(terminalId);
     showIndicator();
     return instance.xterm.buffer.active.viewportY !== before;
   };
@@ -2157,6 +2162,138 @@ function attachTouchPinch(instance: TerminalInstance) {
     }
   }, { passive: true });
   element.addEventListener("touchcancel", finish, { passive: true });
+}
+
+/** When each terminal's content last moved under a finger, by any means. */
+const lastTouchScrollAt = new Map<string, number>();
+
+function noteTouchScroll(terminalId: string) {
+  lastTouchScrollAt.set(terminalId, performance.now());
+}
+
+// Native panning and its coasting, for every terminal at once. Only a
+// timestamp, so nothing here reads layout on the frames of a pan.
+if (typeof document !== "undefined") {
+  document.addEventListener("scroll", (event) => {
+    const box = event.target;
+    if (!(box instanceof HTMLElement) || !box.classList.contains("terminal-container")) {
+      return;
+    }
+    for (const [terminalId, instance] of instances) {
+      if (instance.element.parentElement === box) {
+        noteTouchScroll(terminalId);
+        return;
+      }
+    }
+  }, { capture: true, passive: true });
+}
+
+/**
+ * Keep touches that were not meant as taps from raising the keyboard.
+ *
+ * xterm focuses its input on every mousedown, and a phone makes one up after
+ * any touch it judges a tap. That judgement is movement alone, so catching a
+ * flick or a swipe too short to scroll focused the terminal too, and the
+ * keyboard came up over the output being read. Each touch is judged here
+ * instead (`isDeliberateTap`), and the made-up mouse events of one that fails
+ * are cancelled before xterm sees them.
+ */
+function attachTapGuard(terminalId: string, instance: TerminalInstance) {
+  if (!isTouchPointer()) {
+    return;
+  }
+
+  const element = instance.element;
+  let startAt = 0;
+  let startX = 0;
+  let startY = 0;
+  let movedPx = 0;
+  let maxTouches = 0;
+  let sinceScrollMs = Infinity;
+  let dismissedSelection = false;
+  // Mouse events from the touch just judged a slip, until the next touch.
+  let swallowMouse = false;
+
+  element.addEventListener("touchstart", (event) => {
+    maxTouches = Math.max(maxTouches, event.touches.length);
+    if (event.touches.length !== 1) {
+      return;
+    }
+    const touch = event.touches[0];
+    const now = performance.now();
+    startAt = now;
+    startX = touch.clientX;
+    startY = touch.clientY;
+    movedPx = 0;
+    maxTouches = 1;
+    swallowMouse = false;
+    sinceScrollMs = now - (lastTouchScrollAt.get(terminalId) ?? -Infinity);
+    // Registered ahead of the selection gesture, which clears the selection on
+    // this same touch.
+    dismissedSelection = instance.xterm.hasSelection();
+  }, { passive: true });
+
+  element.addEventListener("touchmove", (event) => {
+    maxTouches = Math.max(maxTouches, event.touches.length);
+    const touch = event.touches[0];
+    if (touch) {
+      movedPx = Math.max(movedPx, Math.hypot(touch.clientX - startX, touch.clientY - startY));
+    }
+  }, { passive: true });
+
+  element.addEventListener("touchend", (event) => {
+    if (event.touches.length > 0) {
+      return;
+    }
+    // Where it lifted counts too. A browser can hold back the moves inside its
+    // own slop -- Chrome does, up to about 15px -- so a short slip may never
+    // have reported a move at all.
+    const lifted = event.changedTouches[0];
+    if (lifted) {
+      movedPx = Math.max(movedPx, Math.hypot(lifted.clientX - startX, lifted.clientY - startY));
+    }
+    // Timestamps rather than comparing positions: xterm follows new output by
+    // moving its viewport, which would make every tap during a busy stream
+    // look like a scroll.
+    const deliberate = isDeliberateTap({
+      movedPx,
+      durationMs: performance.now() - startAt,
+      sinceScrollMs,
+      scrolledDuringTouch: (lastTouchScrollAt.get(terminalId) ?? -Infinity) > startAt,
+      maxTouches,
+      dismissedSelection,
+    });
+    maxTouches = 0;
+    if (deliberate) {
+      return;
+    }
+    swallowMouse = true;
+    // Cancelling the touch's end is what stops the browser making up the
+    // mousedown and click; the capture listener below covers a browser that
+    // sends them anyway.
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    debugLog("terminal.touch", "ignored a touch that was not a tap", {
+      terminalId,
+      movedPx: Math.round(movedPx),
+      sinceScrollMs: Number.isFinite(sinceScrollMs) ? Math.round(sinceScrollMs) : null,
+      dismissedSelection,
+    });
+  }, { passive: false });
+
+  element.addEventListener("touchcancel", () => {
+    maxTouches = 0;
+  }, { passive: true });
+
+  for (const type of ["mousedown", "mouseup", "click"] as const) {
+    element.addEventListener(type, (event) => {
+      if (swallowMouse) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    }, { capture: true });
+  }
 }
 
 /**
