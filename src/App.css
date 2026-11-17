@@ -2273,8 +2273,12 @@ body.sidebar-resizing .terminal-pane {
     -webkit-overflow-scrolling: touch;
   }
 
+  /* No page zoom anywhere in the app: pinching scaled the top bar and the key
+     bar along with everything else, and double-tapping did the same. A pinch
+     on the terminal sizes its text instead (attachTouchPinch). */
+  .app-compact,
   .app-compact .terminal-pane {
-    touch-action: pan-x pan-y pinch-zoom;
+    touch-action: pan-x pan-y;
   }
 
   /* Where the screen is in the history while a swipe or a flick moves it.

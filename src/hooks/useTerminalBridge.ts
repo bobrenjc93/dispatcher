@@ -1358,12 +1358,23 @@ export function refitAllTerminalsToViewport() {
 // A narrow-screen fit depends on the chosen policy and the viewport, neither of
 // which the per-terminal effects watch.
 useUiStore.subscribe((state, previous) => {
-  if (state.compactTerminalFit !== previous.compactTerminalFit) {
+  if (
+    state.compactTerminalFit !== previous.compactTerminalFit
+    || state.compactTerminalZoom !== previous.compactTerminalZoom
+  ) {
     refitAllTerminalsToViewport();
   }
 });
 
 if (typeof window !== "undefined") {
+  // iOS has not always honoured touch-action for a pinch; cancelling its own
+  // gesture events stops the page zooming either way. On a phone a pinch over the terminal sizes
+  // its text instead (attachTouchPinch), and nowhere else should zoom at all.
+  document.addEventListener("gesturestart", (event) => {
+    if (isCompactViewport()) {
+      event.preventDefault();
+    }
+  }, { passive: false });
   window.addEventListener("resize", () => refitAllTerminalsToViewport());
   window.addEventListener("orientationchange", () => refitAllTerminalsToViewport());
 }
@@ -1717,6 +1728,7 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
 
   attachTouchSelection(terminalId, instance);
   attachTouchScrollback(terminalId, instance);
+  attachTouchPinch(instance);
   attachStickToBottom(terminalId, instance);
   instances.set(terminalId, instance);
   // Output that arrived before the frontend existed is still buffered;
@@ -1761,8 +1773,11 @@ function attachStickToBottom(terminalId: string, instance: TerminalInstance) {
     if (!box || !isCompactViewport()) {
       return;
     }
+    // Both ways: an offset past the old bottom was put there on purpose after
+    // the change -- a pinch keeping its point under the fingers -- not left
+    // behind by it.
     const wasAtBottom = previousMaxScrollTop === null
-      || previousMaxScrollTop - box.scrollTop <= FOLLOW_BOTTOM_TOLERANCE_PX;
+      || Math.abs(previousMaxScrollTop - box.scrollTop) <= FOLLOW_BOTTOM_TOLERANCE_PX;
     const buffer = instance.xterm.buffer.active;
     if (wasAtBottom && buffer.viewportY >= buffer.baseY) {
       scrollTerminalToBottom(terminalId);
@@ -2006,6 +2021,142 @@ function attachTouchScrollback(terminalId: string, instance: TerminalInstance) {
     gesture = "idle";
     stopMomentum();
   }, { passive: true });
+}
+
+/** How far a pinch can go from the fit, either way. */
+const MIN_COMPACT_TERMINAL_ZOOM = 0.4;
+const MAX_COMPACT_TERMINAL_ZOOM = 3.5;
+
+/**
+ * Pinch to make a terminal's text bigger or smaller on a phone.
+ *
+ * Left to the browser, a pinch zooms the whole page — the top bar and the key
+ * bar with it — and leaves the grid exactly as hard to read. This zooms the
+ * terminal alone, by its font size, so the cells stay real cells and a tap
+ * still lands on the one under the finger.
+ *
+ * While the fingers move the grid is only scaled, which the compositor does
+ * for free; the font size changes once, on release, since every size is a
+ * fresh measure and redraw for xterm. The point between the fingers is kept
+ * where it was.
+ */
+function attachTouchPinch(instance: TerminalInstance) {
+  if (!isTouchPointer()) {
+    return;
+  }
+
+  const element = instance.element;
+  let pinch: {
+    startDistance: number;
+    startZoom: number;
+    scale: number;
+    // The pinch centre, against the box and against the grid.
+    viewX: number;
+    viewY: number;
+    gridX: number;
+    gridY: number;
+    // Where the grid starts inside the box's scrolled content: its padding.
+    insetX: number;
+    insetY: number;
+  } | null = null;
+  let frame: number | null = null;
+
+  const scroller = () =>
+    element.closest<HTMLElement>(".terminal-container") ?? element.parentElement;
+
+  const distance = (touches: TouchList) =>
+    Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
+
+  const clampScale = (startZoom: number, scale: number) =>
+    Math.min(MAX_COMPACT_TERMINAL_ZOOM, Math.max(MIN_COMPACT_TERMINAL_ZOOM, startZoom * scale))
+      / startZoom;
+
+  const paint = () => {
+    frame = null;
+    if (!pinch) {
+      return;
+    }
+    element.style.transformOrigin = `${pinch.gridX}px ${pinch.gridY}px`;
+    element.style.transform = `scale(${pinch.scale})`;
+  };
+
+  const finish = () => {
+    if (frame !== null) {
+      cancelAnimationFrame(frame);
+      frame = null;
+    }
+    const ended = pinch;
+    pinch = null;
+    element.style.transform = "";
+    element.style.transformOrigin = "";
+    if (!ended || Math.abs(ended.scale - 1) < 0.02) {
+      return;
+    }
+
+    const box = scroller();
+    const fontBefore = instance.xterm.options.fontSize ?? 0;
+    useUiStore.getState().setCompactTerminalZoom(ended.startZoom * ended.scale);
+    const fontAfter = instance.xterm.options.fontSize ?? 0;
+    if (!box || !(fontBefore > 0) || !(fontAfter > 0)) {
+      return;
+    }
+    // Put the grid point that was between the fingers back under them. The
+    // grid scaled by however far the font actually moved, which the clamps and
+    // the rounding to half points can make a little different from the pinch.
+    const ratio = fontAfter / fontBefore;
+    const place = () => {
+      box.scrollLeft = ended.insetX + ended.gridX * ratio - ended.viewX;
+      box.scrollTop = ended.insetY + ended.gridY * ratio - ended.viewY;
+    };
+    place();
+    // Again once xterm has redrawn at the new size and the box has grown.
+    requestAnimationFrame(place);
+  };
+
+  element.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 2 || !isCompactViewport()) {
+      return;
+    }
+    const box = scroller();
+    if (!box) {
+      return;
+    }
+    const boxRect = box.getBoundingClientRect();
+    const gridRect = element.getBoundingClientRect();
+    const centreX = (event.touches[0].clientX + event.touches[1].clientX) / 2;
+    const centreY = (event.touches[0].clientY + event.touches[1].clientY) / 2;
+    pinch = {
+      startDistance: distance(event.touches),
+      startZoom: useUiStore.getState().compactTerminalZoom,
+      scale: 1,
+      viewX: centreX - boxRect.left,
+      viewY: centreY - boxRect.top,
+      gridX: centreX - gridRect.left,
+      gridY: centreY - gridRect.top,
+      insetX: gridRect.left - boxRect.left + box.scrollLeft,
+      insetY: gridRect.top - boxRect.top + box.scrollTop,
+    };
+  }, { passive: true });
+
+  element.addEventListener("touchmove", (event) => {
+    if (!pinch || event.touches.length !== 2) {
+      return;
+    }
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    pinch.scale = clampScale(pinch.startZoom, distance(event.touches) / pinch.startDistance);
+    if (frame === null) {
+      frame = requestAnimationFrame(paint);
+    }
+  }, { passive: false });
+
+  element.addEventListener("touchend", (event) => {
+    if (pinch && event.touches.length < 2) {
+      finish();
+    }
+  }, { passive: true });
+  element.addEventListener("touchcancel", finish, { passive: true });
 }
 
 /**
@@ -2978,6 +3129,24 @@ export function syncTerminalFrontendSize(terminalId: string, cols: number, rows:
   instance.xterm.resize(nextCols, nextRows);
 }
 
+/** Smallest and largest a pinch can take the terminal's text on a phone. */
+const MIN_PINCHED_FONT_SIZE = 5;
+const MAX_PINCHED_FONT_SIZE = 40;
+
+/**
+ * Scale a fitted font size by how far the terminal has been pinched.
+ *
+ * Kept to half points: xterm re-measures and redraws its glyphs for every size,
+ * and finer steps than that are not visible on the screen anyway.
+ */
+export function applyCompactTerminalZoom(fittedSize: number, zoom: number): number {
+  if (!Number.isFinite(zoom) || zoom <= 0 || zoom === 1) {
+    return fittedSize;
+  }
+  const zoomed = Math.round(fittedSize * zoom * 2) / 2;
+  return Math.min(MAX_PINCHED_FONT_SIZE, Math.max(MIN_PINCHED_FONT_SIZE, zoomed));
+}
+
 /** Text smaller than this is not worth rendering on a phone. */
 const MIN_READABLE_FONT_SIZE = 11;
 /** How much of the font size a row occupies, including line height. */
@@ -3043,16 +3212,19 @@ export function fitTerminalFontToViewport(terminalId: string) {
     nextSize = Math.max(MIN_READABLE_FONT_SIZE, Math.min(preferredSize, heightFitted));
   }
 
+  // Pinched in or out on top of whichever fit was chosen.
+  nextSize = applyCompactTerminalZoom(nextSize, useUiStore.getState().compactTerminalZoom);
+
   if (nextSize !== currentSize) {
     instance.xterm.options.fontSize = nextSize;
   }
 
-  // xterm clips to its element, so in readable mode the columns that do not fit
-  // would simply be unreachable. Widen the element to the whole grid and let
-  // the pane scroll it instead.
+  // xterm clips to its element, so columns that do not fit would simply be
+  // unreachable. Widen the element to the whole grid and let the pane scroll
+  // it instead -- in readable mode, or in either once pinched past the width.
   const widthPerFontUnit = cell.width / currentSize;
   const gridWidth = Math.ceil(cols * widthPerFontUnit * nextSize);
-  const shouldOverflow = fit === "readable" && gridWidth > mount.clientWidth;
+  const shouldOverflow = gridWidth > mount.clientWidth;
   instance.element.style.width = shouldOverflow ? `${gridWidth}px` : "";
   instance.element.style.flexShrink = shouldOverflow ? "0" : "";
 }

@@ -13,8 +13,15 @@ interface UiStore {
   isTerminalNotesOpen: boolean;
   isDetailPanelCollapsed: boolean;
   compactTerminalFit: CompactTerminalFit;
+  /**
+   * How far the terminal has been pinched on a narrow screen, on top of the
+   * fit. 1 is the fit as chosen. Picking a fit starts it over, since the
+   * point of picking one is to see the grid that way.
+   */
+  compactTerminalZoom: number;
   /** On-screen Ctrl is armed; the next character becomes a control code. */
   setCompactTerminalFit: (fit: CompactTerminalFit) => void;
+  setCompactTerminalZoom: (zoom: number) => void;
   setTerminalNotesOpen: (isOpen: boolean) => void;
   setDetailPanelCollapsed: (isCollapsed: boolean) => void;
   toggleTerminalNotesOpen: () => void;
@@ -27,7 +34,9 @@ export const useUiStore = create<UiStore>()(
       isTerminalNotesOpen: false,
       isDetailPanelCollapsed: false,
       compactTerminalFit: "readable",
-      setCompactTerminalFit: (fit) => set({ compactTerminalFit: fit }),
+      compactTerminalZoom: 1,
+      setCompactTerminalFit: (fit) => set({ compactTerminalFit: fit, compactTerminalZoom: 1 }),
+      setCompactTerminalZoom: (zoom) => set({ compactTerminalZoom: zoom }),
       // Deliberately left out of partialize: a modifier armed yesterday should
       // not still be armed today.
       setTerminalNotesOpen: (isOpen) => set({ isTerminalNotesOpen: isOpen }),
@@ -43,6 +52,7 @@ export const useUiStore = create<UiStore>()(
         isTerminalNotesOpen: state.isTerminalNotesOpen,
         isDetailPanelCollapsed: state.isDetailPanelCollapsed,
         compactTerminalFit: state.compactTerminalFit,
+        compactTerminalZoom: state.compactTerminalZoom,
       }),
     }
   )
