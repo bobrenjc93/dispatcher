@@ -616,6 +616,23 @@ export function resolveBackgroundRefreshDelayMs(args: {
   return Math.max(0, Math.min(args.requestedDelayMs, remaining));
 }
 const TMUX_BACKGROUND_VIEWPORT_REFRESH_RETRY_MS = 1_000;
+/**
+ * How long a hidden pane's sample waits after the user types into the same
+ * connection.
+ *
+ * Keystrokes and samples share one control connection, answered strictly in
+ * order, so every sample sent while someone is typing is a reply each
+ * keystroke waits behind -- a capture and a cursor query apiece. Three busy
+ * hidden tabs sampling every few seconds put a median of six commands ahead of
+ * each keystroke, and typing echoed most of a second late.
+ */
+const TMUX_BACKGROUND_REFRESH_TYPING_HOLD_MS = 1_500;
+/** How soon a sample held back for another one in flight looks again. */
+const TMUX_BACKGROUND_REFRESH_YIELD_RETRY_MS = 250;
+/** When each connection was last typed or pasted into. */
+const lastSessionInputAt = new WeakMap<TmuxControlSession, number>();
+/** Hidden-pane samples out on each connection right now. */
+const backgroundRefreshesInFlight = new WeakMap<TmuxControlSession, number>();
 const TMUX_LAYOUT_REDRAW_BARRIER_MS = 1_500;
 const TMUX_LAYOUT_REDRAW_SUPPRESSION_SUMMARY_INTERVAL_MS = 1_000;
 const TMUX_PASTE_BUFFER_CHUNK_SIZE = 8_000;
@@ -3359,6 +3376,29 @@ function scheduleBackgroundPaneViewportRefresh(
       return;
     }
 
+    // Typing first. A sample is a background courtesy; a keystroke stuck
+    // behind one is the thing the user feels. One sample at a time, too, so a
+    // keystroke never queues behind more than one.
+    const sinceInputMs = Date.now() - (lastSessionInputAt.get(session) ?? -Infinity);
+    if (sinceInputMs < TMUX_BACKGROUND_REFRESH_TYPING_HOLD_MS) {
+      scheduleBackgroundPaneViewportRefresh(
+        session,
+        currentPane,
+        reason,
+        TMUX_BACKGROUND_REFRESH_TYPING_HOLD_MS - sinceInputMs
+      );
+      return;
+    }
+    if ((backgroundRefreshesInFlight.get(session) ?? 0) > 0) {
+      scheduleBackgroundPaneViewportRefresh(
+        session,
+        currentPane,
+        reason,
+        TMUX_BACKGROUND_REFRESH_YIELD_RETRY_MS
+      );
+      return;
+    }
+
     debugLog("tmux.capture", "background pane viewport refresh", {
       sessionId: session.id,
       paneId,
@@ -3368,10 +3408,15 @@ function scheduleBackgroundPaneViewportRefresh(
       alternateOn: currentPane.alternateOn,
     });
     currentPane.backgroundViewportRefreshInFlight = true;
+    backgroundRefreshesInFlight.set(session, (backgroundRefreshesInFlight.get(session) ?? 0) + 1);
     void redrawVisiblePaneContent(session, currentPane, reason, {
       allowParkedWrite: true,
       backgroundRefresh: true,
     }).finally(() => {
+      backgroundRefreshesInFlight.set(
+        session,
+        Math.max(0, (backgroundRefreshesInFlight.get(session) ?? 0) - 1)
+      );
       const latestPane = session.panes.get(paneId);
       if (latestPane?.terminalId === terminalId) {
         latestPane.backgroundViewportRefreshInFlight = false;
@@ -6494,6 +6539,7 @@ async function performTmuxPaste(
     return false;
   }
   markPaneUserInput(pane, "paste");
+  lastSessionInputAt.set(session, Date.now());
 
   const bufferName = `dispatcher-paste-${Date.now().toString(36)}-${tmuxPasteBufferSequence++}`;
   const chunks = chunkTmuxPasteBufferText(normalized);
@@ -6634,6 +6680,7 @@ export async function sendInputToTmuxTerminal(terminalId: string, data: string):
   }
 
   markPaneUserInput(pane, "send-keys");
+  lastSessionInputAt.set(session, Date.now());
   debugLog("tmux.input", "send", {
     terminalId,
     sessionId: session.id,

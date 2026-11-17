@@ -2026,6 +2026,41 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("holds a hidden pane's sample while its connection is being typed into", async () => {
+    // Keystrokes and samples share one connection, answered in order. Samples
+    // sent while typing put a median of six commands ahead of each keystroke,
+    // and typing echoed most of a second late.
+    const transportTerminalId = "transport-hidden-output-typing";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+    writeTerminalMock.mockClear();
+
+    void sendInputToTmuxTerminal(paneTerminalId, "x");
+    await flushMicrotasks();
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 hidden output\n");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(writeTerminalMock).not.toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+
+    await vi.advanceTimersByTimeAsync(600);
+    expect(writeTerminalMock).toHaveBeenCalledWith(
+      transportTerminalId,
+      "capture-pane -p -e -C -t %1\n"
+    );
+  });
+
   it("puts a tab back when a hidden pane's output changed nothing on screen", async () => {
     // A TUI repainting its frame on an internal timer sends thousands of bytes
     // and leaves the screen exactly as it was. With nothing rendering a hidden
