@@ -35,6 +35,8 @@ function mockRect(element: HTMLElement, top: number, height: number) {
 describe("dragState", () => {
   afterEach(() => {
     finishPointerDrag();
+    // Drain the click a finished drag swallows, so it cannot eat the next test's.
+    document.dispatchEvent(pointerEvent("click", 0, 0));
     registerDragCallbacks({
       onMoveTerminal: () => {},
       onReorderChild: () => {},
@@ -122,6 +124,72 @@ describe("dragState", () => {
     document.dispatchEvent(pointerEvent("pointerup", 0, 120));
 
     expect(onReorderChild).toHaveBeenCalledWith("root", "dragged-node", "target-node", "after");
+  });
+
+  it("lets the click through when a mouse drag drops nowhere", () => {
+    const row = document.createElement("div");
+    row.dataset.nodeId = "row";
+    row.dataset.projectId = "project";
+    row.dataset.parentNodeId = "root";
+    document.body.append(row);
+    const onReorderChild = vi.fn();
+    registerDragCallbacks({ onMoveTerminal: vi.fn(), onReorderChild, onReorderProject: vi.fn() });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => row),
+    });
+    const onDragStart = vi.fn();
+
+    startDrag(
+      { type: "terminal", terminalId: "terminal", projectId: "project", nodeId: "row" },
+      0,
+      0,
+      row,
+      "mouse",
+      { onDragStart }
+    );
+    document.dispatchEvent(pointerEvent("pointermove", 4, 4));
+    document.dispatchEvent(pointerEvent("pointerup", 4, 4));
+
+    expect(onDragStart).toHaveBeenCalledTimes(1);
+    expect(onReorderChild).not.toHaveBeenCalled();
+    const click = vi.fn();
+    row.addEventListener("click", click);
+    row.dispatchEvent(pointerEvent("click", 4, 4));
+    expect(click).toHaveBeenCalledTimes(1);
+  });
+
+  it("swallows the click after a mouse drag that reorders", () => {
+    const dragged = document.createElement("div");
+    dragged.dataset.nodeId = "dragged-node";
+    dragged.dataset.projectId = "project";
+    dragged.dataset.parentNodeId = "root";
+    const target = document.createElement("div");
+    target.dataset.nodeId = "target-node";
+    target.dataset.projectId = "project";
+    target.dataset.parentNodeId = "root";
+    document.body.append(dragged, target);
+    mockRect(target, 100, 20);
+    registerDragCallbacks({ onMoveTerminal: vi.fn(), onReorderChild: vi.fn(), onReorderProject: vi.fn() });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => target),
+    });
+
+    startDrag(
+      { type: "terminal", terminalId: "terminal", projectId: "project", nodeId: "dragged-node" },
+      0,
+      0,
+      dragged,
+      "mouse"
+    );
+    document.dispatchEvent(pointerEvent("pointermove", 0, 120));
+    document.dispatchEvent(pointerEvent("pointerup", 0, 120));
+
+    const click = vi.fn();
+    target.addEventListener("click", click);
+    target.dispatchEvent(pointerEvent("click", 0, 120));
+    expect(click).not.toHaveBeenCalled();
   });
 
   it("reorders terminals from a touch long press", () => {

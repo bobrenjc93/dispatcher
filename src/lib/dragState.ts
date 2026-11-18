@@ -70,6 +70,10 @@ let maxTravel = 0;
  * press does everywhere else on a phone.
  */
 let pressWithoutMove: ((x: number, y: number) => void) | null = null;
+/** Called the moment a press turns into a drag. */
+let dragStarted: (() => void) | null = null;
+/** The drag landed somewhere and moved something. */
+let dropped = false;
 
 let lastIndicatorEl: HTMLElement | null = null;
 let lastDragOverEl: HTMLElement | null = null;
@@ -250,6 +254,7 @@ function activateDrag() {
   }
   setTextSelectionSuppressed();
   clearDocumentSelection();
+  dragStarted?.();
 }
 
 function handleDragMove(e: PointerEvent | MouseEvent) {
@@ -359,6 +364,7 @@ function handleDragEnd(e: PointerEvent | MouseEvent) {
       const projectNode = closestProjectNode(el);
       if (projectNode && projectNode.dataset.projectId !== info.projectId) {
         const position = e.clientY < getMidY(projectNode) ? "before" : "after";
+        dropped = true;
         callbacks.onReorderProject(info.projectId, projectNode.dataset.projectId!, position);
       }
     } else if (info.type === "terminal") {
@@ -377,11 +383,13 @@ function handleDragEnd(e: PointerEvent | MouseEvent) {
           );
           for (const step of steps) {
             if (targetProjectId === info.projectId) {
+              dropped = true;
               callbacks.onReorderChild(parentNodeId, step.nodeId, step.targetNodeId, step.position);
               continue;
             }
             const carriedNode = carriedNodes.find((node) => node.nodeId === step.nodeId);
             if (carriedNode) {
+              dropped = true;
               callbacks.onMoveTerminal(
                 carriedNode.terminalId,
                 info.projectId,
@@ -396,6 +404,7 @@ function handleDragEnd(e: PointerEvent | MouseEvent) {
       } else if (!terminalNode) {
         const childContainer = el.closest<HTMLElement>("[data-terminal-list-parent-node-id]");
         if (childContainer && childContainer.dataset.projectId !== info.projectId) {
+          dropped = true;
           callbacks.onMoveTerminal(
             info.terminalId,
             info.projectId,
@@ -405,6 +414,7 @@ function handleDragEnd(e: PointerEvent | MouseEvent) {
         } else {
           const projectNode = el.closest<HTMLElement>("[data-project-id]");
           if (projectNode && projectNode.dataset.projectId !== info.projectId) {
+            dropped = true;
             callbacks.onMoveTerminal(info.terminalId, info.projectId, projectNode.dataset.projectId!);
           }
         }
@@ -466,8 +476,13 @@ function end() {
     for (const el of carriedElements()) {
       el.classList.remove("is-dragging");
     }
-    // Prevent the click event that follows pointerup after a drag
-    document.addEventListener("click", preventClick, { capture: true, once: true });
+    // A mouse drag that went nowhere was a click with a wobble in it. Treating
+    // it as a drag and eating the click made a tab clicked mid-motion simply
+    // not open, which read as the sidebar being unresponsive. A touch drag
+    // only starts from a long press, which was never a tap.
+    if (dropped || isTouchLikePointer(pointerTypeStarted)) {
+      document.addEventListener("click", preventClick, { capture: true, once: true });
+    }
   }
   document.removeEventListener("pointermove", handlePointerMove);
   document.removeEventListener("pointerup", handlePointerUp);
@@ -482,6 +497,8 @@ function end() {
   pointerTypeStarted = undefined;
   maxTravel = 0;
   pressWithoutMove = null;
+  dragStarted = null;
+  dropped = false;
 }
 
 export function startDrag(
@@ -493,6 +510,8 @@ export function startDrag(
   options?: {
     /** Called when a touch is held and lifted without moving. */
     onPressWithoutMove?: (x: number, y: number) => void;
+    /** Called when the press turns into a drag. */
+    onDragStart?: () => void;
   }
 ) {
   info = dragInfo;
@@ -503,6 +522,8 @@ export function startDrag(
   pointerTypeStarted = pointerType;
   maxTravel = 0;
   pressWithoutMove = options?.onPressWithoutMove ?? null;
+  dragStarted = options?.onDragStart ?? null;
+  dropped = false;
   document.addEventListener("pointermove", handlePointerMove);
   document.addEventListener("pointerup", handlePointerUp);
   document.addEventListener("pointercancel", handlePointerCancel);

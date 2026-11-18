@@ -45,6 +45,7 @@ import {
 import { useActivityHistory } from "../../lib/activityHistory";
 import { builtInChangePercent } from "../../lib/viewportSignature";
 import { isReplicaClient } from "../../lib/replication";
+import { activateTabAfterPaint, clearPendingTab, showPendingTab, usePendingTabStore } from "../../lib/pendingTab";
 import { ActivityChart } from "./ActivityChart";
 
 interface TerminalNodeProps {
@@ -123,6 +124,18 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
   // A boolean rather than the list: every tab would re-render on every
   // selection change if it subscribed to the array.
   const isSelected = useTabSelectionStore((s) => s.terminalIds.includes(terminalId));
+  // Only the picked row and the one it replaces change, so a click re-renders
+  // two rows rather than the whole list.
+  const pending = usePendingTabStore((s) =>
+    s.terminalId === null
+      ? "none"
+      : s.terminalId === terminalId
+        ? "picked"
+        : isActive
+          ? "replaced"
+          : "none"
+  );
+  const showsActive = pending === "picked" || (isActive && pending !== "replaced");
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   // The menu carries the tabs it was opened on. Deciding that once, when it
@@ -204,13 +217,26 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
     // A modifier means the click is about selecting, not moving. Starting a
     // drag here would turn a shift-click into a reorder.
     if (e.shiftKey || e.metaKey || e.ctrlKey) return;
+    if (e.pointerType === "mouse") {
+      // Light up on the press, as a native list does, rather than on the
+      // release. Not for a finger: one going down on the list is as likely to
+      // be scrolling it.
+      showPendingTab(terminalId);
+      document.addEventListener(
+        "pointerup",
+        // The click comes straight after the release and claims the highlight;
+        // a release that is not followed by one -- off the row -- drops it.
+        () => setTimeout(() => clearPendingTab(terminalId), 0),
+        { once: true }
+      );
+    }
     startDrag(
       { type: "terminal", terminalId, projectId, nodeId, nodes: draggedSelection(terminalId, nodeId) },
       e.clientX,
       e.clientY,
       e.currentTarget as HTMLElement,
       e.pointerType,
-      { onPressWithoutMove: openMenuAt }
+      { onPressWithoutMove: openMenuAt, onDragStart: () => clearPendingTab(terminalId) }
     );
   };
 
@@ -223,7 +249,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
         kind,
         fallbackAnchorTerminalId: activeTabTerminalId(),
       });
-      onClick();
+      activateTabAfterPaint(terminalId, onClick);
       return;
     }
 
@@ -270,7 +296,7 @@ export function TerminalNode({ terminalId, projectId, nodeId, parentNodeId, isAc
 
   const nodeClassName = [
     "sidebar-terminal-node",
-    isActive ? "active" : "",
+    showsActive ? "active" : "",
     isSelected ? "selected" : "",
     !session.isPinnedGray && (session.isNeedsAttention || session.isPinnedGreen)
       ? "needs-attention"
