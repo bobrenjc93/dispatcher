@@ -70,6 +70,63 @@ describe("terminalLinks", () => {
     expect(links.map((link) => link.text)).toEqual(["http://example.com/review/loc"]);
   });
 
+  it("follows a URL onto an indented row under a bullet", () => {
+    const first = "● The report is live: https://bobrenjc93.github.io/explanat";
+    const terminal = createTerminal(
+      [
+        createLine(first),
+        createLine("  ions/frame-stack-chunks/ — \"A quarter of a training step,"),
+        createLine("  lost to one Python frame\"."),
+      ],
+      first.length
+    );
+
+    for (const row of [1, 2]) {
+      const links = findTerminalWebLinkMatches(terminal, row);
+      expect(links).toEqual([
+        {
+          text: "https://bobrenjc93.github.io/explanations/frame-stack-chunks/",
+          range: {
+            start: { x: 23, y: 1 },
+            end: { x: 27, y: 2 },
+          },
+        },
+      ]);
+    }
+  });
+
+  it("follows an indented URL across several full rows", () => {
+    const terminal = createTerminal(
+      [
+        createLine("- see https://example.com/aaaa"),
+        createLine("  bbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        createLine("  cccc done"),
+      ],
+      30
+    );
+
+    const links = findTerminalWebLinkMatches(terminal, 3);
+
+    expect(links.map((link) => link.text)).toEqual([
+      "https://example.com/aaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbcccc",
+    ]);
+    expect(links[0].range).toEqual({ start: { x: 7, y: 1 }, end: { x: 7, y: 3 } });
+  });
+
+  it("does not run a URL into indented prose after a full row of prose", () => {
+    const terminal = createTerminal(
+      [
+        createLine("- see https://example.com/a and"),
+        createLine("  then more words"),
+      ],
+      31
+    );
+
+    const links = findTerminalWebLinkMatches(terminal, 1);
+
+    expect(links.map((link) => link.text)).toEqual(["https://example.com/a"]);
+  });
+
   it("maps a URL that starts at the beginning of a wrapped row to that row", () => {
     const terminal = createTerminal([
       createLine("prefix "),

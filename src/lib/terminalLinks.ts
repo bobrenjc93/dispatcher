@@ -33,6 +33,8 @@ interface TerminalLike {
 interface LogicalLineSegment {
   bufferY: number;
   text: string;
+  /** Columns of indentation dropped from the front of `text`. */
+  offset: number;
 }
 
 interface IndexedSegment extends LogicalLineSegment {
@@ -69,7 +71,30 @@ function isLikelyHardWrappedUrlContinuation(
     return false;
   }
 
-  return URL_CONTINUATION_END.test(previousText) && URL_CONTINUATION_START.test(nextText);
+  if (!URL_CONTINUATION_END.test(previousText)) {
+    return false;
+  }
+
+  const indent = leadingIndent(nextText);
+  if (indent === 0) {
+    return URL_CONTINUATION_START.test(nextText);
+  }
+
+  // A program that lays out its own text -- Claude Code's bullets, any
+  // indented list -- breaks a long URL onto a new row and lines it up under
+  // the text above, so the rest arrives indented. Followed only when what
+  // runs into the edge is itself part of a URL, since prose that happens to
+  // fill a row is followed by indented prose all the time.
+  if (indent >= cols / 2 || !URL_CONTINUATION_START.test(nextText.slice(indent))) {
+    return false;
+  }
+  const tail = previousText.slice(previousText.lastIndexOf(" ") + 1);
+  const wholeRowIsOneToken = previousText.trimStart().indexOf(" ") === -1;
+  return tail.includes("://") || wholeRowIsOneToken;
+}
+
+function leadingIndent(text: string): number {
+  return text.length - text.trimStart().length;
 }
 
 function shouldJoinPreviousLine(
@@ -145,9 +170,15 @@ function getLogicalLineSegments(
   const segments: LogicalLineSegment[] = [];
   for (let bufferY = startY; bufferY <= endY; bufferY += 1) {
     const line = buffer.getLine(bufferY);
-    if (line) {
-      segments.push({ bufferY, text: getTrimmedLineText(line) });
+    if (!line) {
+      continue;
     }
+    const text = getTrimmedLineText(line);
+    // A row joined by inference may be indented under the text above it; the
+    // indent is layout, not part of the URL. A soft-wrapped row is the same
+    // line carried on, so whatever it starts with belongs.
+    const offset = bufferY === startY || line.isWrapped ? 0 : leadingIndent(text);
+    segments.push({ bufferY, text: text.slice(offset), offset });
   }
   return segments;
 }
@@ -177,14 +208,14 @@ function positionForIndex(
     const isInsideSegment = affinity === "start" ? index < segment.end : index <= segment.end;
     if (isInsideSegment || isLast) {
       return {
-        x: index - segment.start + 1,
+        x: index - segment.start + segment.offset + 1,
         y: segment.bufferY + 1,
       };
     }
   }
 
   return {
-    x: last.text.length + 1,
+    x: last.offset + last.text.length + 1,
     y: last.bufferY + 1,
   };
 }
