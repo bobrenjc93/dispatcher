@@ -55,6 +55,7 @@ vi.mock("@xterm/xterm", () => {
     open = vi.fn();
     loadAddon = vi.fn();
     registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
+    parser = { registerOscHandler: vi.fn(() => ({ dispose: vi.fn() })) };
     attachCustomKeyEventHandler = vi.fn();
     scrollToBottom = vi.fn(() => {
       this.buffer.active.viewportY = this.buffer.active.baseY;

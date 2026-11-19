@@ -80,6 +80,7 @@ import {
 } from "../lib/tmuxControl";
 import { wrapBracketedPaste } from "../lib/tmuxControlProtocol";
 import { registerRendererPageStatsSource } from "../lib/rendererHeartbeat";
+import { OSC52_INTERACTION_WINDOW_MS, parseOsc52Copy } from "../lib/osc52";
 
 // ---------------------------------------------------------------------------
 // Persistent terminal instances — survive React remounts caused by layout
@@ -1682,6 +1683,36 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
       }));
       callback(links);
     },
+  });
+
+  let lastInteractionAt = Number.NEGATIVE_INFINITY;
+  const noteInteraction = () => {
+    lastInteractionAt = Date.now();
+  };
+  for (const type of ["pointerdown", "pointerup", "keydown"]) {
+    element.addEventListener(type, noteInteraction, { capture: true, passive: true });
+  }
+  xterm.parser.registerOscHandler(52, (data) => {
+    const text = parseOsc52Copy(data);
+    if (text === null) {
+      return true;
+    }
+    const sinceInteractionMs = Date.now() - lastInteractionAt;
+    if (sinceInteractionMs > OSC52_INTERACTION_WINDOW_MS) {
+      debugLog("terminal.clipboard", "ignored OSC 52 copy from a terminal not in use here", {
+        terminalId,
+        length: text.length,
+      });
+      return true;
+    }
+    debugLog("terminal.clipboard", "OSC 52 copy", { terminalId, length: text.length });
+    void writeClipboardText(text).catch((error) => {
+      debugLog("terminal.clipboard", "OSC 52 copy failed", {
+        terminalId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    return true;
   });
 
   const instance = {
