@@ -822,21 +822,37 @@ body.sidebar-resizing .terminal-pane {
   color: var(--red);
 }
 
+/* The way back to a collapsed notes panel: one small button in the corner the
+   panel folded into, where its collapse button was, rather than a full-height
+   strip that cost every terminal a column. Faint until it is wanted, since it
+   sits over the terminal's first cell. */
+.project-view {
+  position: relative;
+}
+
 .detail-expand-btn {
-  background: var(--bg-secondary);
-  border: none;
-  border-right: 1px solid var(--border-color);
-  color: var(--text-muted);
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 5;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  color: var(--text-secondary);
   cursor: pointer;
-  padding: 0 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
-  transition: color 0.15s, background 0.15s;
+  opacity: 0.55;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
 }
 
-.detail-expand-btn:hover {
+.detail-expand-btn:hover,
+.detail-expand-btn:focus-visible {
+  opacity: 1;
   background: var(--bg-hover);
   color: var(--text-primary);
 }
