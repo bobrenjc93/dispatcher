@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useProjectStore } from "../../stores/useProjectStore";
 import { useTerminalStore } from "../../stores/useTerminalStore";
 import { useLayoutStore } from "../../stores/useLayoutStore";
+import { useUiStore } from "../../stores/useUiStore";
 import { findLayoutKeyForTerminal } from "../../lib/layoutUtils";
 import { ProjectNode } from "./ProjectNode";
 import { ContextMenu } from "../common/ContextMenu";
@@ -51,6 +52,8 @@ export function Sidebar({
   const activeTerminalId = useTerminalStore((s) => s.activeTerminalId);
   const setActiveTerminal = useTerminalStore((s) => s.setActiveTerminal);
   const layouts = useLayoutStore((s) => s.layouts);
+  const detailPanelCollapsed = useUiStore((s) => s.isDetailPanelCollapsed);
+  const setDetailPanelCollapsed = useUiStore((s) => s.setDetailPanelCollapsed);
   const activeSidebarTerminalId = activeTerminalId
     ? findLayoutKeyForTerminal(layouts, activeTerminalId) ?? activeTerminalId
     : null;
@@ -187,6 +190,22 @@ export function Sidebar({
           <span>Dispatcher</span>
         </div>
         <div className="sidebar-actions">
+          <button
+            className={`notes-panel-toggle${detailPanelCollapsed ? "" : " is-active"}`}
+            onClick={() => setDetailPanelCollapsed(!detailPanelCollapsed)}
+            title={detailPanelCollapsed ? "Show Notes Panel" : "Hide Notes Panel"}
+            aria-pressed={!detailPanelCollapsed}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
+              <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" strokeWidth="1.2"/>
+              {detailPanelCollapsed ? (
+                <path d="M9 6.5L10.5 8L9 9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+              ) : (
+                <path d="M10.5 6.5L9 8L10.5 9.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+              )}
+            </svg>
+          </button>
           <button onClick={onNewProject} title="New Project (⌘N)">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path d="M2 4.5C2 3.67 2.67 3 3.5 3H6L7.5 5H12.5C13.33 5 14 5.67 14 6.5V11.5C14 12.33 13.33 13 12.5 13H3.5C2.67 13 2 12.33 2 11.5V4.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>

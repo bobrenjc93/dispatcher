@@ -165,17 +165,6 @@ export function ProjectView({ layoutId, onSplitPane, onClosePane }: ProjectViewP
           />
         </>
       )}
-      {detailCollapsed && (
-        <button
-          className="detail-expand-btn"
-          onClick={() => setDetailPanelCollapsed(false)}
-          title="Show Notes Panel"
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M5 3L9 7L5 11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
-        </button>
-      )}
       <div className="terminal-canvas" ref={terminalCanvasRef}>
         {isAwaitingMirror ? (
           <div className="terminal-loading-view">

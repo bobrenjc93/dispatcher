@@ -144,6 +144,10 @@ select {
   color: var(--text-primary);
 }
 
+.sidebar-actions button.is-active {
+  color: var(--text-primary);
+}
+
 .sidebar-content {
   flex: 1;
   overflow-y: auto;
@@ -677,10 +681,12 @@ body.sidebar-resizing .terminal-pane {
   background: var(--bg-secondary);
   display: flex;
   flex-direction: column;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 12px;
   gap: 16px;
   flex-shrink: 0;
+  container-type: inline-size;
 }
 
 .detail-divider {
@@ -721,13 +727,40 @@ body.sidebar-resizing .terminal-pane {
 }
 
 .detail-panel-title-row .status-dot {
-  margin-top: 4px;
+  margin-top: 6px;
+}
+
+/* Narrow, the buttons beside the title squeezed it to a word per line. They get
+   a row of their own above it instead: collapse at the left, by the edge it
+   folds towards, splits at the right. */
+@container (max-width: 260px) {
+  .detail-panel-header {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .detail-panel-actions {
+    justify-content: flex-end;
+    margin: -4px -4px 0;
+  }
+
+  .detail-panel-actions > button:first-child[title="Collapse Notes Panel"] {
+    margin-right: auto;
+  }
 }
 
 .detail-panel-title {
   font-size: var(--text-md);
   font-weight: 600;
+  line-height: 1.35;
   word-break: break-word;
+  /* A long name gets two lines and an ellipsis, not a column of its own. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
   cursor: default;
   color: var(--text-primary);
   letter-spacing: var(--tracking-title);
@@ -788,6 +821,12 @@ body.sidebar-resizing .terminal-pane {
 }
 
 .detail-panel-notes {
+  /* A textarea's natural width is twenty columns of its font, which at the
+     terminal's font size is wider than a narrow panel; it overflowed and put a
+     scrollbar across the bottom of the panel. */
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   font-size: var(--text-sm);
   font-family: inherit;
   color: var(--text-secondary);
@@ -820,41 +859,6 @@ body.sidebar-resizing .terminal-pane {
 
 .detail-panel-exit-error {
   color: var(--red);
-}
-
-/* The way back to a collapsed notes panel: one small button in the corner the
-   panel folded into, where its collapse button was, rather than a full-height
-   strip that cost every terminal a column. Faint until it is wanted, since it
-   sits over the terminal's first cell. */
-.project-view {
-  position: relative;
-}
-
-.detail-expand-btn {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  z-index: 5;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  background: color-mix(in srgb, var(--bg-secondary) 85%, transparent);
-  border: 1px solid var(--border-color);
-  border-radius: 5px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.55;
-  transition: opacity 0.15s, color 0.15s, background 0.15s;
-}
-
-.detail-expand-btn:hover,
-.detail-expand-btn:focus-visible {
-  opacity: 1;
-  background: var(--bg-hover);
-  color: var(--text-primary);
 }
 
 /* ===== Terminal Canvas (right column) ===== */
@@ -2254,7 +2258,7 @@ body.sidebar-resizing .terminal-pane {
   }
 
   .app-compact .detail-divider,
-  .app-compact .detail-expand-btn {
+  .app-compact .notes-panel-toggle {
     display: none;
   }
 
