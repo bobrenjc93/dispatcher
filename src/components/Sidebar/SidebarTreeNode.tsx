@@ -29,7 +29,7 @@ export function SidebarTreeNode({
 
   if (node.type === "terminal" && node.terminalId) {
     return (
-      <div style={{ paddingLeft: `${depth * 12}px` }}>
+      <div style={{ paddingLeft: `${(depth - 1) * 12}px` }}>
         <TerminalNode
           terminalId={node.terminalId}
           projectId={projectId}

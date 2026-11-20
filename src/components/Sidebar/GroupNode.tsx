@@ -29,7 +29,7 @@ export function GroupNode({
     <div className="sidebar-group-node">
       <div
         className="sidebar-group-header"
-        style={{ paddingLeft: `${depth * 12 + 8}px` }}
+        style={{ paddingLeft: `${(depth - 1) * 12 + 10}px` }}
         onClick={() => setExpanded(!expanded)}
       >
         <span className="group-chevron">
