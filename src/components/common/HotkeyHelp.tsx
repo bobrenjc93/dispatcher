@@ -8,6 +8,7 @@ const shortcuts = [
   { keys: "⌘T", description: "New terminal" },
   { keys: "⇧⌘T", description: "Reopen closed tab" },
   { keys: "⌘N", description: "New project" },
+  { keys: "⌘S", description: "Go to tab by name" },
   { keys: "⌘W", description: "Close pane" },
   { keys: "⌘D", description: "Split right" },
   { keys: "⇧⌘D", description: "Split down" },

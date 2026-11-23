@@ -8,6 +8,9 @@ import { PushSetupPrompt } from "./components/common/PushSetupPrompt";
 import { startAppFocusTracking } from "./lib/appFocus";
 import { clampSidebarWidth } from "./lib/sidebarWidth";
 import { KeyDebugOverlay } from "./components/common/KeyDebugOverlay";
+import { TabSearch } from "./components/common/TabSearch";
+import type { TabSearchEntry } from "./lib/tabSearch";
+import { activateTabAfterPaint } from "./lib/pendingTab";
 import { NameDialog } from "./components/common/NameDialog";
 import { MobileKeyBar } from "./components/Terminal/MobileKeyBar";
 import { useProjectStore } from "./stores/useProjectStore";
@@ -183,6 +186,7 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [isCompact]);
   const [isMobileNavOpen, setMobileNavOpen] = useState(false);
+  const [showTabSearch, setShowTabSearch] = useState(false);
   const detailPanelCollapsed = useUiStore((s) => s.isDetailPanelCollapsed);
   const setDetailPanelCollapsed = useUiStore((s) => s.setDetailPanelCollapsed);
   const compactTerminalFit = useUiStore((s) => s.compactTerminalFit);
@@ -1068,6 +1072,17 @@ export default function App() {
     }
 
     if (dialog) return; // Don't handle shortcuts while dialog is open
+    // Go to a tab by name: ⌘S, since ⌘K already clears the terminal. Pressed
+    // again it closes, and nothing else fires while it is open.
+    if ((navigator.platform.startsWith("Mac") ? e.metaKey : e.ctrlKey)
+      && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      if (e.repeat) return;
+      if (showTabSearch) closeTabSearch();
+      else setShowTabSearch(true);
+      return;
+    }
+    if (showTabSearch) return;
     // On macOS use Cmd for app shortcuts so Ctrl passes through to the
     // terminal (Ctrl+R reverse search, Ctrl+D EOF, Ctrl+W delete word, etc.).
     // On other platforms fall back to Ctrl as the app modifier, except when a
@@ -1252,6 +1267,35 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  const closeTabSearch = () => {
+    setShowTabSearch(false);
+    const terminalId = useTerminalStore.getState().activeTerminalId;
+    if (terminalId && !isCompact) {
+      requestAnimationFrame(() => focusTerminalInstance(terminalId));
+    }
+  };
+
+  const handlePickSearchedTab = (entry: TabSearchEntry) => {
+    setShowTabSearch(false);
+    const project = useProjectStore.getState().projects[entry.projectId];
+    if (project && !project.expanded) {
+      useProjectStore.getState().toggleProjectExpanded(entry.projectId);
+    }
+    activateTabAfterPaint(entry.terminalId, () => {
+      // Back to the pane last used in that tab, as ⇧⌘] does.
+      const terminalId = lastFocusedPane.current.get(entry.terminalId)
+        || resolvePreferredTerminalFocus(entry.terminalId);
+      useProjectStore.getState().setActiveProject(entry.projectId);
+      useTerminalStore.getState().setActiveTerminal(terminalId);
+      handleTmuxTerminalFocus(terminalId);
+      // The search box had the keyboard; hand it to the tab, even when it was
+      // the one already showing. A phone keeps its keyboard down.
+      if (!isCompact) {
+        requestAnimationFrame(() => focusTerminalInstance(terminalId));
+      }
+    });
+  };
+
   const handleDialogConfirm = (name: string) => {
     if (dialog?.type === "new-project" || dialog?.type === "new-project-with-terminal") {
       setDialog(null);
@@ -1382,6 +1426,12 @@ export default function App() {
           placeholder="Terminal name"
           onConfirm={handleDialogConfirm}
           onCancel={() => setDialog(null)}
+        />
+      )}
+      {showTabSearch && (
+        <TabSearch
+          onPick={handlePickSearchedTab}
+          onClose={closeTabSearch}
         />
       )}
       {showKeyDebug && <KeyDebugOverlay />}

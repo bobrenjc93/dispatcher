@@ -1748,7 +1748,7 @@ function createTerminalInstance(terminalId: string): TerminalInstance {
       return false;
     }
 
-    if (e.metaKey && ["t", "n", "d", "w", "f", "u", "r", "l", "b", "=", "-", "0"].includes(e.key.toLowerCase())) {
+    if (e.metaKey && ["t", "n", "d", "w", "f", "u", "r", "l", "b", "s", "=", "-", "0"].includes(e.key.toLowerCase())) {
       return false;
     }
     if (e.metaKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
