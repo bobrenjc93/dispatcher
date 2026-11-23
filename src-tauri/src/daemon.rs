@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,13 @@ pub const DAEMON_ARG: &str = "--dispatcher-daemon";
 /// How long the daemon lingers with no terminals and nobody attached. Long
 /// enough to survive an app restart, short enough not to leak processes.
 const IDLE_SHUTDOWN: Duration = Duration::from_secs(15 * 60);
+
+/// How long a send to an attached app may block before the app is given up
+/// on. Its socket is read by a thread that does nothing else, so a send stuck
+/// this long means the app is hung; without a limit, the PTY output threads
+/// sending to it would block with it, and the programs behind them would stop
+/// once their output filled up.
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Written by the daemon, read by the app to find it.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -121,16 +128,33 @@ pub enum Message {
 struct Client {
     id: u64,
     writer: Mutex<TcpStream>,
+    /// Set once a send has failed. A send that timed out may have written half
+    /// a line, so nothing more can go down this connection.
+    dead: AtomicBool,
 }
 
 impl Client {
     fn send(&self, message: &Message) -> bool {
+        if self.dead.load(Ordering::Acquire) {
+            return false;
+        }
         let Ok(mut line) = serde_json::to_string(message) else {
             return false;
         };
         line.push('\n');
         let mut writer = self.writer.lock().unwrap();
-        writer.write_all(line.as_bytes()).is_ok() && writer.flush().is_ok()
+        if writer.write_all(line.as_bytes()).is_ok() && writer.flush().is_ok() {
+            return true;
+        }
+        if !self.dead.swap(true, Ordering::AcqRel) {
+            let _ = crate::debug_log::append_debug_log(&format!(
+                "[daemon] client {} stopped reading, disconnecting it",
+                self.id
+            ));
+        }
+        // Ends the request loop for this client too, which detaches it.
+        let _ = writer.shutdown(std::net::Shutdown::Both);
+        false
     }
 }
 
@@ -274,9 +298,11 @@ fn serve_client(
     let Ok(write_half) = stream.try_clone() else {
         return;
     };
+    let _ = write_half.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT));
     let client = Arc::new(Client {
         id,
         writer: Mutex::new(write_half),
+        dead: AtomicBool::new(false),
     });
 
     let mut authenticated = false;
@@ -303,7 +329,12 @@ fn serve_client(
                     let _ = crate::debug_log::append_debug_log(&format!("[daemon] client {} attached", id));
                     client.send(&Message::Ok {
                         id: envelope.id,
-                        value: serde_json::json!({ "pid": std::process::id() }),
+                        // The version lets an app notice it attached to a
+                        // daemon left over from another build.
+                        value: serde_json::json!({
+                            "pid": std::process::id(),
+                            "version": env!("CARGO_PKG_VERSION"),
+                        }),
                     });
                 }
                 _ => {

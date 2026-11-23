@@ -33,16 +33,43 @@ fn preview_terminal_data(data: &str, limit: usize) -> String {
     preview
 }
 
+/// Run a terminal command off the main thread.
+///
+/// Tauri runs a plain command on the main thread, and these wait on the
+/// terminal daemon -- for up to 20 seconds when it does not answer -- which
+/// froze the whole window with it, every time it was opened onto a daemon in
+/// that state. Writes and resizes stay where they are: they have to reach the
+/// daemon in the order they were made, and they are sent without waiting for
+/// an answer.
+async fn off_main_thread<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, PtyError> + Send + 'static,
+) -> Result<T, PtyError> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|err| PtyError::from(err.to_string()))?
+}
+
 #[tauri::command]
-pub fn create_terminal(
+pub async fn create_terminal(
     app_handle: AppHandle,
-    state: State<'_, PtyManager>,
     terminal_id: String,
     cwd: Option<String>,
     cols: u16,
     rows: u16,
     on_output: Channel<TerminalOutput>,
 ) -> Result<(), PtyError> {
+    off_main_thread(move || create_terminal_blocking(app_handle, terminal_id, cwd, cols, rows, on_output)).await
+}
+
+fn create_terminal_blocking(
+    app_handle: AppHandle,
+    terminal_id: String,
+    cwd: Option<String>,
+    cols: u16,
+    rows: u16,
+    on_output: Channel<TerminalOutput>,
+) -> Result<(), PtyError> {
+    let state = app_handle.state::<PtyManager>();
     let _ = crate::debug_log::append_debug_log(&format!(
         "[backend:create_terminal] terminal_id={} cwd={:?} cols={} rows={}",
         terminal_id, cwd, cols, rows
@@ -123,11 +150,12 @@ pub fn resize_terminal(
 }
 
 #[tauri::command]
-pub fn close_terminal(
-    app_handle: AppHandle,
-    state: State<'_, PtyManager>,
-    terminal_id: String,
-) -> Result<(), PtyError> {
+pub async fn close_terminal(app_handle: AppHandle, terminal_id: String) -> Result<(), PtyError> {
+    off_main_thread(move || close_terminal_blocking(app_handle, terminal_id)).await
+}
+
+fn close_terminal_blocking(app_handle: AppHandle, terminal_id: String) -> Result<(), PtyError> {
+    let state = app_handle.state::<PtyManager>();
     let _ = crate::debug_log::append_debug_log(&format!(
         "[backend:close_terminal] terminal_id={}",
         terminal_id
@@ -147,11 +175,18 @@ pub fn close_terminal(
 }
 
 #[tauri::command]
-pub fn get_terminal_cwd(
+pub async fn get_terminal_cwd(
     app_handle: AppHandle,
-    state: State<'_, PtyManager>,
     terminal_id: String,
 ) -> Result<Option<String>, PtyError> {
+    off_main_thread(move || get_terminal_cwd_blocking(app_handle, terminal_id)).await
+}
+
+fn get_terminal_cwd_blocking(
+    app_handle: AppHandle,
+    terminal_id: String,
+) -> Result<Option<String>, PtyError> {
+    let state = app_handle.state::<PtyManager>();
     let result = match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
         crate::daemon_client::TerminalBackend::Daemon(client) => client.get_terminal_cwd(&terminal_id),
         crate::daemon_client::TerminalBackend::InProcess => state.get_terminal_cwd(&terminal_id),
@@ -176,46 +211,54 @@ pub fn get_terminal_cwd(
 /// Terminals whose PTY is still running in this process. After a reload the UI
 /// uses this to reattach to what survived instead of respawning it.
 #[tauri::command]
-pub fn list_live_terminals(
-    app_handle: AppHandle,
-    state: State<'_, PtyManager>,
-) -> Result<Vec<String>, PtyError> {
-    match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
-        crate::daemon_client::TerminalBackend::Daemon(client) => client.live_terminal_ids(),
-        crate::daemon_client::TerminalBackend::InProcess => Ok(state.live_terminal_ids()),
-    }
+pub async fn list_live_terminals(app_handle: AppHandle) -> Result<Vec<String>, PtyError> {
+    off_main_thread(move || {
+        match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+            crate::daemon_client::TerminalBackend::Daemon(client) => client.live_terminal_ids(),
+            crate::daemon_client::TerminalBackend::InProcess => {
+                Ok(app_handle.state::<PtyManager>().live_terminal_ids())
+            }
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn get_terminal_debug_info(
+pub async fn get_terminal_debug_info(
     app_handle: AppHandle,
-    state: State<'_, PtyManager>,
     terminal_id: String,
 ) -> Result<TerminalDebugInfo, PtyError> {
-    match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
-        crate::daemon_client::TerminalBackend::Daemon(client) => client.get_terminal_debug_info(&terminal_id),
-        crate::daemon_client::TerminalBackend::InProcess => state.get_terminal_debug_info(&terminal_id),
-    }
+    off_main_thread(move || {
+        match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+            crate::daemon_client::TerminalBackend::Daemon(client) => client.get_terminal_debug_info(&terminal_id),
+            crate::daemon_client::TerminalBackend::InProcess => {
+                app_handle.state::<PtyManager>().get_terminal_debug_info(&terminal_id)
+            }
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn warm_pool(
-    app_handle: AppHandle,
-    state: State<'_, PtyManager>,
-    count: usize,
-) -> Result<(), PtyError> {
-    match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
-        crate::daemon_client::TerminalBackend::Daemon(client) => client.warm_pool(count),
-        crate::daemon_client::TerminalBackend::InProcess => state.warm_pool(count),
-    }
+pub async fn warm_pool(app_handle: AppHandle, count: usize) -> Result<(), PtyError> {
+    off_main_thread(move || {
+        match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+            crate::daemon_client::TerminalBackend::Daemon(client) => client.warm_pool(count),
+            crate::daemon_client::TerminalBackend::InProcess => app_handle.state::<PtyManager>().warm_pool(count),
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn refresh_pool(app_handle: AppHandle, state: State<'_, PtyManager>) -> Result<(), PtyError> {
-    match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
-        crate::daemon_client::TerminalBackend::Daemon(client) => client.refresh_pool(),
-        crate::daemon_client::TerminalBackend::InProcess => state.refresh_pool(),
-    }
+pub async fn refresh_pool(app_handle: AppHandle) -> Result<(), PtyError> {
+    off_main_thread(move || {
+        match &*app_handle.state::<crate::daemon_client::TerminalBackend>() {
+            crate::daemon_client::TerminalBackend::Daemon(client) => client.refresh_pool(),
+            crate::daemon_client::TerminalBackend::InProcess => app_handle.state::<PtyManager>().refresh_pool(),
+        }
+    })
+    .await
 }
 
 #[tauri::command]

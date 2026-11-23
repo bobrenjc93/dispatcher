@@ -6,7 +6,9 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 const MAX_POOL_SIZE: usize = 3;
 
@@ -514,14 +516,7 @@ fn spawn_reader_thread(
             dispatch(&carry);
         }
 
-        let exit_code = {
-            let mut guard = child_arc.lock().unwrap();
-            if let Some(ref mut child) = *guard {
-                child.wait().ok().map(|status| status.exit_code() as i32)
-            } else {
-                None
-            }
-        };
+        let exit_code = wait_for_exit(&child_arc);
 
         let assigned_id = router.lock().unwrap().assigned_id.clone();
         if let Some(terminal_id) = assigned_id {
@@ -530,18 +525,102 @@ fn spawn_reader_thread(
     });
 }
 
+// -- Input --
+
+/// How much input may wait for a terminal that is not reading it. A paste far
+/// bigger than this still goes through when nothing is queued; this only stops
+/// a stuck terminal from soaking up memory without end.
+const MAX_INPUT_BACKLOG_BYTES: usize = 1024 * 1024;
+
+/// One terminal's input, written by a thread of its own.
+///
+/// A write to a PTY blocks once the program on the other end stops reading --
+/// it is busy, suspended, or blocked writing output nobody is draining -- and a
+/// macOS PTY only buffers about a kilobyte, so one paste is enough. Writes used
+/// to happen on the request thread while holding the lock every terminal
+/// shares, so a single stuck terminal stopped every other one from being
+/// created, resized or closed, and froze the window waiting on it. Now a write
+/// is queued and answered straight away; only that terminal's own input waits.
+struct InputQueue {
+    tx: mpsc::Sender<Vec<u8>>,
+    backlog: Arc<AtomicUsize>,
+}
+
+impl InputQueue {
+    fn spawn(mut writer: Box<dyn Write + Send>) -> InputQueue {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let backlog = Arc::new(AtomicUsize::new(0));
+        let thread_backlog = Arc::clone(&backlog);
+        std::thread::spawn(move || {
+            for chunk in rx {
+                let result = writer.write_all(&chunk).and_then(|_| writer.flush());
+                thread_backlog.fetch_sub(chunk.len(), Ordering::AcqRel);
+                if let Err(err) = result {
+                    // The PTY is gone. Dropping the receiver makes every later
+                    // write fail instead of queueing into nothing.
+                    let _ = crate::debug_log::append_debug_log(&format!(
+                        "[backend:pty_input] write failed, input closed error={}",
+                        err
+                    ));
+                    break;
+                }
+            }
+        });
+        InputQueue { tx, backlog }
+    }
+
+    fn send(&self, data: &[u8]) -> Result<(), PtyError> {
+        let queued = self.backlog.load(Ordering::Acquire);
+        if queued > 0 && queued + data.len() > MAX_INPUT_BACKLOG_BYTES {
+            return Err(PtyError::from(format!(
+                "terminal is not reading its input ({} bytes already waiting)",
+                queued
+            )));
+        }
+        self.backlog.fetch_add(data.len(), Ordering::AcqRel);
+        self.tx.send(data.to_vec()).map_err(|_| {
+            self.backlog.fetch_sub(data.len(), Ordering::AcqRel);
+            PtyError::from("terminal input is closed".to_string())
+        })
+    }
+}
+
+/// The child's exit code, once it has exited.
+///
+/// Polled rather than waited on: a blocking wait would hold the child's lock
+/// for as long as the process lingers after closing the PTY, and closing the
+/// terminal -- or asking for its cwd -- needs that lock.
+fn wait_for_exit(child_arc: &Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>) -> Option<i32> {
+    let mut delay = Duration::from_millis(10);
+    loop {
+        {
+            let mut guard = child_arc.lock().unwrap();
+            let Some(child) = guard.as_mut() else {
+                return None;
+            };
+            match child.try_wait() {
+                Ok(Some(status)) => return Some(status.exit_code() as i32),
+                Ok(None) => {}
+                Err(_) => return None,
+            }
+        }
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(Duration::from_secs(1));
+    }
+}
+
 // -- Session types --
 
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    input: InputQueue,
     child: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>,
     router: Arc<Mutex<OutputRouter>>,
 }
 
 struct PoolEntry {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    input: InputQueue,
     child: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>,
     router: Arc<Mutex<OutputRouter>>,
 }
@@ -630,7 +709,7 @@ impl PtyManager {
 
         let entry = PoolEntry {
             master: pair.master,
-            writer,
+            input: InputQueue::spawn(writer),
             child: Arc::clone(&child_arc),
             router: Arc::clone(&router),
         };
@@ -702,9 +781,9 @@ impl PtyManager {
                 r.assigned_id = Some(terminal_id.clone());
             }
 
-            let mut session = PtySession {
+            let session = PtySession {
                 master: entry.master,
-                writer: entry.writer,
+                input: entry.input,
                 child: entry.child,
                 router: Arc::clone(&entry.router),
             };
@@ -716,8 +795,7 @@ impl PtyManager {
                 if !dir.is_empty() {
                     let escaped = dir.replace('\'', "'\\''");
                     let cmd = format!(" cd '{}' && clear\n", escaped);
-                    let _ = session.writer.write_all(cmd.as_bytes());
-                    let _ = session.writer.flush();
+                    let _ = session.input.send(cmd.as_bytes());
                 }
             }
 
@@ -779,7 +857,7 @@ impl PtyManager {
 
         let session = PtySession {
             master: pair.master,
-            writer,
+            input: InputQueue::spawn(writer),
             child: Arc::clone(&child_arc),
             router: Arc::clone(&router),
         };
@@ -804,21 +882,26 @@ impl PtyManager {
         rows: u16,
         channel: Box<dyn OutputSink>,
     ) -> Result<Option<Box<dyn OutputSink>>, PtyError> {
-        let sessions = self.sessions.lock().unwrap();
-        let Some(session) = sessions.get(terminal_id) else {
-            return Ok(Some(channel));
+        let router = {
+            let sessions = self.sessions.lock().unwrap();
+            let Some(session) = sessions.get(terminal_id) else {
+                return Ok(Some(channel));
+            };
+
+            // Match the new UI's geometry before replaying, so the replayed
+            // output wraps the way the terminal will render it.
+            let _ = session.master.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+            Arc::clone(&session.router)
         };
 
-        // Match the new UI's geometry before replaying, so the replayed output
-        // wraps the way the terminal will render it.
-        let _ = session.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
-
-        let mut r = session.router.lock().unwrap();
+        // The replay goes out over a socket, which can be slow; not while
+        // holding the lock every other terminal needs.
+        let mut r = router.lock().unwrap();
         r.channel = Some(channel);
         let replay = String::from_utf8_lossy(&r.replay).to_string();
         let replay_bytes = replay.len();
@@ -826,7 +909,6 @@ impl PtyManager {
             r.emit(terminal_id, replay);
         }
         drop(r);
-        drop(sessions);
 
         let _ = crate::debug_log::append_debug_log(&format!(
             "[backend:reattach_terminal] terminal_id={} cols={} rows={} replay_bytes={}",
@@ -849,54 +931,54 @@ impl PtyManager {
         self.host()
             .record_input(terminal_id, &String::from_utf8_lossy(data));
 
-        let mut sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get_mut(terminal_id)
-            .ok_or_else(|| PtyError::from(format!("Terminal {} not found", terminal_id)))?;
-        session
-            .writer
-            .write_all(data)
-            .map_err(|e| PtyError::from(e))?;
-        session.writer.flush().map_err(|e| PtyError::from(e))?;
-        Ok(())
-    }
-
-    pub fn get_terminal_debug_info(&self, terminal_id: &str) -> Result<TerminalDebugInfo, PtyError> {
         let sessions = self.sessions.lock().unwrap();
         let session = sessions
             .get(terminal_id)
             .ok_or_else(|| PtyError::from(format!("Terminal {} not found", terminal_id)))?;
+        // Queued, never written here: see `InputQueue`.
+        session.input.send(data)
+    }
 
+    pub fn get_terminal_debug_info(&self, terminal_id: &str) -> Result<TerminalDebugInfo, PtyError> {
         #[cfg(unix)]
         {
             let mut foreground_pgid = None;
-            let mut foreground_command = None;
             let mut vdiscard = None;
             let mut vreprint = None;
+            {
+                let sessions = self.sessions.lock().unwrap();
+                let session = sessions
+                    .get(terminal_id)
+                    .ok_or_else(|| PtyError::from(format!("Terminal {} not found", terminal_id)))?;
+                if let Some(fd) = session.master.as_raw_fd() {
+                    let pgid = unsafe { libc::tcgetpgrp(fd) };
+                    if pgid > 0 {
+                        foreground_pgid = Some(pgid);
+                    }
 
-            if let Some(fd) = session.master.as_raw_fd() {
-                let pgid = unsafe { libc::tcgetpgrp(fd) };
-                if pgid > 0 {
-                    foreground_pgid = Some(pgid);
-                    foreground_command = Command::new("ps")
-                        .args(["-o", "comm=", "-p", &pgid.to_string()])
-                        .output()
-                        .ok()
-                        .and_then(|output| {
-                            if !output.status.success() {
-                                return None;
-                            }
-                            let cmd = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                            if cmd.is_empty() { None } else { Some(cmd) }
-                        });
-                }
-
-                let mut termios = unsafe { std::mem::MaybeUninit::<libc::termios>::zeroed().assume_init() };
-                if unsafe { libc::tcgetattr(fd, &mut termios) } == 0 {
-                    vdiscard = Some(termios.c_cc[libc::VDISCARD]);
-                    vreprint = Some(termios.c_cc[libc::VREPRINT]);
+                    let mut termios = unsafe { std::mem::MaybeUninit::<libc::termios>::zeroed().assume_init() };
+                    if unsafe { libc::tcgetattr(fd, &mut termios) } == 0 {
+                        vdiscard = Some(termios.c_cc[libc::VDISCARD]);
+                        vreprint = Some(termios.c_cc[libc::VREPRINT]);
+                    }
                 }
             }
+
+            // `ps` is a process launch; not while holding the lock every other
+            // terminal needs.
+            let foreground_command = foreground_pgid.and_then(|pgid: i32| {
+                Command::new("ps")
+                    .args(["-o", "comm=", "-p", &pgid.to_string()])
+                    .output()
+                    .ok()
+                    .and_then(|output| {
+                        if !output.status.success() {
+                            return None;
+                        }
+                        let cmd = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                        if cmd.is_empty() { None } else { Some(cmd) }
+                    })
+            });
 
             return Ok(TerminalDebugInfo {
                 terminal_id: terminal_id.to_owned(),
@@ -909,6 +991,9 @@ impl PtyManager {
 
         #[cfg(not(unix))]
         {
+            if !self.sessions.lock().unwrap().contains_key(terminal_id) {
+                return Err(PtyError::from(format!("Terminal {} not found", terminal_id)));
+            }
             Ok(TerminalDebugInfo {
                 terminal_id: terminal_id.to_owned(),
                 foreground_pgid: None,
@@ -983,8 +1068,8 @@ impl PtyManager {
     }
 
     pub fn close_terminal(&self, terminal_id: &str) -> Result<(), PtyError> {
-        let mut sessions = self.sessions.lock().unwrap();
-        if let Some(session) = sessions.remove(terminal_id) {
+        let removed = self.sessions.lock().unwrap().remove(terminal_id);
+        if let Some(session) = removed {
             let mut guard = session.child.lock().unwrap();
             if let Some(ref mut child) = *guard {
                 let _ = child.kill();
@@ -1013,4 +1098,87 @@ pub struct TerminalDebugInfo {
 pub struct TerminalExitPayload {
     pub terminal_id: String,
     pub exit_code: Option<i32>,
+}
+
+#[cfg(all(test, unix))]
+mod stuck_terminal_tests {
+    use super::*;
+    use std::time::Instant;
+
+    struct Collect(Arc<Mutex<String>>);
+
+    impl OutputSink for Collect {
+        fn send(&self, _terminal_id: &str, data: &str) -> bool {
+            self.0.lock().unwrap().push_str(data);
+            true
+        }
+    }
+
+    fn collector() -> (Arc<Mutex<String>>, Box<dyn OutputSink>) {
+        let output = Arc::new(Mutex::new(String::new()));
+        (Arc::clone(&output), Box::new(Collect(output)))
+    }
+
+    /// Run `work` on another thread and fail, rather than hang the suite, if it
+    /// does not finish in time.
+    fn within<T: Send + 'static>(limit: Duration, work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        rx.recv_timeout(limit)
+            .unwrap_or_else(|_| panic!("blocked for more than {:?}", limit))
+    }
+
+    #[test]
+    fn a_terminal_that_stops_reading_input_does_not_block_the_others() {
+        let manager = Arc::new(PtyManager::new());
+        let (_, sink) = collector();
+        manager
+            .create_terminal("stuck".into(), None, 80, 24, sink)
+            .unwrap();
+        // A program that never reads its input, in raw mode as ssh, tmux and
+        // anything full-screen are. (In canonical mode the line discipline
+        // throws away what does not fit instead of blocking the writer.)
+        manager
+            .write_terminal("stuck", b"stty raw -echo; exec sleep 600\n")
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Far more than a PTY buffers. Every call has to come back promptly,
+        // and once the backlog is full the rest are refused.
+        let flood = Arc::clone(&manager);
+        let refused = within(Duration::from_secs(5), move || {
+            let chunk = vec![b'x'; 16 * 1024];
+            (0..80)
+                .filter(|_| flood.write_terminal("stuck", &chunk).is_err())
+                .count()
+        });
+        assert!(refused > 0, "a full backlog should refuse more input");
+
+        // Everything else still works, including on the stuck terminal itself.
+        let (other_output, other_sink) = collector();
+        let others = Arc::clone(&manager);
+        within(Duration::from_secs(5), move || {
+            others
+                .create_terminal("other".into(), None, 80, 24, other_sink)
+                .unwrap();
+            others.resize_terminal("other", 100, 30).unwrap();
+            others.resize_terminal("stuck", 100, 30).unwrap();
+            others
+                .write_terminal("other", b"echo DISPATCHER_$((40 + 2))\n")
+                .unwrap();
+            let live = others.live_terminal_ids();
+            assert!(live.contains(&"stuck".to_string()) && live.contains(&"other".to_string()));
+            others.get_terminal_debug_info("stuck").unwrap();
+            others.close_terminal("stuck").unwrap();
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !other_output.lock().unwrap().contains("DISPATCHER_42") {
+            assert!(Instant::now() < deadline, "the other terminal never ran its command");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        manager.close_terminal("other").unwrap();
+    }
 }

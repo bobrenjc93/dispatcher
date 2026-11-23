@@ -33,6 +33,44 @@ export interface RendererHeartbeatDetails {
 }
 
 /**
+ * Per terminal, while it is being created: everything sent to it since, in
+ * order. Gone once the create and whatever queued behind it have finished.
+ *
+ * Creating a terminal waits on the terminal daemon, so the backend does it off
+ * the main thread, while writes and resizes stay on it to keep their order.
+ * Nothing orders the two any more, and what is sent right after a create is
+ * often the point of it -- a reattached tmux client is nudged at once, and its
+ * reply goes to whichever window the terminal was attached to when it arrives.
+ * Sent before the reattach, it went to the window that was just reloaded away.
+ */
+const sendsAfterCreate = new Map<string, Promise<unknown>>();
+
+/** Make later sends to this terminal wait for `sent`, success or not. */
+function holdSendsUntil(terminalId: string, sent: Promise<unknown>) {
+  const settled = sent.then(
+    () => undefined,
+    () => undefined
+  );
+  sendsAfterCreate.set(terminalId, settled);
+  void settled.then(() => {
+    if (sendsAfterCreate.get(terminalId) === settled) {
+      sendsAfterCreate.delete(terminalId);
+    }
+  });
+}
+
+/** Send now, or after the create in flight and anything already behind it. */
+function afterCreate<T>(terminalId: string, send: () => Promise<T>): Promise<T> {
+  const tail = sendsAfterCreate.get(terminalId);
+  if (!tail) {
+    return send();
+  }
+  const sent = tail.then(send, send);
+  holdSendsUntil(terminalId, sent);
+  return sent;
+}
+
+/**
  * Starts the terminal, or — when its PTY is still running from before a reload
  * — reattaches to it and replays the output this UI missed. Reattaching is what
  * keeps an ssh connection and its tmux client alive across a reload.
@@ -44,20 +82,25 @@ export async function createTerminal(
   cols: number = 80,
   rows: number = 24
 ): Promise<void> {
-  await invoke("create_terminal", {
-    terminalId,
-    cwd: cwd ?? null,
-    cols,
-    rows,
-    onOutput,
-  });
+  const created = afterCreate(terminalId, () =>
+    invoke("create_terminal", {
+      terminalId,
+      cwd: cwd ?? null,
+      cols,
+      rows,
+      onOutput,
+    })
+  );
+  // From here on, sends to this terminal wait for it.
+  holdSendsUntil(terminalId, created);
+  await created;
 }
 
 export async function writeTerminal(
   terminalId: string,
   data: string
 ): Promise<void> {
-  await invoke("write_terminal", { terminalId, data });
+  await afterCreate(terminalId, () => invoke("write_terminal", { terminalId, data }));
 }
 
 export async function resizeTerminal(
@@ -65,11 +108,13 @@ export async function resizeTerminal(
   cols: number,
   rows: number
 ): Promise<void> {
-  await invoke("resize_terminal", { terminalId, cols, rows });
+  await afterCreate(terminalId, () => invoke("resize_terminal", { terminalId, cols, rows }));
 }
 
 export async function closeTerminal(terminalId: string): Promise<void> {
-  await invoke("close_terminal", { terminalId });
+  // Closed before its create had landed, a terminal would be started after
+  // and left running with nothing showing it.
+  await afterCreate(terminalId, () => invoke("close_terminal", { terminalId }));
 }
 
 export async function warmPool(count: number = 3): Promise<void> {
