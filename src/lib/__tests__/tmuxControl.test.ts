@@ -1978,6 +1978,54 @@ describe("tmuxControl", () => {
     );
   });
 
+  it("recaptures history on focus even when the pane never stops printing", async () => {
+    const transportTerminalId = "transport-hidden-output-history-busy";
+    seedTransportTerminal(transportTerminalId);
+
+    await hydrateSingleWindow(transportTerminalId);
+    const paneTerminalId = getPaneTerminalIdByPaneId("%1");
+    useTerminalStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        other: makeTerminalSession("other"),
+      },
+      activeTerminalId: "other",
+    }));
+
+    routeTmuxTransportOutput(transportTerminalId, "%output %1 hidden output\n");
+    useTerminalStore.getState().setActiveTerminal(paneTerminalId);
+    handleTmuxTerminalFocus(paneTerminalId);
+    routeTmuxTransportOutput(
+      transportTerminalId,
+      [
+        "%begin 4 0",
+        "%end 4 0",
+        "%begin 5 0",
+        "4\t7",
+        "%end 5 0",
+        "%begin 6 0",
+        "current viewport",
+        "%end 6 0",
+        "",
+      ].join("\n")
+    );
+    await flushMicrotasks();
+    completeTmuxCommandWithLines(transportTerminalId, 7, ["4\t7"]);
+    await flushMicrotasks();
+    writeTerminalMock.mockClear();
+
+    // A spinner: output every 200ms, never a 300ms gap for the retry to land in.
+    let sawHistoryCapture = false;
+    for (let elapsed = 0; elapsed < 6_000 && !sawHistoryCapture; elapsed += 200) {
+      routeTmuxTransportOutput(transportTerminalId, "%output %1 \\033]0;spinner\\007\n");
+      await vi.advanceTimersByTimeAsync(200);
+      sawHistoryCapture = (writeTerminalMock.mock.calls as unknown[][]).some(
+        (call) => call[1] === "capture-pane -p -e -C -S -50000 -t %1\n"
+      );
+    }
+    expect(sawHistoryCapture).toBe(true);
+  });
+
   it("warms a hidden tmux pane viewport in the background after output", async () => {
     const transportTerminalId = "transport-hidden-output-viewport-warm";
     seedTransportTerminal(transportTerminalId);

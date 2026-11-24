@@ -207,6 +207,7 @@ interface TmuxPaneState {
   lastHistoryRefreshDeferredLogAt: number;
   historyCaptureInFlight: boolean;
   historyRefreshRetryTimer: number | null;
+  historyRefreshRetryDeadline: number;
   historyRefreshRetryAttempts: number;
   visibleRedrawTimer: number | null;
   visibleRedrawRaceCount: number;
@@ -557,6 +558,11 @@ const TMUX_PANE_OUTPUT_ACTIVITY_SUPPRESSION_MS = 2_000;
 const TMUX_SUPPRESSED_ACTIVITY_SUMMARY_INTERVAL_MS = 5_000;
 const TMUX_HISTORY_REFRESH_COOLDOWN_MS = 30_000;
 const TMUX_HISTORY_REFRESH_DEFER_LOG_INTERVAL_MS = 10_000;
+// How much further output may push a scheduled history refresh back. Waiting
+// for a quiet moment avoids racing the capture, but a pane that never goes
+// quiet -- an agent with a spinner, a build log -- would otherwise never get
+// its scrollback back, leaving a tab that cannot be scrolled up at all.
+const TMUX_HISTORY_REFRESH_MAX_OUTPUT_DEFER_MS = 3_000;
 const TMUX_VISIBLE_REDRAW_SETTLE_MS = 180;
 const TMUX_VISIBLE_REDRAW_RETRY_MS = 300;
 const TMUX_VISIBLE_REDRAW_QUIET_MS = 1_200;
@@ -668,6 +674,7 @@ function ensurePaneHistoryCaptureState(pane: TmuxPaneState) {
   pane.lastHistoryRefreshDeferredLogAt ??= 0;
   pane.historyCaptureInFlight ??= false;
   pane.historyRefreshRetryTimer ??= null;
+  pane.historyRefreshRetryDeadline ??= 0;
   pane.historyRefreshRetryAttempts ??= 0;
   pane.visibleRedrawTimer ??= null;
   pane.visibleRedrawRaceCount ??= 0;
@@ -1219,6 +1226,7 @@ function recoverControlSessionFromStore(sessionId: string): TmuxControlSession |
       lastHistoryRefreshDeferredLogAt: 0,
       historyCaptureInFlight: false,
       historyRefreshRetryTimer: null,
+      historyRefreshRetryDeadline: 0,
       historyRefreshRetryAttempts: 0,
       visibleRedrawTimer: null,
       visibleRedrawRaceCount: 0,
@@ -2599,6 +2607,7 @@ function upsertWindowProjection(
         lastHistoryRefreshDeferredLogAt: 0,
         historyCaptureInFlight: false,
         historyRefreshRetryTimer: null,
+        historyRefreshRetryDeadline: 0,
         historyRefreshRetryAttempts: 0,
         visibleRedrawTimer: null,
         visibleRedrawRaceCount: 0,
@@ -3000,6 +3009,7 @@ function clearPaneHistoryRefreshRetry(pane: TmuxPaneState) {
     window.clearTimeout(pane.historyRefreshRetryTimer);
     pane.historyRefreshRetryTimer = null;
   }
+  pane.historyRefreshRetryDeadline = 0;
 }
 
 function clearPaneVisibleRedraw(pane: TmuxPaneState) {
@@ -3252,7 +3262,13 @@ function schedulePaneHistoryRefreshRetry(
 
   const paneId = pane.paneId;
   const terminalId = pane.terminalId;
-  const delayMs = getPaneHistoryRetryDelayMs(pane);
+  const now = Date.now();
+  let delayMs = getPaneHistoryRetryDelayMs(pane);
+  if (!wasAlreadyScheduled || pane.historyRefreshRetryDeadline <= 0) {
+    pane.historyRefreshRetryDeadline = now + delayMs + TMUX_HISTORY_REFRESH_MAX_OUTPUT_DEFER_MS;
+  } else {
+    delayMs = Math.max(0, Math.min(delayMs, pane.historyRefreshRetryDeadline - now));
+  }
   if (!wasAlreadyScheduled) {
     debugLog("tmux.capture", "schedule pane history refresh retry", {
       sessionId: session.id,
@@ -3276,6 +3292,7 @@ function schedulePaneHistoryRefreshRetry(
 
     ensurePaneHistoryCaptureState(currentPane);
     currentPane.historyRefreshRetryTimer = null;
+    currentPane.historyRefreshRetryDeadline = 0;
     if (
       !session.controlModeActive
       || currentPane.historyCaptureInFlight
