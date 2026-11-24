@@ -9,7 +9,7 @@ export const BUILTIN_SCHEMES: ColorScheme[] = [
       background: "#0a0a0a",
       foreground: "#ededed",
       cursor: "#ffffff",
-      selectionBackground: "#333333",
+      selectionBackground: "#264f78",
       black: "#000000",
       red: "#ff3333",
       green: "#00c853",
